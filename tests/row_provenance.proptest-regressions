@@ -12,3 +12,5 @@ cc d3355a3ad954c9c529a4b782e1b0b3c7962450ed1f72c920fc60cf5f67ef83b7 # shrinks to
 cc 63f1aef93f6c0f9469bcca46a6ff5523e8ecf5eaddaad9d6cc36f7530e838092 # shrinks to src = ">1. a\n>\n>   a\n>2. [^a]: a\n"
 cc fcd8fb3e0ed1c5a65c0838a1a9cf25c1dbdcd588b1abf57f61d54af289a92bdf # shrinks to src = "- >- $$\n  >  x^2\n  >  $$\n"
 cc 41f393c46f27193c45d03fcda3ee0a9f568a6bf71d289cd262d5b69fd655dda1 # shrinks to src = ">- >a\\\n>  >a\n"
+cc ef1898837acbc11084c8e906c01bf26b3d01822f41e3c2ce8b3cf639f1e33cb7 # shrinks to src = ">- $$\n>  x^2\n>  $$\n\n[r]: /u\n"
+cc dcdcb9f899c777baacdfff96fe180a51d97fdb08d728d05b852ccb7e9c6ce17a # shrinks to src = ">1. a\n>\n>   a\n>2. - ```\n>     ```\n\n[r]: /u\n"

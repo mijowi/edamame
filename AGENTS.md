@@ -183,7 +183,8 @@ src/
     history.rs      # undo/redo stack of EditDelta; merges inserts into word-groups
     parsed_doc.rs   # re-parse on change; caches AST + source map + row origins;
                     #   virtual blank blocks
-    row_map.rs      # rendered row ↔ source line, from the recorded RowOrigins
+    row_map.rs      # rendered row ↔ source line and row char ↔ source column, from the
+                    #   recorded RowOrigins; the reveal gate (`reveals`)
 
   editor.rs / editor/   # EditorState, Mode, RAW_REVEAL_DELAY
     edit_ops.rs     # Action → EditorState mutations
@@ -221,13 +222,15 @@ src/
                     #   inlines_to_plain()
     highlight.rs    # syntect tokenizer: scope → TokenClass, char-indexed ranges,
                     #   size caps, incremental per-line ParseState reuse
-    code_layout.rs  # code-block raw ↔ rendered column geometry; line_allows_raw_reveal
     destination.rs  # link destinations: local_image_urls (the document's own images),
                     #   escape_destination (angle-bracket form for spaces / parens)
-    inline_col_map.rs, list_layout.rs   # raw ↔ rendered column maps
+    inline_col_map.rs  # raw ↔ rendered column map of inline Markdown (build_inline for a
+                    #   slice past a line's content column, resolving the document's
+                    #   references via RefLabels)
     parse_offsets.rs # byte spans from pulldown-cmark; RangeTracker depth-0 scanner
-    parser.rs (+ parser/{post_pass,stream}.rs)   # → Vec<Block>; parse_raw_with_ranges
-                    #   (single-pass blocks + ranges + positions); promotions.  stream.rs
+    parser.rs (+ parser/{post_pass,stream}.rs)   # → Vec<Block>; parse_document
+                    #   (single-pass blocks + ranges + positions + line index + link labels;
+                    #   parse_raw_with_ranges is its blocks-and-ranges half); promotions.  stream.rs
                     #   records SrcLines / spans from pulldown-cmark's event offsets
     render_cache.rs # memoization keyed by Block value + settings fingerprint
     row_origin.rs   # RowOrigin (lines + column relation per rendered row), RowSink
@@ -306,7 +309,7 @@ Higher layers depend only on lower ones:
 4. `input` — `ModeHandler` trait + `DefaultHandler`; `MouseDispatcher`
 5. `editor` — `EditorState`; owns `Buffer`, `Cursor`, `History`, `Mode`, `ParsedDoc`
 6. `document` — `Buffer`, `Cursor`, `History`, `ParsedDoc`, `Selection`, `SourceMap`, grapheme helpers
-7. `markdown` — parser → AST → renderer; `parse_offsets` and `inline_col_map` feed `SourceMap`
+7. `markdown` — parser → AST → renderer; `parse_offsets` feeds `SourceMap`, `inline_col_map` feeds `document::row_map`
 8. `config` — `Config`, `KeyMap`, `Theme` (loaded once at startup)
 9. `clipboard`, `image`, `diagram`, `export`, `docs` — leaf subsystems used by the renderer / app; `clipboard` is the leaf the others build on (`image::paste` consumes its payload model), and it imports nothing from this crate
 10. `terminal` — raw terminal setup / teardown / capability probing

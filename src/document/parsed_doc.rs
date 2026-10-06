@@ -6,13 +6,14 @@ use ratatui::text::Line;
 
 use crate::config::Theme;
 use crate::diagram::DiagramSource;
+use crate::document::row_map::RowCache;
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
-    inlines_to_plain, parse_raw_with_ranges, promote_diagram_code_blocks,
-    promote_display_math_paragraphs, promote_html_comments, promote_image_paragraphs,
-    reconstruct_broken_display_math, split_display_math_paragraphs, Block, ImageRowOverride,
-    InlineColMap, RenderCache, Renderer, RowOrigin,
+    inlines_to_plain, parse_document, promote_diagram_code_blocks, promote_display_math_paragraphs,
+    promote_html_comments, promote_image_paragraphs, reconstruct_broken_display_math,
+    split_display_math_paragraphs, Block, ImageRowOverride, RefLabels, RenderCache, Renderer,
+    RowOrigin,
 };
 
 /// Metadata for one `Block::ImageBlock`, for the image loader and placeholder.
@@ -50,6 +51,12 @@ pub struct ParsedDoc {
     /// (see [`byte_to_line`](Self::byte_to_line)); touch the buffer only with a *live*
     /// offset.
     source: Box<str>,
+    /// Byte offset of every line start in [`source`](Self::source) (`[0] == 0`), kept from the
+    /// parse that indexed it anyway.
+    line_starts: Vec<usize>,
+    /// The labels the document's reference and footnote definitions define, for the per-row
+    /// column maps (`row_map`), which parse one line at a time.
+    ref_labels: RefLabels,
     /// Source map linking rendered lines to source byte ranges.
     pub source_map: SourceMap,
     /// Post-processed block AST, 1:1 with `real_ranges`.  Reflects every post-parse pass
@@ -90,13 +97,15 @@ pub struct ParsedDoc {
     /// painting *these* rows, so it must keep this table too — and a reparse drops it by
     /// construction.
     source_lines: OnceCell<Vec<Option<usize>>>,
-    /// Lazy per-buffer-line raw ↔ rendered column maps, for the selection painter and the
-    /// cursor-indicator overlay.
-    inline_maps: Vec<OnceCell<InlineColMap>>,
+    /// Lazy per-row column data (the row's chars, its block's position, its raw ↔ rendered
+    /// column map), 1:1 with [`lines`](Self::lines), built by `row_map` from this parse's own
+    /// text on first use.
+    row_cache: Vec<OnceCell<RowCache>>,
     /// Whether this parse rendered prose paragraphs with reflow on (soft breaks → spaces,
-    /// wrapped as one flow).  Consumers that map a rendered row to a source line
-    /// (`state_source_lines`, `mouse_ops::coord`, the overlay painter) branch on it, because a
-    /// reflowed paragraph's rendered row spans several source lines rather than one.
+    /// wrapped as one flow).  Row and column questions read the flow from its `RowOrigin`; what
+    /// still branches on it (through [`is_reflowed_paragraph_at`](Self::is_reflowed_paragraph_at))
+    /// is the reveal's timing and its stacked raw lines, in `editor::state`,
+    /// `state_cursor_block` and `mouse_ops::coord`.
     pub reflow_paragraphs: bool,
     /// `(block_idx, band_rows)` for a `$$...$$` block currently revealed with the live math
     /// preview, or `None`.  When set, that block's rendered rows split into a top preview band of
@@ -175,7 +184,14 @@ impl ParsedDoc {
         // `tui-columns` merge below.  That merge MUST run before the live-widths override:
         // it checks for `user_widths: None`, so overriding first would leave the comment
         // unabsorbed and flashing into the rendered view between drag events.
-        let (mut blocks, mut real_ranges) = parse_raw_with_ranges(source);
+        let parse = parse_document(source);
+        let (mut blocks, mut real_ranges) = (parse.blocks, parse.ranges);
+        let mut footnote_labels = Vec::new();
+        collect_footnote_labels(&blocks, &mut footnote_labels);
+        let ref_labels = RefLabels::new(
+            parse.link_labels.iter().map(String::as_str),
+            footnote_labels,
+        );
         let total_bytes = source.len();
         // FIRST: the merge below looks for a `Block::HtmlComment` next to a
         // `Block::Table`, so it must run against the promoted variant.  Order and count
@@ -402,11 +418,13 @@ impl ParsedDoc {
         );
 
         debug_assert_eq!(row_origins.len(), lines.len(), "rows and origins drifted");
-        let line_count = source.split('\n').count();
+        let row_count = lines.len();
         Self {
             lines,
             row_origins,
             source: source.into(),
+            line_starts: parse.line_starts,
+            ref_labels,
             source_map,
             blocks,
             real_ranges,
@@ -416,7 +434,7 @@ impl ParsedDoc {
             footnote_anchors,
             visual_rows: RefCell::new(Vec::new()),
             source_lines: OnceCell::new(),
-            inline_maps: (0..line_count).map(|_| OnceCell::new()).collect(),
+            row_cache: (0..row_count).map(|_| OnceCell::new()).collect(),
             reflow_paragraphs,
             // Set by `EditorState::refresh_parsed` once the live reveal is known; a fresh parse
             // starts with no preview split.
@@ -466,14 +484,38 @@ impl ParsedDoc {
     /// 0-based source line containing `byte`, counted in *this parse's* text — the
     /// correct answer when a deferred in-line edit has left the buffer disagreeing.
     ///
-    /// Past-the-end answers the last line.  O(byte), so a caller walking every block in
-    /// order should keep a running count instead.
+    /// Past-the-end answers the last line.
     pub fn byte_to_line(&self, byte: usize) -> usize {
         let upto = byte.min(self.source.len());
-        self.source.as_bytes()[..upto]
-            .iter()
-            .filter(|&&b| b == b'\n')
-            .count()
+        self.line_starts
+            .partition_point(|&s| s <= upto)
+            .saturating_sub(1)
+    }
+
+    /// Byte where source line `line` starts; past the last line, the source's end.
+    pub fn line_start_byte(&self, line: usize) -> usize {
+        self.line_starts
+            .get(line)
+            .copied()
+            .unwrap_or(self.source.len())
+    }
+
+    /// Source line `line`'s text, without its `\n` (a CRLF line keeps its `\r`); `""` past the
+    /// last line.
+    pub fn source_line(&self, line: usize) -> &str {
+        let Some(&start) = self.line_starts.get(line) else {
+            return "";
+        };
+        let end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.source.len(), |&next| next - 1);
+        self.source.get(start..end).unwrap_or("")
+    }
+
+    /// See [`ref_labels`](Self::ref_labels).
+    pub fn ref_labels(&self) -> &RefLabels {
+        &self.ref_labels
     }
 
     /// See [`per_block_own`](Self::per_block_own).
@@ -545,34 +587,21 @@ impl ParsedDoc {
             .any(|info| info.block_idx == block_idx)
     }
 
-    // ── Inline column map cache ────────────────────────────────────────────
+    // ── Row column map cache ──────────────────────────────────────────────
 
-    /// Lazily-built bidirectional char-column map for `buffer_line_idx`, built from
-    /// `raw_line` on the first call for that index.
-    ///
-    /// **Contract:** `raw_line` must be the canonical content for `buffer_line_idx` in the
-    /// *current* generation.  The cache is keyed only by index, so non-canonical text
-    /// returns a stale map silently — and initializing an entry with it poisons that entry
-    /// for every later, correct caller.
-    ///
-    /// A caller deriving `(buffer_line_idx, raw_line)` from block byte ranges cannot
-    /// guarantee canonicality (ranges starting mid-line, sub-rows past a block's raw line
-    /// count), and must go through `EditorState::inline_map_for`, which verifies the pair
-    /// against the live buffer and serves an uncached map on mismatch.
-    pub fn inline_map(&self, buffer_line_idx: usize, raw_line: &str) -> &InlineColMap {
-        debug_assert!(
-            buffer_line_idx < self.inline_maps.len(),
-            "InlineColMap: buffer_line_idx {buffer_line_idx} out of bounds ({})",
-            self.inline_maps.len()
-        );
-        let cell = &self.inline_maps[buffer_line_idx];
-        let map = cell.get_or_init(|| InlineColMap::build(raw_line));
-        debug_assert_eq!(
-            raw_line.chars().count(),
-            map.raw_len(),
-            "InlineColMap: raw_line char count mismatch for buffer line {buffer_line_idx}"
-        );
-        map
+    /// Row `row`'s column data, built with `init` on first use.  See
+    /// [`row_cache`](Self::row_cache).  `None` past the last row, or where `init` is.
+    pub(crate) fn row_cache_or_init(
+        &self,
+        row: usize,
+        init: impl FnOnce() -> Option<RowCache>,
+    ) -> Option<&RowCache> {
+        let cell = self.row_cache.get(row)?;
+        if let Some(cache) = cell.get() {
+            return Some(cache);
+        }
+        let cache = init()?;
+        Some(cell.get_or_init(|| cache))
     }
 
     // ── Visual-row cache (rendered) ───────────────────────────────────────
@@ -750,6 +779,25 @@ fn merge_trailing_tui_columns_comments(
             continue;
         }
         i += 1;
+    }
+}
+
+/// Every footnote definition's label in `blocks`, containers included.
+fn collect_footnote_labels<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
+    for block in blocks {
+        match block {
+            Block::FootnoteDefinition { label, blocks, .. } => {
+                out.push(label);
+                collect_footnote_labels(blocks, out);
+            }
+            Block::BlockQuote { blocks, .. } => collect_footnote_labels(blocks, out),
+            Block::List { items, .. } => {
+                for item in items {
+                    collect_footnote_labels(&item.blocks, out);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

@@ -6,7 +6,7 @@ The one hot path in edamame is the eager, full-document work an edit triggers. T
 
 Every line-crossing edit — and every deferred flush of an in-line typing burst — calls `EditorState::refresh_parsed()`, which rebuilds the whole document:
 
-1. **Parse.** One pulldown-cmark pass (`markdown::parser::parse_raw_with_ranges`) yielding the AST *and* top-level byte ranges together.
+1. **Parse.** One pulldown-cmark pass (`markdown::parser::parse_document`) yielding the AST *and* top-level byte ranges together.
 2. **Post-passes.** List blank annotation, image/diagram/comment promotion.
 3. **Render.** Every top-level block to styled `Vec<Line<'static>>` (`Renderer::render_with_counts_cached`), memoized per block.
 4. **Derive.** `SourceMap`, heading/footnote anchors, blank-line virtual blocks.

@@ -645,15 +645,16 @@ fn footnotes_render_in_place_not_only_at_end() {
 // ── Code-block column geometry ───────────────────────────────────────────────
 
 /// Anti-drift pin between the renderer's literal pad (`format!(" {:<width$}",
-/// …)`) and `markdown::code_layout`, which the cursor indicator, the
-/// selection overlay and the mouse hit-test all map columns through.  If the
-/// renderer's prefix ever changes, this fails rather than silently putting
-/// the cursor beside its character again (issue #28).
+/// …)`) and the `rendered_col` its row origin records, which the cursor
+/// indicator, the selection overlay and the mouse hit-test all map columns
+/// through (`document::row_map`).  If the renderer's prefix ever changes
+/// without its origin, this fails rather than silently putting the cursor
+/// beside its character again (issue #28).
 ///
 /// **Both** of `code_body_row`'s branches are exercised, because they build
 /// the row two different ways: an unhighlighted line is one `format!`-padded
 /// span, a highlighted one is a hand-assembled span list that re-derives the
-/// pad from `code_layout::CODE_PAD_COLS` and re-slices the text per token.
+/// pad from `renderer::CODE_PAD_COLS` and re-slices the text per token.
 /// The comments on `code_body_row` name this test as the thing that fails if
 /// the two drift, so it has to actually reach the tokenized path — with
 /// highlighting off, the multi-span branch is never entered at all.  The
@@ -661,9 +662,11 @@ fn footnotes_render_in_place_not_only_at_end() {
 /// from syntect as byte offsets, so a conversion slip inside `highlight`
 /// shifts every column after the first non-ASCII character.
 #[test]
-fn code_block_render_agrees_with_code_layout_column_map() {
-    use edamame::markdown::code_layout::code_raw_col_to_rendered_col;
+fn code_block_render_agrees_with_its_row_origins() {
+    use edamame::document::row_map::{raw_to_rendered_col, RawPos};
+    use edamame::document::ParsedDoc;
 
+    let theme = Box::leak(Box::new(Theme::default()));
     for (md, raw_line, fenced) in [
         ("```rust\nlet x = 1;\n```\n", "let x = 1;", true),
         ("Intro.\n\n    let x = 1;\n", "    let x = 1;", false),
@@ -681,33 +684,55 @@ fn code_block_render_agrees_with_code_layout_column_map() {
             true,
         ),
     ] {
-        // Highlighting is off in `render` and on in `render_highlighted`;
-        // run every case through both, so the plain cases pin the untokenized
-        // branch and the tokenized ones pin both.
-        for (mode, lines) in [
-            ("plain", render(md)),
-            ("highlighted", render_highlighted(md)),
-        ] {
+        warm_fence_languages(md);
+        // Run every case with highlighting off and on, so the plain cases pin
+        // the untokenized branch and the tokenized ones pin both.
+        for highlighting in [false, true] {
+            let doc = ParsedDoc::build_with_overrides(
+                md,
+                theme,
+                true,
+                24,
+                None,
+                None,
+                false,
+                80,
+                false,
+                highlighting,
+                true,
+                false,
+                None,
+            );
             let needle = raw_line.trim_start();
-            let rendered = lines
+            let idx = doc
+                .lines
                 .iter()
-                .map(line_text)
-                .find(|t| t.contains(needle))
-                .unwrap_or_else(|| panic!("code body row must render ({mode})"));
-            let rendered_chars: Vec<char> = rendered.chars().collect();
+                .position(|l| line_text(l).contains(needle))
+                .unwrap_or_else(|| panic!("code body row must render ({highlighting})"));
+            let rendered_chars: Vec<char> = line_text(&doc.lines[idx]).chars().collect();
+            let byte = doc.source_map.original_byte_for_rendered_line(idx).unwrap();
+            let block = doc.source_map.block_for_byte(byte).unwrap();
+            let row = idx - doc.source_map.rendered_lines_for_block(block).start;
+            // An indented block's range starts past the indent it strips, and the
+            // block's first line counts from there.
+            let (line, lead) = if fenced { (1, 0) } else { (0, 4) };
 
             for (raw_col, expected) in raw_line.chars().enumerate() {
                 // Columns inside an indented block's stripped indent have no
                 // rendered cell of their own; they collapse onto the first.
-                if !fenced && raw_col < 4 {
+                if raw_col < lead {
                     continue;
                 }
-                let col = code_raw_col_to_rendered_col(raw_line, fenced, raw_col);
+                let pos = RawPos {
+                    line,
+                    col: raw_col - lead,
+                };
+                let col = raw_to_rendered_col(&doc, block, row, pos).unwrap();
                 assert_eq!(
                     rendered_chars.get(col).copied(),
                     Some(expected),
-                    "{mode}: raw col {raw_col} of {raw_line:?} should render at col {col}, \
-                     rendered row is {rendered:?}",
+                    "highlighting {highlighting}: raw col {raw_col} of {raw_line:?} should \
+                     render at col {col}, rendered row is {rendered_chars:?}",
                 );
             }
         }

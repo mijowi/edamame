@@ -1,6 +1,13 @@
 # Nested paragraph reflow — extending reflow to list items, blockquotes, and beyond
 
-Status: **DESIGN (2026-09-08).** Not yet scheduled. Follow-on to
+Status: **SUPERSEDED (2026-10-06)** by [`row-provenance.md`](row-provenance.md) except for its
+consumer work. §A (nested ranges) landed as row-provenance Phase 1, and §B–§C (per-line metadata,
+prefix-aware mapping) as Phases 2–4, generalized beyond reflow. What remains — `Flow` origins for
+list-item, quote and footnote paragraphs, `EffectiveRows` splicing one flow inside a multi-row
+block, the reveal re-drawing container chrome on stacked raw lines, and the battery in
+[Testing](#testing) — is row-provenance Phase 7, which deletes this doc when it lands.
+
+Original status: **DESIGN (2026-09-08).** Not yet scheduled. Follow-on to
 [`paragraph-reflow.md`](paragraph-reflow.md), which landed reflow for **top-level paragraphs only**
 (phase 5, 2026-09-07) and deferred nested blocks as future work. This doc records why the deferral
 was principled and what a correct extension actually requires, so the analysis exists before the

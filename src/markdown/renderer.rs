@@ -15,13 +15,17 @@ use crate::config::Theme;
 
 use self::util::{link_fallback, link_style_for};
 use super::ast::{inlines_to_plain, to_u32, Block, Inline, MetadataKind, SrcLines};
-use super::code_layout;
 use super::highlight::{self, Token};
 use super::render_cache::{is_cache_worthy, CachedRows, RenderCache, RenderSettings};
 use super::row_origin::{ContentKind, RowOrigin, RowSink};
 use super::table_layout::str_cells;
 
 const IMAGE_PREFIX: &str = "Image: ";
+
+/// Cells the renderer puts to the left of a code body line's first character — the leading
+/// space in `format!(" {:<width$}", …)`.  Recorded as the row's `rendered_col`, which is how the
+/// cursor indicator, the overlays and the mouse hit-test learn it.
+pub const CODE_PAD_COLS: usize = 1;
 
 /// Aspect-aware row count for an image block, keyed by URL and by **ordinal**
 /// — the 0-based index of the block among the document's image blocks, in
@@ -719,22 +723,21 @@ impl<'t> Renderer<'t> {
     /// lets an unknown language, a switched-off setting and an over-cap block
     /// share the pre-feature snapshots.
     ///
-    /// The leading space is [`code_layout::CODE_PAD_COLS`]; the cursor
-    /// indicator, overlays and the mouse hit-test map columns through that
-    /// module, so prefix and constant must agree
-    /// (`code_block_render_agrees_with_code_layout_column_map` catches drift).
+    /// The leading space is [`CODE_PAD_COLS`], which the row's origin records
+    /// as its `rendered_col`, so prefix and constant must agree
+    /// (`code_block_render_agrees_with_its_row_origins` catches drift).
     /// Extra spans don't disturb the mapping: `line_render` flattens spans to
     /// `(char, style)` pairs.
     fn code_body_row(&self, text: &str, tokens: &[Token], block_width: usize) -> Line<'static> {
         let base = self.theme.code_block_text;
-        let pad_to = block_width.saturating_sub(code_layout::CODE_PAD_COLS);
+        let pad_to = block_width.saturating_sub(CODE_PAD_COLS);
         if tokens.is_empty() {
             return Line::styled(format!(" {text:<pad_to$}"), base);
         }
 
         let chars: Vec<char> = text.chars().collect();
         let mut spans: Vec<Span<'static>> = Vec::with_capacity(tokens.len() * 2 + 2);
-        spans.push(Span::styled(" ".repeat(code_layout::CODE_PAD_COLS), base));
+        spans.push(Span::styled(" ".repeat(CODE_PAD_COLS), base));
 
         let run = |from: usize, to: usize| -> String { chars[from..to].iter().collect() };
         let mut col = 0usize;
@@ -803,7 +806,7 @@ impl<'t> Renderer<'t> {
                 Some(c) => RowOrigin::content(
                     line..line.saturating_add(1),
                     c.saturating_add(to_u32(chunk_start)),
-                    to_u32(code_layout::CODE_PAD_COLS),
+                    to_u32(CODE_PAD_COLS),
                     ContentKind::Verbatim,
                 ),
                 None => RowOrigin::chrome(Some(line)),
@@ -1900,7 +1903,7 @@ mod tests {
 
     #[test]
     fn highlighting_does_not_change_the_text_or_the_row_count() {
-        // `code_layout`'s column geometry is a property of the characters, not
+        // A code row's column geometry is a property of the characters, not
         // the spans, so text and row count must survive highlighting.
         let src = "```rust\nfn main() {}\nlet x = 1;\n```\n";
         let plain = render(src);

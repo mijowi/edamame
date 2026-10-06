@@ -1,6 +1,6 @@
 # Row provenance — the renderer records where each row came from
 
-Status: **IN PROGRESS (2026-10-05)** — Phases 0–3 done; 4–7 open. Targeted at the next release, which ships every phase together, nested reflow included. Supersedes the discarded `list-row-mapping` patch (see [Phase 0](#phase-0--discard-the-patch-keep-its-tests)) and absorbs [`nested-reflow.md`](nested-reflow.md) as this plan's Phase 7. Sibling context: [`editing-model.md`](../editing-model.md), [`input.md`](../input.md), [`blockquotes.md`](../blockquotes.md), [`tables.md`](../tables.md).
+Status: **IN PROGRESS (2026-10-06)** — Phases 0–4 done; 5–7 open. Targeted at the next release, which ships every phase together, nested reflow included. Supersedes the discarded `list-row-mapping` patch (see [Phase 0](#phase-0--discard-the-patch-keep-its-tests)) and absorbs [`nested-reflow.md`](nested-reflow.md) as this plan's Phase 7. Sibling context: [`editing-model.md`](../editing-model.md), [`input.md`](../input.md), [`blockquotes.md`](../blockquotes.md), [`tables.md`](../tables.md).
 
 ## Problem
 
@@ -69,8 +69,8 @@ pub struct RowOrigin {
 pub enum ColOrigin {
     /// No column relation to the source: fence label, closing-fence placeholder, table border,
     /// horizontal rule, a marker-only row, a big-H1 glyph row, an image's reserved rows, a
-    /// blank row between blocks.  The whole row washes; a click lands at the row's first line's
-    /// `content_col`, or at char 0 of that line where it is `None`.
+    /// blank row between blocks.  A selection washes the whole row; a click lands at the row's first line's
+    /// `content_col`, or where it is `None` at the leaf's nearest one (Phase 4 review).
     Chrome,
     /// Content starting at raw char `raw_col` and rendered cell `rendered_col`; the part before
     /// both is prefix (bar, marker, indent, pad cell).
@@ -90,7 +90,7 @@ pub enum ContentKind {
     /// i.e. each line in `lines` sliced past its `content_col`, joined by `\n` (soft breaks
     /// render as spaces).  A raw char index into that text converts back to `(line, col)` by
     /// walking the slices.  For a top-level paragraph every `content_col` is 0, so this is
-    /// exactly today's block-wide map.  (Unsafe as written: see the Phase 2 notes.)
+    /// exactly today's block-wide map.  (Unsafe as written; Phase 4 maps line by line first.)
     Flow,
 }
 ```
@@ -135,7 +135,8 @@ A new `document::row_map` owns every question the consumers ask, answered from `
 
 - `row_for_line(block, line) -> usize`: the first row whose lines reach `L` (`lines.end > L`), else the last row that shows a line. This is the same prefix-sum rule `sub_lines_in_block` encoded: a line rendering no row (an interior blank, a setext underline, a bare `-`) shares the next line's row, and an interior line of a multi-line `Flow` row lands on that row.
 - `line_for_row(block, row) -> usize`: the row's `lines.start`, or, for `None`, the nearest owned line above. This is the inverse the discarded `raw_lines_by_sub_row` reconstructed.
-- `raw_to_rendered_col(row, raw_col) -> Option<usize>` and `rendered_to_raw_col(row, rendered_col) -> usize`: one `match` on `ColOrigin`. Inside the prefix, both clamp to the content start. `raw_to_rendered_col` returns `None` where the inline map can't place a column, so the overlay skips instead of painting off by N. For a `Flow` row the raw side is a `(line, col)` pair, not a bare column.
+- `raw_to_rendered_col(row, raw_col) -> Option<usize>` and `rendered_to_raw_col(row, rendered_col) -> usize`: one `match` on `ColOrigin`. Inside the prefix, both align the rendered prefix with the raw one from the right (see the Phase 4 notes). `raw_to_rendered_col` returns `None` where the inline map can't place a column, so a selection skips instead of painting off by N (a search match takes the one-for-one guess; Phase 4 review). For a `Flow` row the raw side is a `(line, col)` pair, not a bare column.
+- `row_for_pos(block, pos) -> usize`: the cursor's row. `row_for_line`'s, unless that row is chrome and a later row showing the line places the column exactly (a marker on a row of its own, `- - a`); added in the Phase 4 review.
 - `reveals(row) -> bool`.
 
 Every consumer calls these; none of them branches on block kind to pick a mapping.
@@ -182,7 +183,7 @@ The uncommitted `list-row-mapping` patch fixed real bugs (code nested in list it
 3. Add the case the review found, which the patch also gets wrong: a loose list inside a blockquote (`> - a\n>\n> - b\n>\n> tail`) puts every row below it off.
 4. Leave out the tests of the patch's internals (`code_lines`, `list_lines`, `quote_blanks`, `raw_lines_by_sub_row`). They are gone with the patch. The agreement test's seed corpus is instead the sources of the behavioral tests that commit `0c65503` added (listed under [Phase 2](#phase-2--the-renderer-emits-roworigin-m)).
 
-The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src tests` shows what's left. It holds tests for Phase 4. Phases 1, 2, 5, 6 and 7 are refactors or new work with no failing behavior on HEAD, so their done criteria are spelled out per phase below instead.
+The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src tests` shows what's left. It held tests for Phases 3 and 4, and is empty since Phase 4 landed. Phases 1, 2, 5, 6 and 7 are refactors or new work with no failing behavior on HEAD, so their done criteria are spelled out per phase below instead.
 
 ### Phase 1 — positions in the AST (M) — done
 
@@ -260,7 +261,7 @@ The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src te
 - **Multi-line rows outside reflow are `Flow`:** a list item's or setext heading's text spanning several lines, and a paragraph segment that runs onto the tail of a multi-line code span.
 - **The setext H2 rule** is emitted for every *top-level* setext H2, multi-line ones included, so the reveal has a row for the underline as it does under an H1. A nested setext H2 still gets none. That differs from HEAD, whose `detect_setext` gave a multi-line H2 no rule and missed `Foo\n   ---` and `#tag\n---`, both of which pulldown-cmark parses as setext. `detect_setext` is gone: `RenderedView` asks the AST (`Block::is_setext_heading`), so the view and the renderer can't disagree about which blocks have a rule row. A renderer-level test that pinned "no rule from the renderer" was updated to the new contract.
 - **Footnote continuation indent is in cells.** A definition's continuation lines align under its text by the leader's cell width, where HEAD counted chars, so `[^日本]: a\n    b` indents two cells further than before. It's an alignment fix, and the only other output change in Phase 2.
-- **Finding for Phase 4: `InlineColMap` over a slice is fragile.** Built on its own, a sliced line reading `2. a` parses as a list item, and a flow joined by `\n` turns a lazy `===` continuation into a setext underline. Neither was so in the document, so the §2 `Flow` definition (lines joined by `\n`) is unsafe as written. `InlineColMap` also doesn't model smart punctuation collapsing a run (`---` → `—`). The agreement test works around all three (a leading word pins paragraph context, flows are mapped line by line, smart-punctuation runs are skipped); `row_map`'s column functions need a real answer.
+- **Finding for Phase 4 (resolved there, see its notes): `InlineColMap` over a slice is fragile.** Built on its own, a sliced line reading `2. a` parses as a list item, and a flow joined by `\n` turns a lazy `===` continuation into a setext underline. Neither was so in the document, so the §2 `Flow` definition (lines joined by `\n`) is unsafe as written. `InlineColMap` also doesn't model smart punctuation collapsing a run (`---` → `—`). The agreement test works around all three (a leading word pins paragraph context, flows are mapped line by line, smart-punctuation runs are skipped); `row_map`'s column functions need a real answer.
 
 ### Phase 3 — row consumers and the rendering decisions (M) — done
 
@@ -306,7 +307,7 @@ What remains is mostly the recording itself, plus `Block` growing from 80 to 112
 - **The revealed cursor row paints the cursor's own line**, not the line its origin names. The two differ when the cursor's line renders no row (an interior blank, the second text line of a multi-line setext heading) and so shares the next line's row. `RenderedView`'s setext arm, `revealed_raw_row_count` and the click mapping all use the cursor's line on that row (`editor::state::cursor_raw_line`). Every other row reads its line through `line_for_row`.
 - **Link reference definitions inside a quote render nothing**, as at top level. The quote's gap-fill would have given each one a blank row, since no child covers it. The parser lists them in `BlockQuote::hidden`.
 
-### Phase 4 — column consumers (M)
+### Phase 4 — column consumers (M) — done
 
 - Switch the cursor indicator, overlay painter, and click column to `row_map`'s column pair, and the reveal gate to `reveals`. That includes the top-level `Flow` arm `rendered_sub_line_to_offset` carries today.
 - Delete `code_layout`'s sniffers, `list_layout`'s marker sniffers, and the per-kind arms. That includes the "code arm must precede the list arm" ordering invariant, which stops existing.
@@ -315,6 +316,32 @@ What remains is mostly the recording itself, plus `Block` growing from 80 to 112
   - the suite is green, with every `row-provenance: phase 4` test un-ignored and passing;
   - the round-trip proptest passes;
   - `grep -n 'raw_list_marker_char_width\|rendered_list_marker_char_width\|code_indent_strip_chars\|line_allows_raw_reveal' -r src` finds no definitions.
+
+**Implementation notes (2026-10-06).** `document::row_map` gained `RawPos`, `rendered_to_raw_col`, `raw_to_rendered_col`, `raw_to_rendered_col_near` and `reveals`; the click (`coord::rendered_sub_line_to_offset`), the cursor indicator (`RenderedView`), the overlay painter (`paint_byte_range_overlay`) and `revealed_raw_row_count` call them. `code_layout` and `list_layout` are deleted outright (`CODE_PAD_COLS` moved to `renderer`), as are `EditorState::inline_map_for`, `ParsedDoc::inline_map` and the per-buffer-line map cache: maps are now built from the parse's own text and cached per row (`ParsedDoc::row_cache_or_init`), so a non-canonical `(line, text)` pair can't poison them. The round-trip proptest is in `tests/row_provenance.rs` (corpus, fixtures and 64 generated cases, four variants each; 5,000 cases in a stress run). Deviations and findings:
+
+- **The prefix maps right-aligned, not clamped.** §3 says both directions clamp inside the prefix to the content start. Clicks can't: a task box (`[ ] ` against `- [ ] `), a footnote leader (`  1.  ` against `[^1]: `, the back-link hit-test) and a list marker are hit by mapping the rendered prefix onto the raw one from the right, as `list_layout`'s inverse marker map did, and five existing tests pin it. Indentation stands for nothing and lands past itself (on the marker, or on a continuation line's content, as `click_on_a_nested_items_continuation_lands_on_clicked_char` wants); a code row's pad cell lands on the content start. The alignment's anchor is the content column less any spaces the raw prefix ends in beyond the rendered prefix's, or a marker padded out to its content (`1.  foo`, `-   foo`) would meet a padding space instead of its glyph. The inverse is right-aligned too, so the pre-reveal indicator for a cursor on `#` or `-` sits on the rendered prefix, not on the content, and the round trip is exact.
+- **`Flow` columns: line by line first, then joined.** Each line's slice past its content column gets its own map, the maps' spans joined by one space; if that doesn't render exactly what the row shows (an inline spanning a break, `*a⏎b*`), one map over the slices joined by `\n` is tried; if neither fits, the row has no exact map. A break's space maps to the end of the line it ends. Every slice is mapped through the new `InlineColMap::build_inline`, which prefixes a word so a slice reading `2. a`, `# b` or an indent parses as the paragraph text it was (the agreement test's trick, promoted).
+- **`InlineColMap` models smart punctuation now.** `...` → `…`, `--` → `–`, `---` → `—` each map one glyph to its run's first char, so a line holding one has an exact map. Without it, "`None` → the overlay skips" would have dropped the selection highlight on every prose line containing an ellipsis, where HEAD painted 1:1.
+- **Columns on a block's first line count from its range start**, in `RawPos` as everywhere else: an indented code block's range starts past its indent, and `raw_block_cursor`, the click and the overlay all slice the block from there. `row_map` converts to the origins' line columns internally.
+- **An overlay reaching a row's first char paints its prefix** (the marker, the bar), as the list path did for a line selection; one covering the row's last char paints the whole content even where no map places the end. A `Verbatim` row's prefix (the pad cell) stays unpainted, as before. Chrome rows wash whole, as fence rows did.
+- **Kept on the old paths, by design:** tables (Phase 5 — rows and columns still from glyph classification and pipes; a click on a pipe-less border row now maps one-for-one, clamped, where it went through the generic inline map), diagram reveals (Phase 6 — the overlay maps a diagram's rows one-for-one onto their source lines, as before), the stacked reveal of a reflowed paragraph, and the revealed cursor row (raw text, raw wrap).
+- **Preview never reveals.** `is_revealed_cursor_row` now checks the mode: in Preview the cursor's row took the revealed-row shortcut and a click on it mapped against raw text. The reflowed-paragraph arm was the only one that had checked.
+- **Behavior changes:** frontmatter body rows and raw HTML rows no longer de-render (they are `Verbatim`; same text either way, settled for HTML in Phase 2); a big-H1's glyph rows and other chrome rows wash whole under a selection or yank of their line, but a search match or `:s` preview leaves them alone; a click on a chrome row lands on its line's content start (a rule's first `-`), or on a line that is all chrome on its leaf's nearest content column (see the second review).
+
+**Review follow-ups (2026-10-06).**
+
+- **References resolve.** Each map parses one line, with no definitions in scope, so a reference link (`[a][r]`, `[r]`) read as literal brackets and its row had no exact map: overlays painted nothing on such a line, where HEAD painted 1:1. The parse now hands back the link definitions' labels (`parse_document`), `ParsedDoc` adds the footnote definitions', and `InlineColMap::build_inline` resolves against both (`RefLabels`), so an undefined `[^x]` stays literal and a defined one collapses. Labels match lowercased, which misses a fold-specific letter (`ss` against `ß`); such a row just has no exact map.
+- **ATX closing sequences** (`## Title ##`) are stripped from a heading row's slice (`strip_atx_closing`). HEAD mapped these exactly.
+- **Coverage is asserted.** The round trip requires every `Inline` / `Flow` row to have an exact map, the generator now produces reference links, footnote references, smart punctuation, entities, escapes and closing sequences, and `clicking_where_the_cursor_shows_keeps_it_there` runs the round trip through `mouse_ops` and `RenderedView` at two widths. Known exceptions: a row continuing a multi-line code span, whose later line keeps as much indent as pulldown-cmark decides; and display math nested in a container, which isn't promoted and renders its formula on one row, newlines and all, which no inline map reproduces (a rendering issue, open).
+- **The cursor's row is chosen by position** (`row_for_pos`). The end-to-end test found that a line whose marker renders on a row of its own (`- - a`, `- > q`, `- # H`) put the cursor on that bare marker row whatever its column, and a click there landed on the content start, so clicking where the cursor showed moved it. A Phase 3 gutter test pinned the old row; its `- - a` cursor expectation moved to the row below.
+- **Line lookups are indexed.** `row_map` reads lines through `ParsedDoc`'s line-start index (kept from the parse, which builds it anyway; `byte_to_line` uses it too), and the overlay painter through that index and the rope, so neither scans the block, and the painter no longer copies the whole buffer per call.
+
+**Second review (2026-10-06).**
+
+- **Smart punctuation beside `==`.** A text run holding both a literal `==` and a `...` took the highlight-marker path, which didn't collapse the run, so the row had no exact map. `push_text` now walks the text and the raw slice in lockstep, skipping a highlight pair's markers on both sides and collapsing each run.
+- **A search match on an unmapped row shows.** A selection still skips such a row's interior, but a match the user jumped to took the same skip and showed nowhere, where HEAD painted it one for one. It now shows at the one-for-one guess, as wide as its text, kept inside the row (`paint::Overlay::Match`, which also leaves chrome rows alone).
+- **A chrome row's click lands past the container prefix.** On a line that is all chrome (a fence, a setext underline) it took char 0, the item's indent or the quote's `>`; it now takes the nearest content column of the same leaf, below first, then above.
+- **Per-row cache.** `row_map` keeps each row's chars and its block's position beside its column map (`row_map::RowCache`), so a column question no longer collects the row's text or looks up its block's first line each time. The round-trip proptest went from 19 s to 5 s at 256 cases in a debug build, and runs 64 cases (2 s).
 
 ### Phase 5 — tables (S–M)
 
@@ -352,6 +379,8 @@ What remains is mostly the recording itself, plus `Block` growing from 80 to 112
 **Done when:** the battery in `nested-reflow.md` § Testing is written as tests and passes. Its round-trips, reveal re-prefixing and gutter cases come from there; its range-scan and generalization items are already covered by Phases 1 and 2. In addition, the agreement and round-trip proptests pass with reflow on over the full generator.
 
 ### Phase 8 — docs (S, alongside each phase)
+
+Done for Phase 4: `editing-model.md` (the column bullet, the code-row and `Verbatim` reveal bullets replacing the `code_layout` ones), `frontmatter.md`, `input.md`, `search-replace.md`, the AGENTS.md project structure and layer list, and `nested-reflow.md` marked superseded except for Phase 7's consumer work. Benchmarks were not re-run for Phase 4.
 
 `editing-model.md` loses most of its "must agree / never re-derive" bullets and gains one on `RowOrigin` being the only mapping. Also update `input.md`, `blockquotes.md`, `tables.md`, the AGENTS.md project structure (`document/row_map.rs`, `tests/row_provenance.rs`; `code_layout`/`list_layout` shrink or go), `performance.md` (re-run the M3 pipeline benches after Phases 1 and 2), and the user-facing `docs/editing.md` for any rendering change.
 

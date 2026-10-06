@@ -17,16 +17,26 @@
 #[path = "support/markdown_gen.rs"]
 mod markdown_gen;
 
+use std::time::Instant;
+
+use crossterm::event::KeyModifiers;
 use proptest::prelude::*;
+use ratatui::backend::TestBackend;
+use ratatui::style::{Color, Style};
 use ratatui::text::Line;
+use ratatui::Terminal;
 
 use edamame::config::Theme;
-use edamame::document::ParsedDoc;
+use edamame::document::{row_map, Buffer, ParsedDoc};
+use edamame::editor::{mouse_ops, EditorState, Mode};
+use edamame::input::MouseAction;
 use edamame::markdown::ast::ListItem;
 use edamame::markdown::table_layout::{char_cells, rendered_pipe_cells, wrap_cell};
 use edamame::markdown::{
-    inlines_to_plain, Block, ColOrigin, ContentKind, Inline, InlineColMap, RowOrigin, SrcLines,
+    inlines_to_plain, strip_atx_closing, Block, ColOrigin, ContentKind, Inline, InlineColMap,
+    RefLabels, RowOrigin, SrcLines,
 };
+use edamame::ui::{RenderedView, RenderedViewState};
 
 fn theme() -> &'static Theme {
     Box::leak(Box::new(Theme::default()))
@@ -266,20 +276,25 @@ fn check_doc(doc: &ParsedDoc) -> Result<(), String> {
                         Some(stripped) if leaf_continues => stripped.to_owned(),
                         _ => slice,
                     };
+                    // An ATX heading's closing sequence renders nothing.
+                    let atx = real.and_then(|b| leaf_at(b, l)).is_some_and(|b| {
+                        matches!(b, Block::Heading { .. }) && !b.is_setext_heading()
+                    });
+                    let slice = if atx {
+                        strip_atx_closing(&slice).to_owned()
+                    } else {
+                        slice
+                    };
                     slices.push(slice);
                 }
-                // `InlineColMap` doesn't model smart punctuation collapsing a run (`---` → `—`,
-                // `...` → `…`), nor tell an undefined `[^x]`, which the row shows literally, from
-                // a reference it narrows to the `[x]` marker, so it can't vouch for such a row's
-                // length.  Nor does it render an image's `[Image: …]` placeholder.
-                let smart = |t: &String| t.contains("--") || t.contains("...");
-                if slices.iter().any(smart) || content.contains("[^") || content.contains("[Image:")
-                {
+                // `InlineColMap` doesn't render an image's `[Image: …]` placeholder.
+                if content.contains("[Image:") {
                     continue;
                 }
+                let labels = doc.ref_labels();
                 let shown: Vec<char> = content.chars().collect();
                 if atomic_tail {
-                    if let Err(e) = check_alnum_sequence(&slices.join("\n"), &shown) {
+                    if let Err(e) = check_alnum_sequence(&slices.join("\n"), &shown, labels) {
                         return err(e);
                     }
                     continue;
@@ -287,8 +302,10 @@ fn check_doc(doc: &ParsedDoc) -> Result<(), String> {
                 // Joined, an inline spanning a break (`*a⏎b*`) maps as the document parses it;
                 // line by line, a continuation that joining would turn into block syntax does.
                 // A flow must agree with the row one way or the other.
-                if let Err(line_by_line) = check_slices(&slices, &shown) {
-                    if slices.len() == 1 || check_slices(&[slices.join("\n")], &shown).is_err() {
+                if let Err(line_by_line) = check_slices(&slices, &shown, labels) {
+                    if slices.len() == 1
+                        || check_slices(&[slices.join("\n")], &shown, labels).is_err()
+                    {
                         return err(line_by_line);
                     }
                 }
@@ -361,23 +378,23 @@ fn check_doc(doc: &ParsedDoc) -> Result<(), String> {
 }
 
 /// `slices`, each mapped by its own `InlineColMap` and joined by one space, render exactly the
-/// row's `shown` content, every letter or digit onto the same letter or digit.
-fn check_slices(slices: &[String], shown: &[char]) -> Result<(), String> {
+/// row's `shown` content, every letter or digit onto the same letter or digit.  Maps are built
+/// as paragraph text (a slice reading `2. a` or `# b` would otherwise parse as a block
+/// construct), resolving the document's references.
+fn check_slices(slices: &[String], shown: &[char], labels: &RefLabels) -> Result<(), String> {
     let mut offset = 0usize;
     for (i, text) in slices.iter().enumerate() {
         if i > 0 {
             offset += 1;
         }
-        // Built on its own, a slice reading `2. a` or `# b` parses as a block construct; a
-        // leading word pins it to paragraph text, as it was.
-        let map = InlineColMap::build(&format!("a {text}"));
-        let len = map.rendered_len().saturating_sub(2);
+        let map = InlineColMap::build_inline(text, labels);
+        let len = map.rendered_len();
         let raw: Vec<char> = text.chars().collect();
         for k in 0..len {
             let Some(&ch) = shown.get(offset + k) else {
                 return Err(format!("the row is shorter than {slices:?} renders"));
             };
-            let at = map.rendered_to_raw_vec()[k + 2].saturating_sub(2);
+            let at = map.rendered_to_raw_vec()[k];
             // Letters and digits only: punctuation is the renderer's to substitute (smart
             // quotes, an image's `[Image: …]` placeholder), and the length check covers it.
             if ch.is_alphanumeric() && raw.get(at) != Some(&ch) {
@@ -397,15 +414,14 @@ fn check_slices(slices: &[String], shown: &[char]) -> Result<(), String> {
 
 /// `text`, mapped by one `InlineColMap`, renders the same letters and digits in the same order
 /// as the row's `shown` content, wherever its whitespace falls.
-fn check_alnum_sequence(text: &str, shown: &[char]) -> Result<(), String> {
-    let map = InlineColMap::build(&format!("a {text}"));
+fn check_alnum_sequence(text: &str, shown: &[char], labels: &RefLabels) -> Result<(), String> {
+    let map = InlineColMap::build_inline(text, labels);
     let raw: Vec<char> = text.chars().collect();
     let rendered: String = map
         .rendered_to_raw_vec()
         .iter()
         .take(map.rendered_len())
-        .skip(2)
-        .filter_map(|&at| raw.get(at.saturating_sub(2)))
+        .filter_map(|&at| raw.get(at))
         .filter(|c| c.is_alphanumeric())
         .collect();
     let shown: String = shown.iter().filter(|c| c.is_alphanumeric()).collect();
@@ -462,6 +478,18 @@ const CORPUS: &[&str] = &[
     "Title\nmore\n=====\n\nSub\nmore\n---\n",
     // A task box opening a setext heading is the heading's text.
     "- [ ] a\n  ---\n- [x] b\n",
+    // References resolve against the document's definitions (case-insensitively); an undefined
+    // one stays literal.
+    "see [it][r] now, [R] and [R][] [no]\n\n[r]: /u\n",
+    "a [^x] b[^n]\n\n[^N]: note\n",
+    // A closing sequence renders nothing.
+    "## Title ##\n\n# T #\n\n> ## Q ##\n\n- # H #\n",
+    // Smart punctuation, entities, escapes, an autolink.
+    "a -- b... c---d\n\na &amp; b &copy; \\* <http://x.y>\n",
+    // Smart punctuation beside a literal `==` and a highlight pair.
+    "x == y... and a ==hi== b...\n",
+    // Fences whose rows are all chrome, nested where char 0 is a container prefix.
+    "- a\n\n  ```rust\n  x\n  ```\n\n> - ```\n>   y\n>   ```\n",
 ];
 
 #[test]
@@ -533,12 +561,251 @@ fn a_setext_h2_rule_shows_its_underline() {
     assert_eq!(doc.row_origins()[1], RowOrigin::chrome(Some(1)));
 }
 
+/// The column round trip (Phase 4) over every rendered char of every row of one parse: a click
+/// on char `r` puts the cursor at `pos`, and the cursor indicator for `pos` lands on a char a
+/// click on which puts the cursor at `pos` again, so clicking where the cursor shows never moves
+/// it.  Where the row places `pos` exactly and `r` is content, that char is `r` itself, unless
+/// `r` shows the same position as the char before it (the fill past a code line, a back-link):
+/// every content char round-trips to the cell it was clicked on.  And every inline row *has* an
+/// exact map, or its overlays would paint nothing: a row without one is a construct the per-line
+/// maps misread.  Known exceptions: an image's `[Image: …]` placeholder; display math nested in
+/// a container, which isn't promoted and shows its formula on one row, newlines and all; and a
+/// row continuing a multi-line atomic inline (a code span), which keeps as much of the later
+/// line's indent as pulldown-cmark decides (the agreement test checks such a row by its letters
+/// and digits).  Tables map through their own cell
+/// geometry until Phase 5 and are skipped.
+fn check_round_trip(doc: &ParsedDoc) -> Result<(), String> {
+    for (abs, (line, origin)) in doc.lines.iter().zip(doc.row_origins()).enumerate() {
+        if matches!(
+            origin.cols,
+            ColOrigin::Content {
+                kind: ContentKind::TableRow { .. },
+                ..
+            }
+        ) {
+            continue;
+        }
+        let Some(block) = doc
+            .source_map
+            .original_byte_for_rendered_line(abs)
+            .and_then(|b| doc.source_map.block_for_byte(b))
+        else {
+            return Err(format!("row {abs} has no block"));
+        };
+        let row = abs - doc.source_map.rendered_lines_for_block(block).start;
+        let chars = row_chars(line);
+        let n = chars.len();
+        // Where the content starts; a prefix char (a marker, a bar, a pad cell) may stand for a
+        // raw char it can't be the only one showing.
+        let start = match origin.cols {
+            ColOrigin::Content { rendered_col, .. } => {
+                n - chars_from_cell(&chars, rendered_col as usize).map_or(0, <[char]>::len)
+            }
+            ColOrigin::Chrome => n,
+        };
+        let click = |r: usize| row_map::rendered_to_raw_col(doc, block, row, r);
+        if let ColOrigin::Content {
+            kind: ContentKind::Inline | ContentKind::Flow,
+            ..
+        } = origin.cols
+        {
+            let shown: String = chars[start..].iter().collect();
+            let real = doc
+                .source_map
+                .original_range_for_block(block)
+                .and_then(|r| doc.real_block_for_byte(r.start));
+            let atomic_tail = origin.lines.clone().is_some_and(|ls| {
+                (ls.start + 1..ls.end).any(|l| {
+                    real.and_then(|b| src_lines_at(b, l))
+                        .is_some_and(|s| s.col((l - s.first) as usize).is_none())
+                })
+            });
+            if !atomic_tail
+                && !shown.contains("[Image:")
+                && !shown.contains("$$")
+                && row_map::raw_to_rendered_col(doc, block, row, click(start)).is_none()
+            {
+                return Err(format!("row {abs} {origin:?} {shown:?} has no exact map"));
+            }
+        }
+        for r in 0..=n {
+            let pos = click(r);
+            let near = row_map::raw_to_rendered_col_near(doc, block, row, pos);
+            let err = |msg: String| {
+                Err(format!(
+                    "row {abs} {origin:?} {:?}, char {r} → {pos:?}: {msg}",
+                    chars.iter().collect::<String>()
+                ))
+            };
+            if click(near) != pos {
+                return err(format!(
+                    "the indicator sits on char {near}, which clicks to {:?}",
+                    click(near)
+                ));
+            }
+            let Some(exact) = row_map::raw_to_rendered_col(doc, block, row, pos) else {
+                continue;
+            };
+            if exact != near {
+                return err(format!("exactly {exact}, near {near}"));
+            }
+            if exact != r && (start..n).contains(&r) && (r == start || click(r - 1) != pos) {
+                return err(format!("maps back to char {exact}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn round_trip(src: &str) -> Result<(), String> {
+    for v in VARIANTS {
+        check_round_trip(&build_variant(src, v)).map_err(|e| format!("{v:?}: {e}\nin {src:?}"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn columns_round_trip_on_the_corpus() {
+    for src in CORPUS {
+        round_trip(src).unwrap();
+    }
+    for fixture in ["general.md", "syntax.md"] {
+        let src = std::fs::read_to_string(format!(
+            "{}/tests/fixtures/{fixture}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        round_trip(&src).unwrap();
+    }
+}
+
+/// The round trip through the real paths: `mouse_ops`' click (wrap, then `row_map`) and
+/// `RenderedView`'s cursor indicator (`row_map`, then wrap), on a terminal `width` cells wide.
+/// For every cell of every painted row and one past its text, a click puts the cursor somewhere,
+/// and a click on the cell where the indicator then shows leaves it there.  The cursor's row
+/// stays rendered (the reveal delay is kept running), which is the case `row_map` maps; a click
+/// that edits the document (a task box) is skipped.
+fn check_click_and_paint(src: &str, width: u16) -> Result<(), String> {
+    const HEIGHT: u16 = 40;
+    let cursor_style = Style::default()
+        .fg(Color::Rgb(1, 2, 3))
+        .bg(Color::Rgb(4, 5, 6));
+    let fresh = || {
+        let mut st = EditorState::new(Buffer::from_str(src), theme());
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(usize::from(width));
+        st
+    };
+    let paint = |st: &mut EditorState| {
+        st.cursor_block_entered_at = Some(Instant::now());
+        let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: st,
+                    theme: theme(),
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let click = |st: &mut EditorState, col: u16, row: u16| {
+        st.cursor_block_entered_at = Some(Instant::now());
+        let action = MouseAction::Click {
+            col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        mouse_ops::apply(
+            st,
+            action,
+            &mut None,
+            &[],
+            usize::from(HEIGHT),
+            usize::from(width),
+        );
+        st.cursor.offset
+    };
+
+    let base = paint(&mut fresh());
+    for y in 0..HEIGHT {
+        let symbols: Vec<String> = (0..width)
+            .map(|x| {
+                base.cell((x, y))
+                    .map_or(String::new(), |c| c.symbol().to_owned())
+            })
+            .collect();
+        let Some(last) = symbols.iter().rposition(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        for x in 0..=(last as u16 + 1).min(width - 1) {
+            let mut st = fresh();
+            let at = click(&mut st, x, y);
+            if st.buffer.contents() != src {
+                continue;
+            }
+            let painted = paint(&mut st);
+            let indicator = (0..HEIGHT)
+                .flat_map(|cy| (0..width).map(move |cx| (cx, cy)))
+                .find(|&cell| {
+                    painted.cell(cell).is_some_and(|c| {
+                        c.fg == cursor_style.fg.unwrap() && c.bg == cursor_style.bg.unwrap()
+                    })
+                });
+            let Some((cx, cy)) = indicator else {
+                return Err(format!(
+                    "a click on ({x}, {y}) put the cursor at {at}, shown nowhere"
+                ));
+            };
+            let again = click(&mut st, cx, cy);
+            if again != at {
+                return Err(format!(
+                    "a click on ({x}, {y}) put the cursor at {at}; it shows on ({cx}, {cy}), \
+                     which clicks to {again}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`check_click_and_paint`] over the corpus, wide and wrapping.  Footnotes are left out: a
+/// click on a reference or a definition's leader follows it rather than placing the cursor.
+#[test]
+fn clicking_where_the_cursor_shows_keeps_it_there() {
+    for src in CORPUS.iter().filter(|s| !s.contains("[^")) {
+        for width in [40, 12] {
+            check_click_and_paint(src, width)
+                .unwrap_or_else(|e| panic!("width {width}: {e}\nin {src:?}"));
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
     fn origins_agree_with_the_rendered_rows(src in markdown_gen::document()) {
         if let Err(e) = check(&src) {
+            prop_assert!(false, "{}", e);
+        }
+    }
+}
+
+proptest! {
+    // Every rendered char of every row, four variants each: a case costs far more than the
+    // agreement test's, and the corpus above pins the shapes that matter.
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn columns_round_trip(src in markdown_gen::document()) {
+        if let Err(e) = round_trip(&src) {
             prop_assert!(false, "{}", e);
         }
     }

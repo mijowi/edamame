@@ -1,6 +1,8 @@
 //! A proptest generator of nested Markdown documents: paragraphs (with lazy continuation lines,
-//! hard breaks, wide characters, inline math, and emphasis, links or images broken across
-//! lines), headings, fenced and indented code (mermaid included), display math, raw HTML and
+//! hard breaks, wide characters, inline math, reference links and footnote references, smart
+//! punctuation, entities and escapes, and emphasis, links or images broken across lines),
+//! headings (ATX ones with or without a closing sequence), fenced and indented code (mermaid
+//! included), display math, raw HTML and
 //! comments, rules, tables (some with cells long enough to wrap), footnote definitions,
 //! blockquotes (with or without a space after `>`), and tight, loose or task lists with every
 //! marker style and start number, nested in one another.  No tabs: pulldown-cmark starts content
@@ -26,6 +28,8 @@ pub enum Gen {
     Atx {
         level: usize,
         text: String,
+        /// Whether the heading ends in a closing sequence (`## text ##`).
+        closing: bool,
     },
     Setext {
         text: String,
@@ -89,6 +93,12 @@ fn word() -> impl Strategy<Value = String> {
         2 => "[a-z]{1,4}".prop_map(|w| format!("`{w}`")),
         1 => "[日本語中文]{1,3}",
         1 => "[a-z]{1,3}".prop_map(|w| format!("${w}$")),
+        // `[r]` is defined at the end of every document; a footnote label is defined only when
+        // a footnote block happens to use it.
+        1 => "[a-z]{1,3}".prop_map(|w| format!("[{w}][r]")),
+        1 => "[a-z]{1,3}".prop_map(|w| format!("[^{w}]")),
+        1 => prop::sample::select(vec!["a--b", "c...", "d---e", "&amp;", "x\\*y"])
+            .prop_map(str::to_owned),
     ]
 }
 
@@ -114,7 +124,8 @@ fn leaf() -> impl Strategy<Value = Gen> {
                 lines: wrap_across_breaks(lines),
                 lazy,
             }),
-        1 => (1usize..4, text_line()).prop_map(|(level, text)| Gen::Atx { level, text }),
+        1 => (1usize..4, text_line(), any::<bool>())
+            .prop_map(|(level, text, closing)| Gen::Atx { level, text, closing }),
         1 => (text_line(), any::<bool>()).prop_map(|(text, h1)| Gen::Setext { text, h1 }),
         2 => (
             prop::option::of(prop_oneof![4 => "[a-z]{1,4}", 1 => Just("mermaid".to_owned())]),
@@ -246,6 +257,7 @@ pub fn document() -> impl Strategy<Value = String> {
                 out.push('\n');
             }
         }
+        out.push_str("\n[r]: /u\n");
         out
     })
 }
@@ -255,7 +267,19 @@ impl Gen {
     pub fn lines(&self) -> Vec<String> {
         match self {
             Gen::Para { lines, .. } => lines.clone(),
-            Gen::Atx { level, text } => vec![format!("{} {text}", "#".repeat(*level))],
+            Gen::Atx {
+                level,
+                text,
+                closing,
+            } => {
+                let hashes = "#".repeat(*level);
+                let close = if *closing {
+                    format!(" {hashes}")
+                } else {
+                    String::new()
+                };
+                vec![format!("{hashes} {text}{close}")]
+            }
             Gen::Setext { text, h1 } => {
                 vec![text.clone(), if *h1 { "===" } else { "---" }.to_owned()]
             }

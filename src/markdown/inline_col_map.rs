@@ -1,4 +1,62 @@
-use pulldown_cmark::{Event, Options, Parser};
+use std::collections::HashSet;
+
+use pulldown_cmark::{BrokenLink, CowStr, Event, Options, Parser};
+
+/// The labels a document defines, so a map built over one line of it resolves `[text][label]`
+/// and `[^label]` the way the document's own parse did: a line parsed alone has no definitions
+/// in scope, so every reference on it would otherwise read as literal brackets.
+#[derive(Debug, Clone, Default)]
+pub struct RefLabels {
+    links: HashSet<String>,
+    footnotes: HashSet<String>,
+}
+
+impl RefLabels {
+    pub fn new<'a>(
+        links: impl IntoIterator<Item = &'a str>,
+        footnotes: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        Self {
+            links: links.into_iter().map(normalize_label).collect(),
+            footnotes: footnotes.into_iter().map(normalize_label).collect(),
+        }
+    }
+
+    fn has_link(&self, label: &str) -> bool {
+        self.links.contains(&normalize_label(label))
+    }
+
+    fn has_footnote(&self, label: &str) -> bool {
+        self.footnotes.contains(&normalize_label(label))
+    }
+}
+
+/// A label as CommonMark matches it: case-insensitive, whitespace runs collapsed.  (Lowercasing
+/// stands in for Unicode case folding; a label differing only in a fold-specific letter such as
+/// `ß` misses, and its row just has no exact map.)
+fn normalize_label(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// An ATX heading's content without its optional closing sequence (`## Title ##` → `Title `):
+/// a run of `#` at the end, after a space or tab or making up the whole content, and trailing
+/// spaces.  The renderer shows neither, so a heading row's map is built over what this leaves.
+pub fn strip_atx_closing(content: &str) -> &str {
+    let trimmed = content.trim_end_matches([' ', '\t']);
+    let before = trimmed.trim_end_matches('#');
+    if before.len() == trimmed.len() {
+        return content;
+    }
+    if before.is_empty() || before.ends_with([' ', '\t']) {
+        before
+    } else {
+        content
+    }
+}
 
 /// Bidirectional character-column map between raw Markdown source and its rendered
 /// (inline-markup-collapsed) form for a single line.
@@ -16,6 +74,12 @@ pub struct InlineColMap {
 
 impl InlineColMap {
     pub fn build(raw_line: &str) -> Self {
+        Self::build_with(raw_line, None)
+    }
+
+    /// [`build`](Self::build), resolving references against `labels` when given.  Without
+    /// them every `[^label]` collapses to a marker and no `[text][label]` resolves.
+    fn build_with(raw_line: &str, labels: Option<&RefLabels>) -> Self {
         let raw_len = raw_line.chars().count();
         let mut walk = CharMapWalk::new(raw_line);
 
@@ -25,26 +89,59 @@ impl InlineColMap {
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_SMART_PUNCTUATION;
 
-        for (event, range) in Parser::new_ext(raw_line, opts).into_offset_iter() {
+        // A reference the document defines resolves to an empty destination: only its text
+        // renders, so the destination never matters.
+        let resolve = |link: BrokenLink<'_>| {
+            labels
+                .filter(|l| l.has_link(&link.reference))
+                .map(|_| (CowStr::Borrowed(""), CowStr::Borrowed("")))
+        };
+        let parser = Parser::new_with_broken_link_callback(raw_line, opts, Some(resolve));
+        for (event, range) in parser.into_offset_iter() {
             match event {
-                Event::Text(_) => walk.push_text(raw_line, range),
+                Event::Text(text) => walk.push_text(raw_line, range, &text),
                 Event::Code(s) => walk.push_code(raw_line, &s, range),
                 Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
                 // The renderer shows inline HTML as its text, except a lone comment.
                 Event::InlineHtml(s)
                     if !crate::markdown::parser::post_pass::is_html_comment_only(&s) =>
                 {
-                    walk.push_text(raw_line, range)
+                    let raw = raw_line.get(range.clone()).unwrap_or("");
+                    walk.push_text(raw_line, range, raw)
                 }
                 // No `FootnoteReference` arm: built per line, there is no definition in scope, so
                 // pulldown emits `[^label]` as literal `Text`.  `collapse_footnote_refs` then
-                // narrows those entries to the renderer's `[label]` marker width.
+                // narrows the defined ones' entries to the renderer's `[label]` marker width.
                 _ => {}
             }
         }
 
         let mut rendered_to_raw = walk.finish();
-        collapse_footnote_refs(raw_line, &mut rendered_to_raw);
+        collapse_footnote_refs(raw_line, labels, &mut rendered_to_raw);
+        Self::from_forward(rendered_to_raw, raw_len)
+    }
+
+    /// A map over `text` read as inline content *inside* a paragraph: a line's text past its
+    /// content column, which on its own could parse as block syntax it wasn't in the document
+    /// (`2. a` as a list item, `# b` as a heading, an indent as code).  A leading word pins it to
+    /// paragraph text, and its entries are dropped again.  References resolve against the
+    /// document's `labels`.
+    pub fn build_inline(text: &str, labels: &RefLabels) -> Self {
+        const PIN: &str = "a ";
+        let pinned = Self::build_with(&format!("{PIN}{text}"), Some(labels));
+        let pin = PIN.len();
+        let forward = pinned
+            .rendered_to_raw
+            .iter()
+            .filter(|&&raw| raw >= pin)
+            .map(|&raw| raw - pin)
+            .collect();
+        Self::from_forward(forward, pinned.raw_len.saturating_sub(pin))
+    }
+
+    /// The map from its forward half: `rendered_to_raw[k]` is rendered char `k`'s raw char, and
+    /// its last entry is the end sentinel `raw_len`.
+    fn from_forward(rendered_to_raw: Vec<usize>, raw_len: usize) -> Self {
         let rendered_len = rendered_to_raw.len().saturating_sub(1);
 
         // Inverse map: raw char idx -> rendered char idx.
@@ -154,23 +251,34 @@ impl CharMapWalk {
         byte
     }
 
-    fn push_text(&mut self, raw_line: &str, range: std::ops::Range<usize>) {
+    /// A text run `text` that pulldown-cmark read from `raw_line[range]`, walked in lockstep with
+    /// the raw slice.  The two differ where smart punctuation collapsed a run (`...` → `…`,
+    /// `--` → `–`, `---` → `—`): each glyph maps to its run's first char, and the rest of the run
+    /// is skipped like a marker.  A `==highlight==` pair's markers, which pulldown-cmark leaves
+    /// in the text and the renderer drops, are skipped on both sides.
+    fn push_text(&mut self, raw_line: &str, range: std::ops::Range<usize>, text: &str) {
         let slice_end = range.end.min(raw_line.len());
-        let raw_slice = &raw_line[range.start..slice_end];
-        let mut byte = range.start;
-        let mut rest = raw_slice;
-        while let Some(start) = rest.find("==") {
-            let after_open = &rest[start + 2..];
-            let Some(rel_end) = after_open.find("==") else {
-                break;
+        let raw_slice = raw_line.get(range.start..slice_end).unwrap_or("");
+        let mut marks = highlight_marks(raw_slice).into_iter().peekable();
+        let mut at = 0usize;
+        let mut chars = text.chars();
+        while let Some(ch) = chars.next() {
+            if marks.next_if_eq(&at).is_some() {
+                // `ch` is the marker's first `=`; drop its second too.
+                chars.next();
+                at += 2;
+                continue;
+            }
+            let rest = raw_slice.get(at..).unwrap_or("");
+            let run = match ch {
+                '…' if rest.starts_with("...") => 3,
+                '—' if rest.starts_with("---") => 3,
+                '–' if rest.starts_with("--") => 2,
+                _ => rest.chars().next().map_or(0, char::len_utf8),
             };
-            byte = self.push_chars(&rest[..start], byte);
-            byte += 2; // skip opening ==
-            byte = self.push_chars(&after_open[..rel_end], byte);
-            byte += 2; // skip closing ==
-            rest = &after_open[rel_end + 2..];
+            self.map.push(self.lookup(range.start + at));
+            at += run;
         }
-        self.push_chars(rest, byte);
     }
 
     fn push_code(&mut self, raw_line: &str, inner: &str, range: std::ops::Range<usize>) {
@@ -201,6 +309,21 @@ impl CharMapWalk {
     }
 }
 
+/// Byte offsets in `raw` of each `==` that opens or closes a highlight: pairs, each opener
+/// taking the next `==` past it as its closer; an unpaired `==` is literal text.
+fn highlight_marks(raw: &str) -> Vec<usize> {
+    let mut marks = Vec::new();
+    let mut from = 0usize;
+    while let Some(open) = raw[from..].find("==").map(|i| from + i) {
+        let Some(close) = raw[open + 2..].find("==").map(|i| open + 2 + i) else {
+            break;
+        };
+        marks.extend([open, close]);
+        from = close + 2;
+    }
+    marks
+}
+
 // ── Footnote-reference collapse ───────────────────────────────────────────────
 
 /// Collapse every literal `[^label]` in `raw_line` down to the renderer's `[label]` marker, in
@@ -213,8 +336,12 @@ impl CharMapWalk {
 /// Adjacent references fuse (`[^1][^2]` → `[1,2]`, one marker), so each abutting reference also
 /// loses its `[`.  The entry surviving at that position is the previous reference's `]`, which is
 /// what the rendered comma points at.
-fn collapse_footnote_refs(raw_line: &str, rendered_to_raw: &mut Vec<usize>) {
-    let dropped = footnote_collapse_char_indices(raw_line);
+fn collapse_footnote_refs(
+    raw_line: &str,
+    labels: Option<&RefLabels>,
+    rendered_to_raw: &mut Vec<usize>,
+) {
+    let dropped = footnote_collapse_char_indices(raw_line, labels);
     if dropped.is_empty() {
         return;
     }
@@ -225,13 +352,12 @@ fn collapse_footnote_refs(raw_line: &str, rendered_to_raw: &mut Vec<usize>) {
 /// the `[` of each reference abutting the previous one.  Definition leaders (`[^label]:`) collapse
 /// the same way, mirroring `footnote_edit::scan`'s recognition rule.
 ///
-/// **The scan is deliberately definition-blind**, so it collapses an undefined `[^x]` that
-/// pulldown leaves as literal text.  On a line mixing the two the map runs short, `rendered_len`
-/// disagrees with the renderer, and `raw_to_rendered_checked` declines so the caller falls back to
-/// 1:1 — degraded precision, never a panic.  Fixing it would mean threading the document's
-/// definition set into `build`, whose only input today is the line's own bytes (which is what makes
-/// it cacheable).  `undefined_reference_falls_back_to_1_1` pins the fallback.
-fn footnote_collapse_char_indices(raw_line: &str) -> Vec<usize> {
+/// With `labels`, only a reference the document defines collapses; an undefined `[^x]` renders
+/// literally, as pulldown leaves it.  Without them the scan is definition-blind, so on a line
+/// holding an undefined reference the map runs short, `rendered_len` disagrees with the renderer,
+/// and `raw_to_rendered_checked` declines so the caller falls back to 1:1 — degraded precision,
+/// never a panic.  `undefined_reference_falls_back_to_1_1` pins that fallback.
+fn footnote_collapse_char_indices(raw_line: &str, labels: Option<&RefLabels>) -> Vec<usize> {
     let bytes = raw_line.as_bytes();
     let mut dropped = Vec::new();
     // Byte just past the previous reference's `]`, so an abutting `[` is found by equality.
@@ -244,7 +370,8 @@ fn footnote_collapse_char_indices(raw_line: &str) -> Vec<usize> {
             while j < bytes.len() && bytes[j] != b']' && bytes[j] != b'\n' {
                 j += 1;
             }
-            if j < bytes.len() && bytes[j] == b']' && j > i + 2 {
+            let defined = || labels.is_none_or(|l| l.has_footnote(&raw_line[i + 2..j]));
+            if j < bytes.len() && bytes[j] == b']' && j > i + 2 && defined() {
                 dropped.push(char_idx + 1);
                 if prev_end == Some(i) {
                     dropped.push(char_idx);
@@ -264,6 +391,62 @@ fn footnote_collapse_char_indices(raw_line: &str) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slice read on its own as block syntax (`2. a`, `# b`, an indent) maps as the paragraph
+    /// text it was in the document.
+    #[test]
+    fn build_inline_reads_a_slice_as_paragraph_text() {
+        for (text, rendered) in [
+            ("2. a", 4),
+            ("# b *c*", 5),
+            ("    x", 5),
+            ("> q", 3),
+            ("", 0),
+        ] {
+            let map = InlineColMap::build_inline(text, &RefLabels::default());
+            assert_eq!(map.rendered_len(), rendered, "{text:?}");
+            assert_eq!(map.raw_len(), text.chars().count(), "{text:?}");
+        }
+        let map = InlineColMap::build_inline("# b *c*", &RefLabels::default());
+        assert_eq!(map.rendered_to_raw(4), 5, "the `c` past its `*`");
+        assert_eq!(map.raw_to_rendered(0), 0);
+    }
+
+    /// A reference the document defines renders as its text, as in the document; an undefined
+    /// one stays literal.  Labels match case-insensitively, whitespace collapsed.
+    #[test]
+    fn build_inline_resolves_the_documents_references() {
+        let labels = RefLabels::new(["Ref  One"], ["n"]);
+        for (text, rendered) in [
+            ("see [it][ref one] now", 10),
+            ("see [ref one] now", 15),
+            ("see [it][nope] now", 18),
+            ("x[^N] y", 6),
+            ("x[^z] y", 7),
+        ] {
+            let map = InlineColMap::build_inline(text, &labels);
+            assert_eq!(map.rendered_len(), rendered, "{text:?}");
+        }
+        let map = InlineColMap::build_inline("see [it][ref one] now", &labels);
+        assert_eq!(map.rendered_to_raw(4), 5, "the `i` past the `[`");
+        assert_eq!(map.rendered_to_raw(7), 18, "the `n` past the label");
+    }
+
+    #[test]
+    fn strip_atx_closing_drops_only_a_closing_sequence() {
+        for (content, stripped) in [
+            ("Title ##", "Title "),
+            ("Title #  ", "Title "),
+            ("Title\t#", "Title\t"),
+            ("##", ""),
+            ("C#", "C#"),
+            ("foo \\#", "foo \\#"),
+            ("Title", "Title"),
+            ("Title  ", "Title  "),
+        ] {
+            assert_eq!(strip_atx_closing(content), stripped, "{content:?}");
+        }
+    }
 
     /// Inline HTML renders as its text, so it maps like text; a lone comment renders nothing.
     #[test]
@@ -460,26 +643,43 @@ mod tests {
         assert_eq!(map.raw_to_rendered(4), 0);
     }
 
-    /// The walker advances over the raw bytes of a multi-char smart-punctuation substitution
-    /// (`...` → `…`), not the substituted glyph, so the counts diverge and callers fall back to
-    /// 1:1.  Teaching the walker to consume the glyph would flip this assertion — update the test
-    /// and drop the fallback then.
+    /// A multi-char smart-punctuation substitution (`...` → `…`) renders one glyph for its run, so
+    /// the counts agree with the renderer's.
     #[test]
-    fn multi_char_smart_punct_triggers_checked_fallback() {
-        for (raw, actual_rendered) in [
-            ("hello...", 6), // "hello…"
-            ("a---b", 3),    // "a—b"
-            ("a--b", 3),     // "a–b"
+    fn multi_char_smart_punct_maps_each_glyph_to_its_run() {
+        for (raw, rendered, glyph_raw) in [
+            ("hello...", 6, 5), // "hello…"
+            ("a---b", 3, 1),    // "a—b"
+            ("a--b", 3, 1),     // "a–b"
         ] {
             let map = InlineColMap::build(raw);
+            assert_eq!(map.rendered_len(), rendered, "{raw:?}");
             assert_eq!(
-                map.raw_to_rendered_checked(0, actual_rendered),
-                None,
-                "smart-punct in {raw:?}: expected fallback (None) but walker matched",
+                map.raw_to_rendered(glyph_raw),
+                glyph_raw,
+                "{raw:?}: the run's first char"
             );
-            // Unchecked must still produce a value rather than panic.
-            let _ = map.raw_to_rendered(0);
+            // The rest of the run is skipped like a marker.
+            assert_eq!(map.raw_to_rendered(glyph_raw + 1), glyph_raw + 1, "{raw:?}");
         }
+        let map = InlineColMap::build("a--b");
+        assert_eq!(map.rendered_to_raw(2), 3, "the `b` past the dash");
+    }
+
+    /// Smart punctuation and `==` in one text run: a lone `==` stays literal, a pair's markers
+    /// render nothing, and the run still collapses either way.
+    #[test]
+    fn smart_punct_collapses_beside_highlight_markers() {
+        // "x == y…"
+        let map = InlineColMap::build("x == y...");
+        assert_eq!(map.rendered_len(), 7);
+        assert_eq!(map.rendered_to_raw(6), 6, "the `…` on its run's first `.`");
+        // "a hi b…"
+        let map = InlineColMap::build("a ==hi== b...");
+        assert_eq!(map.rendered_len(), 7);
+        assert_eq!(map.rendered_to_raw(2), 4, "the `h` past the opening marker");
+        assert_eq!(map.rendered_to_raw(5), 9, "the `b` past the closing marker");
+        assert_eq!(map.rendered_to_raw(6), 10);
     }
 
     /// Curly quotes substitute one char for one, so counts agree and `checked()` accepts the line.

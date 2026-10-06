@@ -325,7 +325,8 @@ mod tests {
     /// An item whose first block starts on its marker line renders the marker on a row of its
     /// own, so that line spans two rows; counting it as one put every number below it a row
     /// high.  The extra row (the fence label, the nested item, the quote) stays unnumbered,
-    /// and the cursor on each line lands on its numbered row.
+    /// and the cursor on each line lands on its numbered row — except where the line's chars
+    /// show only on the row below its marker (`- - a`), where the cursor goes with them.
     #[test]
     fn a_marker_line_opening_a_block_keeps_the_numbers_below_it() {
         for (source, expected) in [
@@ -369,6 +370,12 @@ mod tests {
                 .enumerate()
                 .filter_map(|(row, l)| l.map(|line| (row, line)))
             {
+                // `- - a`: line 0's `•` row shows none of its chars; `  • a` below does.
+                let row = if source.starts_with("- - a") && line == 0 {
+                    1
+                } else {
+                    row
+                };
                 state.cursor.offset = state.buffer.line_to_char(line);
                 state.update_cursor_block();
                 assert_eq!(

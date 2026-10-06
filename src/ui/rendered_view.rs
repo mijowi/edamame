@@ -20,9 +20,8 @@ use super::table_view::{self, TableLayoutSnapshot};
 use self::cell_overlay::{compute_cell_chunk_overlay, compute_wrapped_cell_overlay};
 use self::paint::{
     make_code_styled_body_line, make_raw_line_over, make_raw_line_with_selection, overlay_raw_cell,
-    paint_byte_range_overlay,
+    paint_byte_range_overlay, Overlay,
 };
-use crate::markdown::list_layout::list_raw_col_to_rendered_col;
 
 pub(crate) use self::paint::{
     paint_search_overlays, paint_substitute_preview_overlays, paint_yank_flash,
@@ -147,8 +146,6 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
 
         let is_table = table_edit::is_table_block(&raw_block_source);
-        // In a fenced code block only the fence lines de-render (body rows already render
-        // 1:1); the rule lives in `markdown::code_layout::line_allows_raw_reveal`.
         let cursor_block_ast = editor
             .parsed
             .real_ranges
@@ -181,21 +178,22 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         } else {
             self.theme.normal
         };
-        // Single derivation shared with the mouse hit-test: a click mapped against raw text on
-        // a row the view never revealed lands on the wrong character.
-        let code_block_allows_reveal = crate::markdown::code_layout::line_allows_raw_reveal(
-            cursor_block_ast,
-            cursor_raw_line,
-            &raw_lines,
-        );
-        // The row showing the cursor's source line, asked the way `cursor_rendered_line_idx`
+        // The row showing the cursor's source position, asked the way `cursor_rendered_line_idx`
         // (and the mouse hit-test's revealed-line shortcut) ask it, so all agree on which row
         // shows raw source.
-        let cursor_in_block = crate::document::row_map::row_for_line(
+        let cursor_in_block = crate::document::row_map::row_for_pos(
             &editor.parsed,
             cursor_block_idx,
-            cursor_raw_line,
+            crate::document::row_map::RawPos {
+                line: cursor_raw_line,
+                col: cursor_col,
+            },
         );
+        // Whether that row de-renders: every row but one shown verbatim (a code body), asked of
+        // its origin exactly as the mouse hit-test asks, or a click mapped against raw text on a
+        // row the view never revealed lands on the wrong character.
+        let cursor_row_reveals =
+            crate::document::row_map::reveals(&editor.parsed, cursor_block_idx, cursor_in_block);
         // Data-row cell in a row that wraps: one raw chunk per rendered sub. `None` for
         // non-data and single-sub rows, which the single-line overlays handle.
         let wrapped_cell = if is_table && cursor_raw_line >= 2 {
@@ -594,8 +592,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 } else {
                     rows_used = 1;
                 }
-            } else if reveal_raw && virtual_idx == cursor_rendered_line && code_block_allows_reveal
-            {
+            } else if reveal_raw && virtual_idx == cursor_rendered_line && cursor_row_reveals {
                 let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
                 // Table rows prefer a cell-scoped reveal, keeping borders and neighboring
                 // cells rendered: `compute_cell_overlay` when the raw text fits, else
@@ -672,70 +669,31 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         skip_rows,
                     ) as usize;
                 }
-            } else if virtual_idx == cursor_rendered_line
-                && (!reveal_raw || !code_block_allows_reveal)
-            {
+            } else if virtual_idx == cursor_rendered_line && (!reveal_raw || !cursor_row_reveals) {
                 // Rendered line plus a cursor indicator: the jitter-delay window before
                 // `reveal_raw` (drawing it now avoids a column jump when the reveal fires),
-                // or a code-block body / closing-fence line that never de-renders.
+                // or a row that never de-renders (a code body, frontmatter).
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
-                    // Inline links / code spans shift the rendered column; the inverse of the
-                    // click handler's map keeps the indicator where the click landed. `None`
-                    // for non-paragraph lines.
-                    let inline_col = block_range_for_cursor.as_ref().and_then(|br| {
-                        let actual_rendered: usize =
-                            line.spans.iter().map(|s| s.content.chars().count()).sum();
-                        let buffer_line_idx = editor
-                            .buffer
-                            .block_line_to_buffer_line(br.start, cursor_raw_line);
-                        editor
-                            .inline_map_for(buffer_line_idx, raw_text)
-                            .raw_to_rendered_checked(cursor_col, actual_rendered)
-                    });
+                    // Where a click on that char would have put the cursor, inverted: the row's
+                    // origin says how its columns relate to the cursor's line.
                     let visual_col = if let Some(w) = &wrapped_cell {
                         w.visual_col
                     } else if is_table {
                         // Padded cells shift the column; land on the same visual col the cell
                         // overlay will use on reveal.
+                        let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
                         table_raw_col_to_rendered_col(raw_text, line, cursor_col)
                             .unwrap_or(cursor_col)
-                    } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) =
-                        cursor_block_ast
-                    {
-                        // Body rows never de-render, so this is the steady state: the renderer
-                        // paints raw text behind one pad cell (minus the stripped indent for an
-                        // indented block) — without the shift the indicator sits one cell LEFT
-                        // on every code line (issue #28). Fence rows reveal within
-                        // `RAW_REVEAL_DELAY`, so stay 1:1. This arm precedes the list arm on
-                        // purpose: a code line reading `- foo` must not be claimed by the
-                        // list-marker sniff.
-                        if crate::markdown::code_layout::is_code_fence_row(
-                            *fenced,
-                            cursor_raw_line,
-                            &raw_lines,
-                        ) {
-                            cursor_col
-                        } else {
-                            crate::markdown::code_layout::code_raw_col_to_rendered_col(
-                                raw_text, *fenced, cursor_col,
-                            )
-                        }
-                    } else if matches!(
-                        cursor_block_ast,
-                        Some(crate::markdown::Block::MetadataBlock { .. })
-                    ) {
-                        // Verbatim, so raw col == rendered col. Precedes the list sniff: a YAML
-                        // sequence entry (`  - tag`) reads as a list marker.
-                        cursor_col
-                    } else if let Some(col) =
-                        list_raw_col_to_rendered_col(raw_text, line, cursor_col)
-                    {
-                        col
-                    } else if let Some(col) = inline_col {
-                        col
                     } else {
-                        cursor_col
+                        crate::document::row_map::raw_to_rendered_col_near(
+                            &editor.parsed,
+                            cursor_block_idx,
+                            cursor_in_block,
+                            crate::document::row_map::RawPos {
+                                line: cursor_raw_line,
+                                col: cursor_col,
+                            },
+                        )
                     };
                     let (rows, cursor_cell) = render_line_reporting_cursor(
                         line,
@@ -774,7 +732,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 let reflow_revealed = reveal_raw && in_cursor_block && effective.has_reveal();
                 // Separate suppression cases; clippy's collapse hides which is which.
                 #[allow(clippy::nonminimal_bool)]
-                if !(reveal_raw && virtual_idx == cursor_rendered_line && code_block_allows_reveal)
+                if !(reveal_raw && virtual_idx == cursor_rendered_line && cursor_row_reveals)
                     && !setext_revealed
                     && !diagram_revealed
                     && !wrapped_revealed
@@ -791,6 +749,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         sa,
                         sb,
                         self.theme.selection,
+                        Overlay::Selection,
                     );
                 }
             }

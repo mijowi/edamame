@@ -2084,7 +2084,6 @@ fn rendered_view_code_block_cursor_indicator_sits_on_its_char() {
 /// and layout, and only gains the cursor indicator — on the char it is on, past the pad cell
 /// and the item indent pulldown-cmark stripped.
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
     use edamame::document::Buffer;
     use edamame::editor::EditorState;
@@ -2142,7 +2141,6 @@ fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
 /// and the stripped item indent, and finds the row's source line past the blank line that
 /// renders no row (a 1:1 lookup washed the line above).
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
     use edamame::document::{Buffer, Selection};
     use edamame::editor::EditorState;
@@ -2196,7 +2194,6 @@ fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
 /// renders below the line's own row, which the trailing blank the block's range absorbs used to
 /// claim, so nothing was washed.
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn rendered_view_selection_on_a_last_items_nested_item_covers_it() {
     use edamame::document::{Buffer, Selection};
     use edamame::editor::EditorState;
@@ -2246,7 +2243,6 @@ fn rendered_view_selection_on_a_last_items_nested_item_covers_it() {
 /// source's; mapping it 1:1 washed the cells two to the left of the match.  The third level's
 /// six-space indent would parse as an indented code block on its own, so the map must not.
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn rendered_view_selection_on_a_nested_items_continuation_covers_it() {
     use edamame::document::{Buffer, Selection};
     use edamame::editor::EditorState;

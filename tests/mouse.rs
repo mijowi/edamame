@@ -1892,7 +1892,6 @@ fn click_on_code_nested_in_list_item_lands_on_clicked_line() {
 /// than the source's; the generic prefix inference couldn't place it, so clicks landed two
 /// chars right of the target.
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn click_on_a_nested_items_continuation_lands_on_clicked_char() {
     let src = "- a\n  - b\n    soft word\n";
     // Rendered rows: 0 = "• a", 1 = "    • b", 2 = "      soft word".
@@ -1916,7 +1915,6 @@ fn click_on_a_nested_items_continuation_lands_on_clicked_char() {
 /// A code body row nested in a list item is painted without the item's indent, so a click
 /// must add back the indent pulldown-cmark stripped, as for an indented code block.
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
     // Rendered rows: 0 = "8. Tag it.", 1 = " bash ", 2 = " gh run watch", 3 = blank code
@@ -1950,7 +1948,6 @@ fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
 /// Phase 3 lands every click on its line; the exact column on the code body row (row 2) is a
 /// code row nested in a list item, which is Phase 4's column mapping.
 #[test]
-#[ignore = "row-provenance: phase 4"]
 fn click_below_a_fence_on_a_list_marker_line_lands_on_clicked_line() {
     let src = "- ```bash\n  gh run watch\n  ```\n- next item\n";
     // Rendered rows: 0 = "•", 1 = " bash " label, 2 = " gh run watch", 3 = closing fence,

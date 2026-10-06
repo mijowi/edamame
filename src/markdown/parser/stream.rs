@@ -331,10 +331,10 @@ where
     }
 
     /// Drain the events the parser left unread, so the tracker sees every one, and hand back
-    /// the top-level blocks' byte ranges.
-    pub(super) fn into_ranges(mut self) -> Vec<Range<usize>> {
+    /// the top-level blocks' byte ranges and every source line's starting byte.
+    pub(super) fn into_parts(mut self) -> (Vec<Range<usize>>, Vec<usize>) {
         while self.next().is_some() {}
-        self.ranges.into_ranges()
+        (self.ranges.into_ranges(), self.lines.starts)
     }
 
     /// Range of the event [`next`](Self::next) just returned.  Ask before peeking again: a peek

@@ -660,28 +660,6 @@ impl EditorState {
         self.search = None;
     }
 
-    /// Bidirectional raw↔rendered char-column map for `raw_line`, cached per buffer line.
-    ///
-    /// **The only sanctioned way to reach `ParsedDoc::inline_map`.**  That cache is keyed by index
-    /// alone, so seeding it with text that isn't the canonical content of `buffer_line_idx`
-    /// poisons the entry for every later caller.  A non-matching `raw_line` therefore gets an
-    /// uncached map: correct column math for the caller, canonical cache for everyone else.
-    pub fn inline_map_for(
-        &self,
-        buffer_line_idx: usize,
-        raw_line: &str,
-    ) -> std::borrow::Cow<'_, crate::markdown::InlineColMap> {
-        let canonical = self
-            .buffer
-            .line(buffer_line_idx)
-            .is_some_and(|s| s.trim_end_matches('\n') == raw_line);
-        if canonical {
-            std::borrow::Cow::Borrowed(self.parsed.inline_map(buffer_line_idx, raw_line))
-        } else {
-            std::borrow::Cow::Owned(crate::markdown::InlineColMap::build(raw_line))
-        }
-    }
-
     /// Recompute the search match list if the buffer changed since it was built.
     pub fn ensure_search_fresh(&mut self) {
         let version = self.buffer.version();
@@ -1267,8 +1245,8 @@ fn cursor_sub_line_in_rendered(state: &EditorState, width: usize) -> usize {
 
 /// Rendered-line index where the cursor appears, mirroring `ui::rendered_view`'s own computation
 /// so scroll arithmetic lands on the line the view actually paints: the row
-/// [`row_map::row_for_line`](crate::document::row_map::row_for_line) gives the cursor's source
-/// line, which the view, the mouse hit-test and the gutter all ask the same way.
+/// [`row_map::row_for_pos`](crate::document::row_map::row_for_pos) gives the cursor's source
+/// position, which the view and the mouse hit-test both ask the same way.
 pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
     let cursor_offset = state.cursor.offset;
     let cursor_byte = state.buffer.rope().char_to_byte(cursor_offset);
@@ -1285,11 +1263,15 @@ pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
         return state.scroll;
     }
 
+    let raw = crate::ui::rendered_view::raw_block_cursor(state, cursor_byte);
     cursor_block_lines.start
-        + crate::document::row_map::row_for_line(
+        + crate::document::row_map::row_for_pos(
             &state.parsed,
             cursor_block_idx,
-            cursor_raw_line(state),
+            crate::document::row_map::RawPos {
+                line: raw.raw_line,
+                col: raw.col,
+            },
         )
 }
 
@@ -1310,24 +1292,6 @@ mod tests {
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
-    }
-
-    /// A non-canonical `(index, text)` pair must not poison the per-line `InlineColMap` cache;
-    /// mouse hit-testing can derive one.
-    #[test]
-    fn inline_map_for_does_not_poison_cache_with_noncanonical_text() {
-        let state = EditorState::new(Buffer::from_str("hello **world**\nsecond line\n"), theme());
-
-        // Wrong text for line 1 — must be served by a local map, leaving the cache untouched.
-        let wrong = state.inline_map_for(1, "hello **world**");
-        assert_eq!(wrong.raw_len(), 15);
-
-        let right = state.inline_map_for(1, "second line");
-        assert_eq!(right.raw_len(), 11);
-
-        // Out-of-bounds index must not panic.
-        let oob = state.inline_map_for(99, "anything");
-        assert_eq!(oob.raw_len(), 8);
     }
 
     /// Concatenated text of every non-blank rendered line (skips the phantom trailing row and

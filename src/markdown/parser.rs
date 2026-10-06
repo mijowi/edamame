@@ -17,7 +17,7 @@ use stream::{EventStream, LeafMode};
 
 #[cfg(test)]
 thread_local! {
-    /// Block parses run on this thread: incremented where [`parse_raw_with_ranges`] builds its
+    /// Block parses run on this thread: incremented where [`parse_document`] builds its
     /// `Parser`, so a test can assert one `ParsedDoc::build` is still exactly one pulldown-cmark
     /// pass.  The per-line `InlineColMap` parses and [`parse_raw`] are not the block parse and
     /// don't count.
@@ -55,12 +55,42 @@ pub fn parse_raw(text: &str) -> Vec<Block> {
 /// pipeline — see docs/dev/performance.md.  The same pass records every leaf's
 /// [`SrcLines`] and every container's span.
 pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
+    let parse = parse_document(text);
+    (parse.blocks, parse.ranges)
+}
+
+/// What the editor pipeline's single pulldown-cmark pass yields: [`parse_raw_with_ranges`]'s
+/// blocks and ranges, plus two by-products the pass has anyway.
+pub struct DocParse {
+    pub blocks: Vec<Block>,
+    pub ranges: Vec<Range<usize>>,
+    /// Byte offset of every source line's start (`[0] == 0`): the index the stream built to
+    /// record positions.
+    pub line_starts: Vec<usize>,
+    /// The labels of the document's link reference definitions, as pulldown-cmark keys them.
+    pub link_labels: Vec<String>,
+}
+
+/// [`parse_raw_with_ranges`] with the rest of [`DocParse`].  `ParsedDoc::build`'s entry point.
+pub fn parse_document(text: &str) -> DocParse {
     #[cfg(test)]
     BLOCK_PARSE_COUNT.with(|c| c.set(c.get() + 1));
     let parser = Parser::new_ext(text, parse_offsets::options_for(text));
+    // Definitions are collected by the parser's first pass, before any event is pulled.
+    let link_labels = parser
+        .reference_definitions()
+        .iter()
+        .map(|(label, _)| label.to_owned())
+        .collect();
     let mut events = EventStream::new(text, parser.into_offset_iter());
     let blocks = parse_blocks(&mut events, true);
-    (blocks, events.into_ranges())
+    let (ranges, line_starts) = events.into_parts();
+    DocParse {
+        blocks,
+        ranges,
+        line_starts,
+        link_labels,
+    }
 }
 
 // ─── Block parsing ────────────────────────────────────────────────────────────

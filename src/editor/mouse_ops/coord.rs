@@ -3,10 +3,6 @@ use ratatui::text::Line;
 use crate::document::CellBand;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
-use crate::markdown::list_layout::{
-    list_rendered_col_to_raw_col_marker, raw_list_marker_char_width,
-    rendered_list_marker_char_width,
-};
 use crate::markdown::table_layout;
 use crate::ui::line_render;
 use crate::ui::table_view::HEADER_ROWS;
@@ -265,10 +261,10 @@ fn walk_rendered_rows(
 }
 
 /// Map `(rendered_line_idx, sub_row_within_line, col)` to a buffer char offset: locate the
-/// block, pick the raw source line within it, then map the rendered column to a raw column.
-///
-/// For inline-formatted text the rendered column may diverge slightly from the raw column; the
-/// click lands approximately and the reveal lets the user refine with a second click.
+/// block, resolve the wrap to a rendered char of the row, then ask `row_map` which source
+/// position that char shows.  Rows painted as raw source (the revealed cursor row, a revealed
+/// reflowed paragraph's stacked lines, a diagram's rows) map against the raw line's own wrap
+/// instead, and tables still find their row by classifying its glyphs.
 pub fn rendered_sub_line_to_offset(
     state: &EditorState,
     rendered_line_idx: usize,
@@ -285,183 +281,136 @@ pub fn rendered_sub_line_to_offset(
         .get(block.range.start..block.range.end.min(source.len()))
         .unwrap_or("");
 
-    let is_table = table_edit::is_table_block(block_text);
-    // For tables, the wrap-chunk index of the clicked sub-line within its logical row.
-    let mut table_sub = 0usize;
-    let raw_line_idx = if is_table {
-        let (raw_idx, sub) = table_raw_line_idx(state, &block, block_text);
-        table_sub = sub;
-        raw_idx
-    } else if is_revealed_cursor_row(state, block.idx, rendered_line_idx) {
-        crate::editor::state::cursor_raw_line(state)
-    } else {
-        // The line the clicked row shows, as the renderer recorded it.  An image's reserved
-        // rows all show its one line, so a reserved row never indexes a phantom raw line (which
-        // would poison the inline-map cache for an unrelated buffer line); a diagram's show its
-        // source lines 1:1 below any math-preview band, whose own rows resolve to the first.
-        crate::document::row_map::line_for_row(&state.parsed, block.idx, block.sub_idx)
-    };
-
     // Virtual blank blocks: place the cursor at block start.
     if block_text.is_empty() {
         return state.buffer.rope().byte_to_char(block.range.start);
     }
 
-    // A reflowed paragraph's several source lines collapse into one flow, so `sub_idx` no longer
-    // names a raw source line.  Two shapes: revealed (raw lines shown stacked) and not (one
-    // wrapped rendered flow) — handled separately below.
-    if !is_table && state.parsed.is_reflowed_paragraph_at(block.range.start) {
-        // The stacked-raw reveal only happens in Rendered mode; Preview always shows the flow.
-        let revealed = state.mode == Mode::Rendered
-            && state.cursor_block_revealed()
-            && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state);
-        if revealed {
-            // Revealed: the block shows its raw source lines *stacked*, so `sub_row_within_line`
-            // walks those lines' wrap rows.  Find the raw line and wrap sub it lands on, map the
-            // cell column within that raw line, and resolve to a buffer offset via the raw line's
-            // buffer position — the same shape as the mermaid / setext reveal paths.
-            let raw_lines = crate::ui::rendered_view::revealed_source_lines(block_text);
-            let mut remaining = sub_row_within_line;
-            let mut chosen = raw_lines.len().saturating_sub(1);
-            let mut wrap_sub = 0usize;
-            for (i, rl) in raw_lines.iter().enumerate() {
-                let n = revealed_raw_rows(rl, viewport_width).0.len().max(1);
-                if remaining < n {
-                    chosen = i;
-                    wrap_sub = remaining;
-                    break;
-                }
-                remaining -= n;
-            }
-            let raw_line_text = raw_lines.get(chosen).copied().unwrap_or("");
-            let (rows, indent) = revealed_raw_rows(raw_line_text, viewport_width);
-            let sub = wrap_sub.min(rows.len().saturating_sub(1));
-            let rowr = rows.get(sub).copied().unwrap_or((0, 0, 0));
-            let (start, end, _) = rowr;
-            let is_last_row = sub + 1 == rows.len();
-            let max_in_row = line_render::last_col_in_row(rowr, is_last_row);
-            let row_indent = if sub == 0 { 0 } else { indent };
-            let row_chars = raw_line_text.chars().skip(start).take(end - start);
-            let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
-            let raw_col = (start + in_row).min(max_in_row);
-            let first_buf_line = state.buffer.rope().byte_to_line(block.range.start);
-            let target = (first_buf_line + chosen).min(state.buffer.line_count().saturating_sub(1));
-            return (state.buffer.line_to_char(target) + raw_col).min(buffer_len);
-        }
-        // Not revealed: the block is one wrapped rendered flow.  Resolve the wrap with
-        // `click_to_rendered_char_idx`, then turn that rendered column into a raw char through the
-        // block-wide inline collapse map (soft breaks → spaces, the collapse owned in
-        // `InlineColMap`); the raw char is a char offset into the block.  `col` is a cell column,
-        // which `click_to_rendered_char_idx` folds in, so this stays correct across wide glyphs.
-        let content = block_text.strip_suffix('\n').unwrap_or(block_text);
-        let rendered_line = &state.parsed.lines[rendered_line_idx];
-        let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
-            .spans
-            .iter()
-            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
-            .collect();
-        let rendered_idx = click_to_rendered_char_idx(
-            rendered_line,
-            &rendered_chars,
-            col,
+    if table_edit::is_table_block(block_text) {
+        return table_click_to_offset(
+            state,
+            &block,
+            block_text,
+            rendered_line_idx,
             sub_row_within_line,
-            viewport_width,
+            col,
         );
-        let map = crate::markdown::InlineColMap::build(content);
-        let raw_char = map.rendered_to_raw_vec()[rendered_idx.min(map.rendered_len())];
-        let block_start_char = state.buffer.rope().byte_to_char(block.range.start);
-        return (block_start_char + raw_char).min(buffer_len);
     }
 
-    let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
-    let line_text = &block_text[line_byte_start..line_byte_end];
-    let rendered_line = &state.parsed.lines[rendered_line_idx];
-
-    // Rows the view paints as raw source (a mermaid block's reserved rows, the cursor's own
-    // revealed line) map `col` against the raw line's own wrap layout, since the rendered
-    // `Line` isn't what the user sees.  Tables are excluded (their chrome stays painted, so
-    // the pipe-aware branch below applies), as are code-block body rows: `cursor_block_revealed`
-    // is block-level and time-based, but only a code block's fence rows de-render, so without
-    // `line_allows_raw_reveal` a body click would land one char past the target glyph.
-    let block_kind = state.parsed.real_block_for_byte(block.range.start);
-    let content_lines = crate::ui::rendered_view::raw_source_lines(block_text);
-    let line_reveals = crate::markdown::code_layout::line_allows_raw_reveal(
-        block_kind,
-        raw_line_idx,
-        &content_lines,
-    );
-    let revealed_cursor_line = !is_table
-        && line_reveals
+    // A reflowed paragraph revealed in Rendered mode shows its raw source lines *stacked*, so
+    // `sub_row_within_line` walks those lines' wrap rows.  Find the raw line and wrap sub it
+    // lands on, map the cell column within that raw line, and resolve to a buffer offset via the
+    // raw line's buffer position — the same shape as the diagram reveal below.  (Preview always
+    // shows the flow, which `row_map` maps like any other row.)
+    if state.parsed.is_reflowed_paragraph_at(block.range.start)
+        && state.mode == Mode::Rendered
         && state.cursor_block_revealed()
-        && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state);
-    if state.parsed.is_diagram_reveal_block(block.idx) || revealed_cursor_line {
-        let (rows, indent) = revealed_raw_rows(line_text, viewport_width);
-        let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
-        let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
-        let (start, end, _) = row;
-        let is_last_row = sub + 1 == rows.len();
-        let max_in_row = line_render::last_col_in_row(row, is_last_row);
-        let row_indent = if sub == 0 { 0 } else { indent };
-        let row_chars = line_text.chars().skip(start).take(end - start);
-        let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
-        let raw_col = (start + in_row).min(max_in_row);
+        && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state)
+    {
+        let raw_lines = crate::ui::rendered_view::revealed_source_lines(block_text);
+        let mut remaining = sub_row_within_line;
+        let mut chosen = raw_lines.len().saturating_sub(1);
+        let mut wrap_sub = 0usize;
+        for (i, rl) in raw_lines.iter().enumerate() {
+            let n = revealed_raw_rows(rl, viewport_width).0.len().max(1);
+            if remaining < n {
+                chosen = i;
+                wrap_sub = remaining;
+                break;
+            }
+            remaining -= n;
+        }
+        let raw_line_text = raw_lines.get(chosen).copied().unwrap_or("");
+        let raw_col = raw_click_col(raw_line_text, wrap_sub, col, viewport_width);
+        let first_buf_line = state.buffer.rope().byte_to_line(block.range.start);
+        let target = (first_buf_line + chosen).min(state.buffer.line_count().saturating_sub(1));
+        return (state.buffer.line_to_char(target) + raw_col).min(buffer_len);
+    }
+
+    // Rows the view paints as raw source (a diagram's reserved rows, the cursor's own revealed
+    // row) map `col` against the raw line's own wrap layout, since the rendered `Line` isn't
+    // what the user sees.  The revealed row paints the cursor's line; a diagram's rows show
+    // their source lines 1:1 below any math-preview band, whose own rows resolve to the first.
+    let revealed_row = is_revealed_cursor_row(state, block.idx, rendered_line_idx);
+    if revealed_row || state.parsed.is_diagram_reveal_block(block.idx) {
+        let raw_line_idx = if revealed_row {
+            crate::editor::state::cursor_raw_line(state)
+        } else {
+            crate::document::row_map::line_for_row(&state.parsed, block.idx, block.sub_idx)
+        };
+        let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
+        let line_text = &block_text[line_byte_start..line_byte_end];
+        let raw_col = raw_click_col(line_text, sub_row_within_line, col, viewport_width);
         return raw_col_to_buffer_char(state, &block, line_byte_start, line_text, raw_col);
     }
 
-    let raw_col = if is_table && rendered_line.spans.iter().any(|s| s.content.contains('│')) {
+    let rendered_line = &state.parsed.lines[rendered_line_idx];
+    let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let rendered_idx = click_to_rendered_char_idx(
+        rendered_line,
+        &rendered_chars,
+        col,
+        sub_row_within_line,
+        viewport_width,
+    );
+    let pos = crate::document::row_map::rendered_to_raw_col(
+        &state.parsed,
+        block.idx,
+        block.sub_idx,
+        rendered_idx,
+    );
+    let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, pos.line);
+    let line_text = &block_text[line_byte_start..line_byte_end];
+    raw_col_to_buffer_char(state, &block, line_byte_start, line_text, pos.col)
+}
+
+/// A click on a table's row: the row and wrap chunk come from classifying the block's rendered
+/// glyphs, the column from the pipe positions.  A row without pipes (a border, a separator)
+/// maps its char 1:1, clamped to the raw line.
+fn table_click_to_offset(
+    state: &EditorState,
+    block: &BlockLocation,
+    block_text: &str,
+    rendered_line_idx: usize,
+    sub_row_within_line: usize,
+    col: usize,
+) -> usize {
+    let (raw_line_idx, table_sub) = table_raw_line_idx(state, block, block_text);
+    let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
+    let line_text = &block_text[line_byte_start..line_byte_end];
+    let Some(rendered_line) = state.parsed.lines.get(rendered_line_idx) else {
+        return state.buffer.len_chars();
+    };
+    let row_width = line_row_width(rendered_line, sub_row_within_line);
+    let clamped_col = col.min(row_width);
+    let raw_col = if rendered_line.spans.iter().any(|s| s.content.contains('│')) {
         // Rendered cells are padded to layout width; map through the pipe positions so the
         // click stays inside the clicked cell.
-        let row_width = line_row_width(rendered_line, sub_row_within_line);
-        let clamped_col = col.min(row_width);
         table_click_to_raw_col(line_text, rendered_line, clamped_col, table_sub)
             .unwrap_or(clamped_col)
-    } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) =
-        block_kind.filter(|_| !line_reveals)
-    {
-        // A code body row is one pad cell (and, for indented blocks, the stripped indent) off
-        // from its raw column; the generic mapping would land one char late (issue #28).
-        let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
-            .spans
-            .iter()
-            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
-            .collect();
-        let rendered_idx = click_to_rendered_char_idx(
-            rendered_line,
-            &rendered_chars,
-            col,
-            sub_row_within_line,
-            viewport_width,
-        );
-        let stripped = line_text.strip_suffix('\n').unwrap_or(line_text);
-        crate::markdown::code_layout::code_rendered_col_to_raw_col(stripped, *fenced, rendered_idx)
     } else {
-        let buffer_line_idx = state
-            .buffer
-            .block_line_to_buffer_line(block.range.start, raw_line_idx);
-        let stripped = line_text.strip_suffix('\n').unwrap_or(line_text);
-        let inline_map = state.inline_map_for(buffer_line_idx, stripped);
-        // Resolved via the AST so a paragraph line that merely looks like `2. ...` stays
-        // generic, and a YAML sequence entry in frontmatter isn't taken for a list marker.
-        let line_block = state
-            .parsed
-            .real_block_for_byte(block.range.start + line_byte_start);
-        let mapping = match line_block {
-            Some(crate::markdown::Block::List { .. }) => LineMapping::List,
-            Some(crate::markdown::Block::MetadataBlock { .. }) => LineMapping::Verbatim,
-            _ => LineMapping::Generic,
-        };
-        non_table_click_to_raw_col(
-            rendered_line,
-            line_text,
-            col,
-            sub_row_within_line,
-            viewport_width,
-            &inline_map,
-            mapping,
-        )
+        clamped_col
     };
+    raw_col_to_buffer_char(state, block, line_byte_start, line_text, raw_col)
+}
 
-    raw_col_to_buffer_char(state, &block, line_byte_start, line_text, raw_col)
+/// The char of `line_text` under cell `col` on wrap row `sub` of the line, laid out as the
+/// reveal painter lays out raw source.
+fn raw_click_col(line_text: &str, sub: usize, col: usize, viewport_width: usize) -> usize {
+    let (rows, indent) = revealed_raw_rows(line_text, viewport_width);
+    let sub = sub.min(rows.len().saturating_sub(1));
+    let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
+    let (start, end, _) = row;
+    let is_last_row = sub + 1 == rows.len();
+    let max_in_row = line_render::last_col_in_row(row, is_last_row);
+    let row_indent = if sub == 0 { 0 } else { indent };
+    let row_chars = line_text.chars().skip(start).take(end - start);
+    let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
+    (start + in_row).min(max_in_row)
 }
 
 /// The block that produced a rendered line: its source byte range, its rendered-line range, and
@@ -606,7 +555,7 @@ fn revealed_raw_row_count(
         let row_line = crate::document::row_map::line_for_row(
             &state.parsed,
             reveal.block_idx,
-            rendered_line_idx - reveal.block_lines.start,
+            rendered_line_idx.saturating_sub(reveal.block_lines.start),
         );
         let raw_line = block_text.split('\n').nth(row_line).unwrap_or("");
         return Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1));
@@ -633,10 +582,10 @@ fn revealed_raw_row_count(
     let raw_line = block_text.split('\n').nth(cursor_line).unwrap_or("");
     // A row the view doesn't de-render (a code block's body) still shows its padded rendered
     // line; the raw wrap count would mis-walk every row below it.
-    if !crate::markdown::code_layout::line_allows_raw_reveal(
-        state.parsed.real_block_for_byte(reveal.block_start),
-        cursor_line,
-        &crate::ui::rendered_view::raw_source_lines(block_text),
+    if !crate::document::row_map::reveals(
+        &state.parsed,
+        reveal.block_idx,
+        reveal.cursor_row.saturating_sub(reveal.block_lines.start),
     ) {
         return None;
     }
@@ -645,11 +594,23 @@ fn revealed_raw_row_count(
 
 /// Whether `rendered_line_idx` is the revealed cursor row of block `block_idx`, which paints
 /// the cursor's raw line rather than the line its origin names.  Diagram blocks paint every row
-/// 1:1 from its origin, so they never count.
+/// 1:1 from its origin, and a row that never de-renders (a code body) stays rendered, so
+/// neither counts; nor does any row in Preview, which never reveals.
 fn is_revealed_cursor_row(state: &EditorState, block_idx: usize, rendered_line_idx: usize) -> bool {
-    state.cursor_block_revealed()
+    let block_start = state
+        .parsed
+        .source_map
+        .rendered_lines_for_block(block_idx)
+        .start;
+    state.mode == Mode::Rendered
+        && state.cursor_block_revealed()
         && !state.parsed.is_diagram_reveal_block(block_idx)
         && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state)
+        && crate::document::row_map::reveals(
+            &state.parsed,
+            block_idx,
+            rendered_line_idx.saturating_sub(block_start),
+        )
 }
 
 /// Wrap layout of a raw source line exactly as the reveal painter lays it out, plus the
@@ -690,8 +651,8 @@ fn raw_line_byte_range(block_text: &str, raw_line_idx: usize) -> (usize, usize) 
 }
 
 /// Which char of the *rendered* line the click at cell `col` on wrap row `sub_row_within_line`
-/// landed on.  The one shared walk over `line_render`'s wrap geometry for every rendered-line
-/// mapping (generic and code-block branches alike).
+/// landed on.  The one shared walk over `line_render`'s wrap geometry for every row `row_map`
+/// maps.
 fn click_to_rendered_char_idx(
     rendered_line: &Line<'_>,
     rendered_chars: &[(char, ratatui::style::Style)],
@@ -715,99 +676,6 @@ fn click_to_rendered_char_idx(
         .map(|(c, _)| *c);
     let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
     (start + in_row).min(max_in_row)
-}
-
-/// Which raw↔rendered column relation a non-table line takes, resolved from the line's AST
-/// block rather than from what its text looks like.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LineMapping {
-    /// The marker map composes with the inline collapse map.
-    List,
-    /// Painted exactly as written (frontmatter): identity.
-    Verbatim,
-    /// The inline collapse map alone.
-    Generic,
-}
-
-/// Non-table click → raw char column on `line_text`.
-///
-/// The renderer's leading prefix (`• ` / `1. ` / `[ ] ` / `▎ ` / heading indent) has no
-/// counterpart in pulldown-cmark's `Text` events; its width is recovered by comparing the
-/// rendered char count against the inline map's content count, so clicks on the prefix route
-/// to the raw prefix area and clicks past it go through the map.  Falls back to 1:1 when the
-/// prefix width isn't trustworthy.  Code blocks never reach here (their padding defeats the
-/// inference); the caller routes them through
-/// [`code_layout::code_rendered_col_to_raw_col`](crate::markdown::code_layout::code_rendered_col_to_raw_col).
-fn non_table_click_to_raw_col(
-    rendered_line: &Line<'_>,
-    line_text: &str,
-    col: usize,
-    sub_row_within_line: usize,
-    viewport_width: usize,
-    inline_map: &crate::markdown::InlineColMap,
-    mapping: LineMapping,
-) -> usize {
-    let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
-        .spans
-        .iter()
-        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
-        .collect();
-    let rendered_idx = click_to_rendered_char_idx(
-        rendered_line,
-        &rendered_chars,
-        col,
-        sub_row_within_line,
-        viewport_width,
-    );
-
-    if mapping == LineMapping::Verbatim {
-        return rendered_idx;
-    }
-
-    let actual_rendered_count = rendered_chars.len();
-    let map = inline_map.rendered_to_raw_vec();
-    let map_content_count = inline_map.rendered_len();
-    let raw_content_start = map.first().copied().unwrap_or(0);
-
-    // Mirror of the forward marker map in `markdown::list_layout`: the rendered marker can be
-    // wider than the raw one (` 1. ` vs `1. `), which the prefix inference below can't
-    // represent.  A continuation line without its own marker falls through to the generic path.
-    if mapping == LineMapping::List {
-        if let (Some(rmw), Some(rmw_r)) = (
-            raw_list_marker_char_width(line_text),
-            rendered_list_marker_char_width(rendered_line),
-        ) {
-            if rendered_idx < rmw_r {
-                return list_rendered_col_to_raw_col_marker(rmw, rmw_r, rendered_idx);
-            }
-            let content_idx = rendered_idx - rmw_r;
-            let content_rendered = actual_rendered_count.saturating_sub(rmw_r);
-            if map_content_count == content_rendered {
-                // The map's raw columns are absolute, marker included.
-                return map
-                    .get(content_idx)
-                    .copied()
-                    .unwrap_or_else(|| line_text.chars().count());
-            }
-            // Marker shift only: exact for unformatted content, approximate otherwise.
-            return (rendered_idx + rmw).saturating_sub(rmw_r);
-        }
-    }
-
-    if actual_rendered_count >= map_content_count {
-        let prefix_len = actual_rendered_count - map_content_count;
-        if prefix_len <= raw_content_start {
-            return if rendered_idx < prefix_len {
-                rendered_idx.min(raw_content_start)
-            } else {
-                let content_idx = rendered_idx - prefix_len;
-                map.get(content_idx)
-                    .copied()
-                    .unwrap_or_else(|| line_text.chars().count())
-            };
-        }
-    }
-    rendered_idx
 }
 
 /// Char column on `line_text` → buffer-wide char offset, clamped to the buffer.
@@ -839,7 +707,7 @@ fn raw_col_to_buffer_char(
 /// Content columns are routed through the cell's [`InlineColMap`](crate::markdown::InlineColMap)
 /// so a click inside a cell with hidden inline markers (`` `code` ``, `**bold**`, a link)
 /// lands on the glyph under the cursor rather than the raw position the same *count* of chars
-/// in — mirroring [`non_table_click_to_raw_col`].  The wrap chunks are computed over the
+/// in.  The wrap chunks are computed over the
 /// marker-collapsed (rendered) content, matching what `render_table_row` actually wraps, so the
 /// two agree even on continuation sub-lines.
 ///

@@ -46,11 +46,11 @@ pub enum ContentKind {
     /// `table_layout`'s cell geometry.
     TableRow { row: u32, sub: u32 },
     /// A flow over every line in `lines` (a reflowed paragraph, a heading or list item whose
-    /// text spans several lines).  Its column mapping is still open: each line sliced past its
-    /// content column and mapped on its own, its maps' rendered spans joined by one space, is
-    /// right unless an inline spans a break (`*a⏎b*`); one `InlineColMap` over the slices
-    /// joined by `\n` gets that case but turns a continuation reading `2. a` or `===` into block
-    /// syntax it wasn't in the document.  `tests/row_provenance.rs` accepts either.
+    /// text spans several lines).  `document::row_map` maps it line by line (each line sliced
+    /// past its content column under its own `InlineColMap`, one space per break), or, where an
+    /// inline spans a break (`*a⏎b*`), through one map over the slices joined by `\n` — not
+    /// first, since joined, a continuation reading `2. a` or `===` turns into block syntax it
+    /// wasn't in the document.
     Flow,
 }
 
