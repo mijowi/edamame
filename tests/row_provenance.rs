@@ -441,7 +441,7 @@ fn check(src: &str) -> Result<(), String> {
 }
 
 /// The sources of the behavioral tests the row-provenance work was written against, plus the
-/// two sample fixtures.
+/// two sample fixtures and the smoke-test one.
 const CORPUS: &[&str] = &[
     "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n",
     "8. Tag it.\n\n    ```bash\n    git tag\n    gh run watch\n    ```\n",
@@ -511,7 +511,7 @@ fn origins_agree_with_the_rendered_rows_on_the_corpus() {
     for src in CORPUS {
         check(src).unwrap();
     }
-    for fixture in ["general.md", "syntax.md"] {
+    for fixture in ["general.md", "syntax.md", "row_provenance.md"] {
         let src = std::fs::read_to_string(format!(
             "{}/tests/fixtures/{fixture}",
             env!("CARGO_MANIFEST_DIR")
@@ -683,7 +683,7 @@ fn columns_round_trip_on_the_corpus() {
     for src in CORPUS {
         round_trip(src).unwrap();
     }
-    for fixture in ["general.md", "syntax.md"] {
+    for fixture in ["general.md", "syntax.md", "row_provenance.md"] {
         let src = std::fs::read_to_string(format!(
             "{}/tests/fixtures/{fixture}",
             env!("CARGO_MANIFEST_DIR")
