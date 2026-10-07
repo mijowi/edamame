@@ -5,7 +5,6 @@ mod raw_text;
 use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, widgets::StatefulWidget};
 
 use crate::config::Theme;
-use crate::editor::table_edit;
 use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered_col};
@@ -145,7 +144,6 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
 
-        let is_table = table_edit::is_table_block(&raw_block_source);
         let cursor_block_ast = editor
             .parsed
             .real_ranges
@@ -194,19 +192,25 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // row the view never revealed lands on the wrong character.
         let cursor_row_reveals =
             crate::document::row_map::reveals(&editor.parsed, cursor_block_idx, cursor_in_block);
+        // Whether the cursor's row is a table's (its cells, or a border or separator), from
+        // its origin, as the click asks it: a table row reveals cell by cell, keeping its chrome.
+        let cursor_table =
+            crate::document::row_map::table_row(&editor.parsed, cursor_block_idx, cursor_in_block);
+        let is_table = cursor_table.is_some();
         // Data-row cell in a row that wraps: one raw chunk per rendered sub. `None` for
-        // non-data and single-sub rows, which the single-line overlays handle.
-        let wrapped_cell = if is_table && cursor_raw_line >= 2 {
-            compute_wrapped_cell_overlay(
-                editor,
-                cursor_block_lines.clone(),
-                cursor_raw_line - 2,
-                cursor_col,
-                &raw_block_source,
-            )
-        } else {
-            None
-        };
+        // non-data and single-sub rows, which the single-line overlays handle.  The row must
+        // show the cursor's own line, which `cursor_col` counts along (a stale parse can name
+        // another).
+        let wrapped_cell = cursor_table
+            .filter(|t| t.cells && t.index >= 1 && t.line == cursor_raw_line)
+            .and_then(|t| {
+                compute_wrapped_cell_overlay(
+                    editor,
+                    cursor_block_lines.start + t.rows.start..cursor_block_lines.start + t.rows.end,
+                    raw_lines.get(cursor_raw_line).copied().unwrap_or(""),
+                    cursor_col,
+                )
+            });
 
         let cursor_rendered_line = match &wrapped_cell {
             Some(w) => w.row_first_line_idx + w.cursor_sub,

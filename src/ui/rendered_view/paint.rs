@@ -6,12 +6,10 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{char_cells, CellOverlay};
 use crate::ui::line_render;
 
-use super::raw_text::raw_line_byte_start;
 use crate::document::row_map::{self, RawPos};
 use crate::markdown::{ColOrigin, ContentKind};
 
@@ -161,58 +159,42 @@ pub(super) fn paint_byte_range_overlay(
     };
     let actual_rendered: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
 
-    // The block's first two lines decide whether it is a table; only a table needs all of it.
-    let head_end = parsed.line_start_byte(first_line + 2).min(block_end);
-    let head = rope
-        .get_byte_slice(block_range.start..head_end)
-        .map(String::from)
-        .unwrap_or_default();
-    if table_edit::is_table_block(&head) {
-        let Some(block_text) = rope
-            .get_byte_slice(block_range.start..block_end)
+    let line_start = |l: usize| match l {
+        0 => block_range.start,
+        _ => parsed.line_start_byte(first_line + l),
+    };
+    // A block line's end, its `\n` aside.
+    let line_end = |l: usize| {
+        (parsed.line_start_byte(first_line + l) + parsed.source_line(first_line + l).len())
+            .min(block_end)
+    };
+    if let Some(hit) = row_map::table_row(parsed, block_idx, sub_idx_in_block) {
+        // Borders and separators carry no raw-byte mapping.
+        if !hit.cells {
+            return;
+        }
+        let raw_line_start_abs = line_start(hit.line);
+        let raw_line_end_abs = line_end(hit.line);
+        let Some(raw_line) = rope
+            .get_byte_slice(raw_line_start_abs.min(raw_line_end_abs)..raw_line_end_abs)
             .map(String::from)
         else {
             return;
         };
-        let block_text = block_text.as_str();
-        // Rows can wrap, so classify by box-drawing glyph rather than assume alternation.
-        let own_end = rendered_span.end.min(editor.parsed.lines.len());
-        let block_lines = editor
-            .parsed
-            .lines
-            .get(rendered_span.start..own_end)
-            .unwrap_or(&[]);
-        let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
-        // The raw line and the wrap-chunk index of the sub-line within its logical row.
-        let (raw_line_idx, table_sub) = match kinds.get(sub_idx_in_block) {
-            Some(crate::ui::table_view::TableSubLineKind::Header { sub }) => (0, *sub),
-            Some(crate::ui::table_view::TableSubLineKind::DataRow { row, sub }) => (row + 2, *sub),
-            // Separators and borders carry no raw-byte mapping.
-            _ => return,
-        };
-        let Some(raw_line) = block_text.split('\n').nth(raw_line_idx) else {
-            return;
-        };
-        let raw_line_start_abs = block_range.start + raw_line_byte_start(block_text, raw_line_idx);
         let line_sel_start = sel_start_byte.max(raw_line_start_abs);
-        let line_sel_end = sel_end_byte.min(raw_line_start_abs + raw_line.len());
+        let line_sel_end = sel_end_byte.min(raw_line_end_abs);
         if line_sel_start >= line_sel_end {
             return;
         }
-        let start_raw_col = raw_line[..line_sel_start - raw_line_start_abs]
-            .chars()
-            .count();
-        let end_raw_col = raw_line[..line_sel_end - raw_line_start_abs]
-            .chars()
-            .count();
-        // A match's raw cols land in at most one wrap chunk per cell; mapping per `table_sub`
+        let col_at = |abs: usize| rope.byte_to_char(abs) - rope.byte_to_char(raw_line_start_abs);
+        // A match's raw cols land in at most one wrap chunk per cell; mapping per `hit.sub`
         // keeps the highlight off sub-lines that don't show the matched text.
         for (rs, re) in crate::markdown::table_layout::table_raw_col_range_to_rendered_segments(
-            raw_line,
+            &raw_line,
             line,
-            start_raw_col,
-            end_raw_col,
-            table_sub,
+            col_at(line_sel_start),
+            col_at(line_sel_end),
+            hit.sub,
         ) {
             paint_cols_on_line(
                 line, buf, area, y_start, rows_used, skip_rows, rs, re, style,
@@ -227,14 +209,8 @@ pub(super) fn paint_byte_range_overlay(
         return;
     };
     let (first, last) = (lines.start as usize, lines.end as usize - 1);
-    let line_start = |l: usize| match l {
-        0 => block_range.start,
-        _ => parsed.line_start_byte(first_line + l),
-    };
     let row_start = line_start(first);
-    let row_end = (parsed.line_start_byte(first_line + last)
-        + parsed.source_line(first_line + last).len())
-    .min(block_end);
+    let row_end = line_end(last);
     let (sel_s, sel_e) = (sel_start_byte.max(row_start), sel_end_byte.min(row_end));
     if sel_s >= sel_e {
         return;

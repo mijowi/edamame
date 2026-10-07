@@ -103,37 +103,26 @@ pub(super) struct WrappedCellOverlay {
 /// raw cell text onto the sub-lines. Returns `None` for single-sub rows, which
 /// `compute_cell_overlay` / `compute_cell_chunk_overlay` handle.
 ///
+/// `row_lines` are the rows of `editor.parsed.lines` showing the table row's cells (its
+/// origins' [`row_map::table_row`](crate::document::row_map::table_row)), and `raw_row` its
+/// source line.
+///
 /// Raw text is wider than rendered (markers the renderer drops), so it routinely wraps to more
 /// chunks than the row has sub-lines; the overlay then scrolls a `row_height`-chunk window
 /// containing the cursor's chunk onto the row.
 pub(super) fn compute_wrapped_cell_overlay(
     editor: &EditorState,
-    block_lines_range: std::ops::Range<usize>,
-    data_row_idx: usize,
+    row_lines: std::ops::Range<usize>,
+    raw_row: &str,
     cursor_col_raw: usize,
-    raw_block_source: &str,
 ) -> Option<WrappedCellOverlay> {
-    use crate::ui::table_view::{classify_table_sub_lines, TableSubLineKind};
-
-    let block_lines = editor.parsed.lines.get(block_lines_range.clone())?;
-    let kinds = classify_table_sub_lines(block_lines);
-
-    let row_start_local = kinds.iter().position(|k| {
-        matches!(
-            k,
-            TableSubLineKind::DataRow { row, sub: 0 } if *row == data_row_idx
-        )
-    })?;
-    let row_height = kinds[row_start_local..]
-        .iter()
-        .take_while(|k| matches!(k, TableSubLineKind::DataRow { row, .. } if *row == data_row_idx))
-        .count();
+    let row_height = row_lines.len();
+    let block_lines = editor.parsed.lines.get(row_lines.clone())?;
 
     // Every wrap sub-line of a row has identical pipe cells (see `render_table_row`); the
     // char positions differ per sub-line once a wide glyph sits left of the cell.
-    let first_line = block_lines.get(row_start_local)?;
+    let first_line = block_lines.first()?;
     let rendered_pipes = rendered_pipe_cells(first_line);
-    let raw_row = raw_block_source.split('\n').nth(data_row_idx + 2)?;
     let raw_pipes = raw_pipe_positions(raw_row);
     if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
         return None;
@@ -264,16 +253,14 @@ pub(super) fn compute_wrapped_cell_overlay(
     }
 
     // Chunks paint one cell past the pipe (the pad), which is two chars on in the row's text.
-    let cursor_line = block_lines
-        .get(row_start_local + cursor_sub)
-        .unwrap_or(first_line);
+    let cursor_line = block_lines.get(cursor_sub).unwrap_or(first_line);
     let visual_col = rendered_pipe_positions(cursor_line)
         .get(cell_idx)
         .map_or(subs[cursor_sub].rendered_start, |&pipe| pipe + 2)
         + cursor_col_in_chunk;
 
     Some(WrappedCellOverlay {
-        row_first_line_idx: block_lines_range.start + row_start_local,
+        row_first_line_idx: row_lines.start,
         subs,
         cursor_sub,
         visual_col,
@@ -284,7 +271,13 @@ pub(super) fn compute_wrapped_cell_overlay(
 mod tests {
     use super::*;
     use crate::config::Theme;
-    use crate::document::Buffer;
+    use crate::document::{row_map, Buffer};
+
+    /// The rows showing the first data row's cells of the table opening the document.
+    fn data_row(state: &crate::editor::EditorState) -> std::ops::Range<usize> {
+        let row = row_map::row_for_line(&state.parsed, 0, 2);
+        row_map::table_row(&state.parsed, 0, row).unwrap().rows
+    }
 
     /// Chunks are cut by cells, not chars: each fits the cell's six cells, and the cursor lands
     /// in the chunk that holds it.
@@ -358,10 +351,9 @@ mod tests {
         let src = "| a | b |\n|---|---|\n| 日本 | aa bb cc dd |\n";
         let mut state = crate::editor::EditorState::new(Buffer::from_str(src), theme);
         state.set_viewport_width(16);
-        let lines_range = 0..state.parsed.lines.len();
         let raw_row = src.lines().nth(2).unwrap();
         let cursor_col = raw_row.chars().position(|c| c == 'a').unwrap();
-        let overlay = compute_wrapped_cell_overlay(&state, lines_range, 0, cursor_col, src)
+        let overlay = compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, cursor_col)
             .expect("the second column wraps");
         assert_eq!(overlay.cursor_sub, 0);
         let line: String = state.parsed.lines[overlay.row_first_line_idx]
@@ -385,11 +377,10 @@ mod tests {
         let mut state = crate::editor::EditorState::new(Buffer::from_str(src), theme);
         state.set_viewport_width(18);
 
-        let lines_range = 0..state.parsed.lines.len();
         let raw_row = "| x | `aa` `bb` `cc` `dd` `ee` |";
         let cursor_col = raw_row.find("cc").unwrap(); // ASCII: byte == char col
 
-        let overlay = compute_wrapped_cell_overlay(&state, lines_range, 0, cursor_col, src)
+        let overlay = compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, cursor_col)
             .expect("multi-sub row must use the wrapped-cell overlay, not the chunk fallback");
 
         assert!(overlay.subs.len() >= 2, "fixture row must wrap");
@@ -415,12 +406,11 @@ mod tests {
         let mut state = crate::editor::EditorState::new(Buffer::from_str(src), theme);
         state.set_viewport_width(17);
 
-        let lines_range = 0..state.parsed.lines.len();
         let raw_row = "| x | `tracing-appender` |";
         // 'a' of "appender" renders on the row's second wrap sub-line.
         let cursor_col = raw_row.find("appender").unwrap(); // ASCII: byte == char col
 
-        let overlay = compute_wrapped_cell_overlay(&state, lines_range, 0, cursor_col, src)
+        let overlay = compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, cursor_col)
             .expect("wrapped code-span cell must use the multi-sub overlay");
 
         assert_eq!(overlay.subs.len(), 2, "fixture row wraps to two sub-lines");

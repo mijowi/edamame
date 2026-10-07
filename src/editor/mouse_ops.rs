@@ -17,7 +17,7 @@ pub use selection::visual_selection_to_rendered_text;
 
 use std::time::Duration;
 
-use crate::document::{Selection, VisualSelection};
+use crate::document::{row_map, Selection, VisualSelection};
 use crate::editor::list_edit;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
@@ -565,15 +565,13 @@ pub fn apply(
                 // which reveals as a unit and would flash its image back in.
                 let new_line = state.buffer.char_to_line(new_offset);
                 let same_logical_line = state.cursor_line_idx == Some(new_line);
-                let cursor_block_is_table = state
-                    .cursor_block_idx
-                    .and_then(|idx| state.parsed.source_map.original_range_for_block(idx))
-                    .map(|range| {
-                        let source = state.buffer.contents();
-                        let end = range.end.min(source.len());
-                        table_edit::is_table_block(&source[range.start..end])
-                    })
-                    .unwrap_or(false);
+                // Asked of the cursor row's origin, so a table nested in a list or a quote counts.
+                let cursor_row_is_table = state.cursor_block_idx.is_some_and(|idx| {
+                    let row = crate::editor::state::cursor_rendered_line_idx(state).saturating_sub(
+                        state.parsed.source_map.rendered_lines_for_block(idx).start,
+                    );
+                    row_map::table_row(&state.parsed, idx, row).is_some()
+                });
                 // Diagram blocks (mermaid fences, `$$...$$` math) reveal as a single unit, so a
                 // click on another line inside the same block must not drop drag suppression and
                 // flash the image back in for the click-to-mouseup window.
@@ -584,7 +582,7 @@ pub fn apply(
                 let same_diagram_block = new_block_idx == state.cursor_block_idx
                     && new_block_idx.is_some_and(|idx| state.parsed.is_diagram_reveal_block(idx));
                 let suppress_drag_flag =
-                    (same_logical_line && !cursor_block_is_table) || same_diagram_block;
+                    (same_logical_line && !cursor_row_is_table) || same_diagram_block;
 
                 state.cursor.offset = new_offset;
                 // `preferred_col` must be the screen cell column, not the line-relative one:

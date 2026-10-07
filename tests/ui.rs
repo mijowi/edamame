@@ -860,6 +860,74 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
     );
 }
 
+/// A table nested in a list item takes overlays through its cells and reveals cell by cell, as
+/// a top-level one does: its rows are found by their origins, not by the block's source.
+#[test]
+fn rendered_view_nested_table_highlights_and_reveals_by_cell() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n";
+    let draw = |state: &EditorState| {
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let row_text = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
+        (0..30).map(|x| buf[(x, y)].symbol()).collect()
+    };
+    let data_row = |buf: &ratatui::buffer::Buffer| {
+        (0..8)
+            .find(|&y| row_text(buf, y).contains('2'))
+            .expect("the data row is painted")
+    };
+
+    // `2` selected, the cursor on the item's text.
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    let two = src.rfind('2').unwrap();
+    state.selection = Some(Selection {
+        anchor: two,
+        active: two + 1,
+    });
+    let buf = draw(&state);
+    let y = data_row(&buf);
+    let text = row_text(&buf, y);
+    let highlighted: Vec<u16> = (0..30)
+        .filter(|&x| buf[(x, y)].style().bg == theme.selection.bg)
+        .collect();
+    let two_x = text.chars().position(|c| c == '2').unwrap() as u16;
+    assert_eq!(highlighted, [two_x], "only the selected `2`: {text:?}");
+
+    // The cursor on `1`, revealed at once (no reveal delay running).
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.cursor.offset = src.rfind('1').unwrap();
+    state.update_cursor_block();
+    state.cursor_block_entered_at = None;
+    let buf = draw(&state);
+    let text = row_text(&buf, data_row(&buf));
+    assert!(
+        text.contains('│') && !text.contains('|'),
+        "the cursor's row keeps its rendered pipes: {text:?}"
+    );
+}
+
 #[test]
 fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     use edamame::document::Buffer;

@@ -20,6 +20,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 - A setext heading (text underlined with `===` or `---`) spanning several lines now shows the cursor on every line while you edit it, and an H2 one keeps its rule.
 - A `[ ]` or `[x]` at the start of a list item's setext heading now shows as the heading's text instead of disappearing.
 - A footnote whose label holds wide characters (such as CJK) now lines up its continuation lines under its text.
+- A table inside a list item or blockquote now edits a cell at a time like any other table: a click lands in the cell you clicked, the cell you're in shows its raw text while the grid stays drawn, a selection highlights just the text it covers, and a drag that starts in a cell stays inside it. Before, the whole row turned back into pipes, and clicks landed a few characters off.
+- Clicking a table's border or a line between its rows puts the cursor in the cell beside the click, instead of on a pipe or in the spaces around a cell's text.
 
 ## [0.1.5] - 2026-10-05
 

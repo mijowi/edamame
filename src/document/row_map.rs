@@ -601,6 +601,84 @@ pub fn raw_to_rendered_col_near(
     }
 }
 
+// ── Tables ────────────────────────────────────────────────────────────────
+
+/// The table row a row of a block belongs to, from the origins: what a click, an overlay and
+/// the cursor indicator need to find before `table_layout`'s cell geometry maps the columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRowHit {
+    /// The table row's block-relative source line.
+    pub line: usize,
+    /// Its index in the table: 0 the header, `1 + i` data row `i`.
+    pub index: u32,
+    /// The wrap chunk the row shows; 0 for a border or separator snapped onto the table row.
+    pub sub: usize,
+    /// Whether the row shows the table row's cells, rather than a border or separator.
+    pub cells: bool,
+    /// The block's rows showing the table row's cells, one per wrap chunk.
+    pub rows: Range<usize>,
+}
+
+/// The table row that row `row` of `block` belongs to; `None` outside a table.  A row of cells
+/// is its own.  A border or separator (chrome inside a table leaf) snaps onto a table row: the
+/// one showing the same line (a separator or the bottom border, onto the row above it), else the
+/// one directly below (the top border onto the header, the heavy rule onto the first data row),
+/// else the nearest above (the heavy rule of a table with no data rows).
+pub fn table_row(parsed: &ParsedDoc, block: usize, row: usize) -> Option<TableRowHit> {
+    let (origins, band) = own_origins(parsed, block);
+    let r = row.checked_sub(band)?;
+    let origin = origins.get(r)?;
+    let cells_of = |o: &RowOrigin| match o.cols {
+        ColOrigin::Content {
+            kind: ContentKind::TableRow { row, sub },
+            ..
+        } => Some((o.first_line()? as usize, row, sub as usize)),
+        _ => None,
+    };
+    let (at, (line, index, sub)) = if let Some(hit) = cells_of(origin) {
+        (r, hit)
+    } else {
+        if origin.cols != ColOrigin::Chrome {
+            return None;
+        }
+        // The top border shows no line; the header below it does.
+        let line = origin
+            .first_line()
+            .or_else(|| origins.get(r + 1)?.first_line())?;
+        let range_start = parsed.source_map.original_range_for_block(block)?.start;
+        let ast = parsed.real_block_for_byte(range_start)?;
+        if !matches!(leaf_at(ast, line), Some(Block::Table { .. })) {
+            return None;
+        }
+        // A row of cells showing the same line is always above: the top border's line and the
+        // delimiter line show on no row of cells.
+        let shows = |o: &RowOrigin| cells_of(o).is_some_and(|(l, ..)| l == line as usize);
+        let at = origins[..r]
+            .iter()
+            .rposition(shows)
+            .or_else(|| origins.get(r + 1).and_then(cells_of).map(|_| r + 1))
+            .or_else(|| origins[..r].iter().rposition(|o| cells_of(o).is_some()))?;
+        let (line, index, _) = cells_of(&origins[at])?;
+        (at, (line, index, 0))
+    };
+    let same = |o: &RowOrigin| cells_of(o).is_some_and(|(l, i, _)| l == line && i == index);
+    let first = origins[..at]
+        .iter()
+        .rposition(|o| !same(o))
+        .map_or(0, |i| i + 1);
+    let end = origins[at..]
+        .iter()
+        .position(|o| !same(o))
+        .map_or(origins.len(), |i| at + i);
+    Some(TableRowHit {
+        line,
+        index,
+        sub,
+        cells: at == r,
+        rows: first + band..end + band,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +760,79 @@ mod tests {
         );
         assert_eq!(line_for_row(&d, b, 0), 0);
         assert_eq!(line_for_row(&d, b, 4), 2);
+    }
+
+    /// Every row of a table finds its table row: cells their own, a border or separator the one
+    /// it snaps onto.
+    #[test]
+    fn a_tables_borders_snap_onto_its_rows() {
+        // Rows: top border, header, heavy rule, data 1, thin separator, data 2, bottom border.
+        let d = doc("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n");
+        let b = block_at(&d, 0);
+        let hit = |r| table_row(&d, b, r).map(|h| (h.line, h.index, h.cells));
+        assert_eq!(
+            (0..7).map(hit).collect::<Vec<_>>(),
+            [
+                Some((0, 0, false)),
+                Some((0, 0, true)),
+                Some((2, 1, false)),
+                Some((2, 1, true)),
+                Some((2, 1, false)),
+                Some((3, 2, true)),
+                Some((3, 2, false)),
+            ]
+        );
+        assert_eq!(table_row(&d, b, 3).unwrap().rows, 3..4);
+    }
+
+    /// A table nested in a list item is found by its origins, behind the item's other rows; the
+    /// item's own rows are no table's.
+    #[test]
+    fn a_nested_tables_rows_are_found_inside_their_block() {
+        let d = doc("- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n");
+        let b = block_at(&d, 0);
+        assert_eq!(table_row(&d, b, 0), None, "the item's text");
+        let header = row_for_line(&d, b, 2);
+        assert_eq!(
+            table_row(&d, b, header - 1).map(|h| (h.line, h.cells)),
+            Some((2, false)),
+            "the top border"
+        );
+        let data = row_for_line(&d, b, 4);
+        let hit = table_row(&d, b, data).unwrap();
+        assert_eq!((hit.line, hit.index, hit.sub, hit.cells), (4, 1, 0, true));
+        assert_eq!(hit.rows, data..data + 1);
+        assert_eq!(
+            table_row(&d, b, data - 1).map(|h| h.line),
+            Some(4),
+            "heavy rule"
+        );
+    }
+
+    /// A row that wraps is one table row over several rows, each its own chunk.
+    #[test]
+    fn a_wrapped_table_rows_chunks_share_it() {
+        let src = "| a | b |\n|---|---|\n| x | aa bb cc dd ee ff |\n";
+        let d = ParsedDoc::build_with_overrides(
+            src,
+            theme(),
+            true,
+            4,
+            None,
+            None,
+            false,
+            16,
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
+        let b = block_at(&d, 0);
+        let first = row_for_line(&d, b, 2);
+        let hit = table_row(&d, b, first + 1).unwrap();
+        assert!(hit.rows.len() > 1, "fixture: the row wraps");
+        assert_eq!((hit.line, hit.sub, hit.rows.start), (2, 1, first));
     }
 
     /// A row showing several lines (a multi-line heading's text) is the row of each of them.

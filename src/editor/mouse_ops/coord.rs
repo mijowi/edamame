@@ -1,11 +1,10 @@
 use ratatui::text::Line;
 
-use crate::document::CellBand;
+use crate::document::{row_map, CellBand};
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::markdown::table_layout;
 use crate::ui::line_render;
-use crate::ui::table_view::HEADER_ROWS;
 
 /// The rendered `Line` under document-area `row` (scroll- and wrap-aware) and the sub-row
 /// within it.
@@ -264,7 +263,7 @@ fn walk_rendered_rows(
 /// block, resolve the wrap to a rendered char of the row, then ask `row_map` which source
 /// position that char shows.  Rows painted as raw source (the revealed cursor row, a revealed
 /// reflowed paragraph's stacked lines, a diagram's rows) map against the raw line's own wrap
-/// instead, and tables still find their row by classifying its glyphs.
+/// instead, and a table row maps its columns through its pipes.
 pub fn rendered_sub_line_to_offset(
     state: &EditorState,
     rendered_line_idx: usize,
@@ -286,14 +285,15 @@ pub fn rendered_sub_line_to_offset(
         return state.buffer.rope().byte_to_char(block.range.start);
     }
 
-    if table_edit::is_table_block(block_text) {
+    if let Some(hit) = row_map::table_row(&state.parsed, block.idx, block.sub_idx) {
         return table_click_to_offset(
             state,
             &block,
             block_text,
-            rendered_line_idx,
+            &hit,
             sub_row_within_line,
             col,
+            viewport_width,
         );
     }
 
@@ -336,7 +336,7 @@ pub fn rendered_sub_line_to_offset(
         let raw_line_idx = if revealed_row {
             crate::editor::state::cursor_raw_line(state)
         } else {
-            crate::document::row_map::line_for_row(&state.parsed, block.idx, block.sub_idx)
+            row_map::line_for_row(&state.parsed, block.idx, block.sub_idx)
         };
         let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
         let line_text = &block_text[line_byte_start..line_byte_end];
@@ -357,44 +357,65 @@ pub fn rendered_sub_line_to_offset(
         sub_row_within_line,
         viewport_width,
     );
-    let pos = crate::document::row_map::rendered_to_raw_col(
-        &state.parsed,
-        block.idx,
-        block.sub_idx,
-        rendered_idx,
-    );
+    let pos = row_map::rendered_to_raw_col(&state.parsed, block.idx, block.sub_idx, rendered_idx);
     let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, pos.line);
     let line_text = &block_text[line_byte_start..line_byte_end];
     raw_col_to_buffer_char(state, &block, line_byte_start, line_text, pos.col)
 }
 
-/// A click on a table's row: the row and wrap chunk come from classifying the block's rendered
-/// glyphs, the column from the pipe positions.  A row without pipes (a border, a separator)
-/// maps its char 1:1, clamped to the raw line.
+/// A click on a table's row: the table row and wrap chunk come from the row's origin
+/// ([`row_map::table_row`], which snaps a border or separator onto a table row), the column from
+/// the pipe positions.  A border or separator shares its table row's column geometry, so a click
+/// on one lands in the cell below or above it, where the cursor then shows.  A row whose pipes
+/// don't match its source line's (a pipe-less row, a mid-edit line) maps its char 1:1, clamped
+/// to the raw line.
 fn table_click_to_offset(
     state: &EditorState,
     block: &BlockLocation,
     block_text: &str,
-    rendered_line_idx: usize,
+    hit: &row_map::TableRowHit,
     sub_row_within_line: usize,
     col: usize,
+    viewport_width: usize,
 ) -> usize {
-    let (raw_line_idx, table_sub) = table_raw_line_idx(state, block, block_text);
-    let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
+    let table_sub = hit.sub;
+    let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, hit.line);
     let line_text = &block_text[line_byte_start..line_byte_end];
+    let rendered_line_idx = block.rendered_span.start + block.sub_idx;
     let Some(rendered_line) = state.parsed.lines.get(rendered_line_idx) else {
         return state.buffer.len_chars();
     };
-    let row_width = line_row_width(rendered_line, sub_row_within_line);
-    let clamped_col = col.min(row_width);
-    let raw_col = if rendered_line.spans.iter().any(|s| s.content.contains('│')) {
-        // Rendered cells are padded to layout width; map through the pipe positions so the
-        // click stays inside the clicked cell.
-        table_click_to_raw_col(line_text, rendered_line, clamped_col, table_sub)
-            .unwrap_or(clamped_col)
+    // Resolve the wrap first (a table wider than the viewport, behind a quote's bar, wraps
+    // like any row), then work in the row's cells, which its pipes are measured in.
+    let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let rendered_idx = click_to_rendered_char_idx(
+        rendered_line,
+        &rendered_chars,
+        col,
+        sub_row_within_line,
+        viewport_width,
+    );
+    let clamped_col: usize = rendered_chars[..rendered_idx]
+        .iter()
+        .map(|&(c, _)| table_layout::char_cells(c))
+        .sum();
+    let cells_line = if hit.cells {
+        Some(rendered_line)
     } else {
-        clamped_col
+        state
+            .parsed
+            .lines
+            .get(block.rendered_span.start + hit.rows.start)
     };
+    // Rendered cells are padded to layout width; map through the pipe positions so the click
+    // stays inside the clicked cell.
+    let raw_col = cells_line
+        .and_then(|line| table_click_to_raw_col(line_text, line, clamped_col, table_sub))
+        .unwrap_or(clamped_col);
     raw_col_to_buffer_char(state, block, line_byte_start, line_text, raw_col)
 }
 
@@ -444,49 +465,6 @@ fn locate_block(state: &EditorState, rendered_line_idx: usize) -> Option<BlockLo
         rendered_span,
         sub_idx,
     })
-}
-
-/// Raw `info.rows[..]` index plus wrap-chunk index for a click on a table block's rendered
-/// sub-line.  Classified by leading box-drawing glyph, not by line alternation, because
-/// wrapped data rows span several rendered lines.
-fn table_raw_line_idx(
-    state: &EditorState,
-    block: &BlockLocation,
-    block_text: &str,
-) -> (usize, usize) {
-    use crate::ui::table_view::TableSubLineKind;
-    let block_lines = state
-        .parsed
-        .lines
-        .get(block.rendered_span.start..block.rendered_span.end.min(state.parsed.lines.len()))
-        .unwrap_or(&[]);
-    let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
-    match kinds.get(block.sub_idx) {
-        Some(TableSubLineKind::TopBorder) => (0, 0),
-        Some(TableSubLineKind::Header { sub }) => (0, *sub),
-        Some(TableSubLineKind::ThickSeparator) => (HEADER_ROWS, 0),
-        Some(TableSubLineKind::DataRow { row, sub }) => (row + HEADER_ROWS, *sub),
-        Some(TableSubLineKind::ThinSeparator) => {
-            // Snap to the preceding data row.
-            let row = kinds[..block.sub_idx]
-                .iter()
-                .rev()
-                .find_map(|k| {
-                    if let TableSubLineKind::DataRow { row, .. } = k {
-                        Some(*row)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0);
-            (row + HEADER_ROWS, 0)
-        }
-        Some(TableSubLineKind::BottomBorder) | None => {
-            // Snap to the last data row (`is_table_block` guarantees at least one).
-            let last_data = block_text.split('\n').count().saturating_sub(HEADER_ROWS);
-            (last_data.max(HEADER_ROWS), 0)
-        }
-    }
 }
 
 /// The revealed cursor block, gathered once per click: [`walk_rendered_rows`] asks
@@ -552,7 +530,7 @@ fn revealed_raw_row_count(
     if state.parsed.is_diagram_reveal_block(reveal.block_idx) {
         // The source line the row shows, past any math-preview band (whose rows clamp to the
         // first line).
-        let row_line = crate::document::row_map::line_for_row(
+        let row_line = row_map::line_for_row(
             &state.parsed,
             reveal.block_idx,
             rendered_line_idx.saturating_sub(reveal.block_lines.start),
@@ -561,10 +539,6 @@ fn revealed_raw_row_count(
         return Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1));
     }
 
-    // Tables keep their rendered chrome, so skip them.
-    if table_edit::is_table_block(block_text) {
-        return None;
-    }
     // A revealed reflowed paragraph is one rendered line that reveals to its *stacked* raw lines,
     // so its row count is the sum of every raw line's wrap count — not just the first line's.
     if state.parsed.is_reflowed_paragraph_at(reveal.block_start) {
@@ -577,16 +551,17 @@ fn revealed_raw_row_count(
     if rendered_line_idx != reveal.cursor_row {
         return None;
     }
+    // A table row keeps its rendered chrome: the reveal shows raw text inside the cell only.
+    let cursor_row_in_block = reveal.cursor_row.saturating_sub(reveal.block_lines.start);
+    if row_map::table_row(&state.parsed, reveal.block_idx, cursor_row_in_block).is_some() {
+        return None;
+    }
 
     let cursor_line = reveal.cursor_line;
     let raw_line = block_text.split('\n').nth(cursor_line).unwrap_or("");
     // A row the view doesn't de-render (a code block's body) still shows its padded rendered
     // line; the raw wrap count would mis-walk every row below it.
-    if !crate::document::row_map::reveals(
-        &state.parsed,
-        reveal.block_idx,
-        reveal.cursor_row.saturating_sub(reveal.block_lines.start),
-    ) {
+    if !row_map::reveals(&state.parsed, reveal.block_idx, cursor_row_in_block) {
         return None;
     }
     Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1))
@@ -606,7 +581,7 @@ fn is_revealed_cursor_row(state: &EditorState, block_idx: usize, rendered_line_i
         && state.cursor_block_revealed()
         && !state.parsed.is_diagram_reveal_block(block_idx)
         && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state)
-        && crate::document::row_map::reveals(
+        && row_map::reveals(
             &state.parsed,
             block_idx,
             rendered_line_idx.saturating_sub(block_start),
@@ -804,39 +779,8 @@ pub(super) fn preview_table_cell_band(
     rendered_line_idx: usize,
     col: usize,
 ) -> Option<CellBand> {
-    use crate::ui::table_view::TableSubLineKind;
     let block = locate_block(state, rendered_line_idx)?;
-    let source = state.buffer.contents();
-    let block_text = source.get(block.range.start..block.range.end.min(source.len()))?;
-    if !table_edit::is_table_block(block_text) {
-        return None;
-    }
-    let block_lines = state
-        .parsed
-        .lines
-        .get(block.rendered_span.start..block.rendered_span.end.min(state.parsed.lines.len()))?;
-    let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
-
-    let same_row = |k: &TableSubLineKind| match (kinds.get(block.sub_idx), k) {
-        (Some(TableSubLineKind::Header { .. }), TableSubLineKind::Header { .. }) => true,
-        (
-            Some(TableSubLineKind::DataRow { row: clicked, .. }),
-            TableSubLineKind::DataRow { row, .. },
-        ) => row == clicked,
-        _ => false,
-    };
-    if !kinds.get(block.sub_idx).is_some_and(same_row) {
-        return None;
-    }
-
-    let mut first = block.sub_idx;
-    while first > 0 && same_row(&kinds[first - 1]) {
-        first -= 1;
-    }
-    let mut last = block.sub_idx;
-    while last + 1 < kinds.len() && same_row(&kinds[last + 1]) {
-        last += 1;
-    }
+    let hit = row_map::table_row(&state.parsed, block.idx, block.sub_idx).filter(|h| h.cells)?;
 
     // `col` is a char column on the clicked line, so find the cell by char pipes; the band
     // itself is in cells, which every sub-line of the row shares.  Cell `i`'s content area is
@@ -860,8 +804,8 @@ pub(super) fn preview_table_cell_band(
     }
     Some(CellBand {
         lines: (
-            block.rendered_span.start + first,
-            block.rendered_span.start + last,
+            block.rendered_span.start + hit.rows.start,
+            block.rendered_span.start + hit.rows.end - 1,
         ),
         cols,
     })
@@ -873,35 +817,27 @@ pub(super) fn table_cell_char_range_at(
     state: &EditorState,
     char_offset: usize,
 ) -> Option<(usize, usize)> {
-    let source = state.buffer.contents();
-    let byte = state
-        .buffer
-        .rope()
-        .char_to_byte(char_offset.min(state.buffer.len_chars()));
-    let info = table_edit::find_table_at(&source, byte)?;
-    let (row_idx, col_idx) = table_edit::cursor_cell(&info, byte)?;
-    let row = info.rows.get(row_idx)?;
-    if row.kind == table_edit::RowKind::Alignment {
-        return None;
-    }
-    let cell = row.cells.get(col_idx)?;
-    let start_byte = row.start + cell.content_start;
-    let end_byte = row.start + cell.content_end;
     let rope = state.buffer.rope();
+    let byte = rope.char_to_byte(char_offset.min(rope.len_chars()));
+    let block = state.parsed.source_map.block_for_byte(byte)?;
+    let block_start = state
+        .parsed
+        .source_map
+        .original_range_for_block(block)?
+        .start;
+    let line_idx = rope.byte_to_line(byte);
+    let line = line_idx.checked_sub(rope.byte_to_line(block_start.min(rope.len_bytes())))?;
+    // A header or data row, found by its origin at any nesting depth; the delimiter line shows
+    // only on the heavy rule, which is chrome.
+    let row = row_map::row_for_line(&state.parsed, block, line);
+    row_map::table_row(&state.parsed, block, row).filter(|h| h.cells && h.line == line)?;
+    let line_start = rope.line_to_byte(line_idx);
+    let raw = rope.line(line_idx).to_string();
+    let cell = table_edit::cell_at(raw.trim_end_matches(['\n', '\r']), byte - line_start)?;
     Some((
-        rope.byte_to_char(start_byte.min(source.len())),
-        rope.byte_to_char(end_byte.min(source.len())),
+        rope.byte_to_char(line_start + cell.content_start),
+        rope.byte_to_char(line_start + cell.content_end),
     ))
-}
-
-/// Upper bound for clamping a click past the end of a rendered line.  Returns the full width
-/// in cells regardless of sub-row: conservative (keeps clicks off the next line) and only loses
-/// precision deep in the padding of wrapped lines.
-fn line_row_width(line: &Line<'_>, _sub_row: usize) -> usize {
-    line.spans
-        .iter()
-        .map(|s| table_layout::str_cells(&s.content))
-        .sum()
 }
 
 #[cfg(test)]
@@ -927,6 +863,41 @@ mod tests {
         // Cells: │0 ␠1 日本2-5 ␠6 │7 ␠8 a9 b10 ␠11 ␠12 │13; `b` is char 8.
         let band = preview_table_cell_band(&st, header, 8).expect("inside a cell");
         assert_eq!(band.cols, (9, 12));
+    }
+
+    /// A table nested in a list item or a quote gets a cell band too: its rows are found by their
+    /// origins, though the block is the list or the quote.  The band is the clicked cell's alone.
+    #[test]
+    fn preview_table_cell_band_covers_nested_tables() {
+        for src in [
+            "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n",
+            "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+        ] {
+            let st = preview_state(src, 40);
+            let (row, text) = st
+                .parsed
+                .lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .enumerate()
+                .find(|(_, t)| t.contains('│') && t.contains('2'))
+                .expect("the data row renders");
+            // Every glyph on the row is one cell wide, so char columns are cell columns.
+            let col_of = |ch| text.chars().position(|c| c == ch).unwrap();
+            let band = preview_table_cell_band(&st, row, col_of('2'))
+                .unwrap_or_else(|| panic!("{src:?}: no band on {text:?}"));
+            assert_eq!(band.lines, (row, row), "{src:?}");
+            assert!(
+                band.cols.0 > col_of('1') && (band.cols.0..band.cols.1).contains(&col_of('2')),
+                "{src:?}: band {:?} on {text:?}",
+                band.cols
+            );
+        }
     }
 
     /// A Preview click is a screen cell, and the selection column it seeds is a char column:

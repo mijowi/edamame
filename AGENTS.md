@@ -184,7 +184,8 @@ src/
     parsed_doc.rs   # re-parse on change; caches AST + source map + row origins;
                     #   virtual blank blocks
     row_map.rs      # rendered row ↔ source line and row char ↔ source column, from the
-                    #   recorded RowOrigins; the reveal gate (`reveals`)
+                    #   recorded RowOrigins; the reveal gate (`reveals`); the table row a
+                    #   row belongs to, borders snapped (`table_row`)
 
   editor.rs / editor/   # EditorState, Mode, RAW_REVEAL_DELAY
     edit_ops.rs     # Action → EditorState mutations

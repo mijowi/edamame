@@ -464,6 +464,8 @@ const CORPUS: &[&str] = &[
     ">\n",
     ">\n> a\n>\n",
     "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n",
+    "| a | b |\n|---|---|\n| 1 | 2 |\n",
+    "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
     "Title\n=====\n\nSub\n---\n\npara\n",
     "[^1]: a note\n    more\n\nref[^1]\n",
     // A break nested in emphasis or a link: one row over both lines, not one row per line.
@@ -572,8 +574,8 @@ fn a_setext_h2_rule_shows_its_underline() {
 /// a container, which isn't promoted and shows its formula on one row, newlines and all; and a
 /// row continuing a multi-line atomic inline (a code span), which keeps as much of the later
 /// line's indent as pulldown-cmark decides (the agreement test checks such a row by its letters
-/// and digits).  Tables map through their own cell
-/// geometry until Phase 5 and are skipped.
+/// and digits).  Table rows map their columns through `table_layout`'s cell geometry, not
+/// `row_map`'s, and are skipped here; [`check_click_and_paint`] covers them.
 fn check_round_trip(doc: &ParsedDoc) -> Result<(), String> {
     for (abs, (line, origin)) in doc.lines.iter().zip(doc.row_origins()).enumerate() {
         if matches!(

@@ -279,6 +279,221 @@ fn click_in_table_cell_with_code_span_maps_through_hidden_backticks() {
     );
 }
 
+#[test]
+fn click_on_a_table_inside_a_list_item_lands_in_the_clicked_cell() {
+    // The table is nested, so its rows sit behind the item's indent on both sides and its
+    // block is the list, not the table.
+    let src = "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let (col, row) = rendered_cell_of(&st, '2');
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
+
+    assert_eq!(st.cursor.offset, src.rfind('2').unwrap());
+}
+
+/// A click into a nested table's cell on the cursor's own line still suppresses the reveal, so
+/// the active cell can swap, as `same_line_click_inside_table_still_sets_drag_in_progress`
+/// requires of a top-level one.
+#[test]
+fn same_line_click_inside_a_nested_table_still_sets_drag_in_progress() {
+    let src = "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.rfind('1').unwrap();
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    let cursor_line = st.cursor_line_idx;
+
+    let (col, row) = rendered_cell_of(&st, '2');
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
+
+    assert_eq!(st.cursor_line_idx, cursor_line);
+    assert!(st.drag_in_progress);
+}
+
+/// A drag that starts in a table cell is clamped to that cell (its padding included) at any
+/// nesting depth: top level, in a list item, and behind a quote's `> `.
+#[test]
+fn a_drag_from_a_table_cell_is_clamped_to_it_at_any_depth() {
+    for src in [
+        "| a | b |\n|---|---|\n| 1 | 2 |\n",
+        "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n",
+        "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let (col, row) = rendered_cell_of(&st, '2');
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
+
+        let two = src.rfind('2').unwrap();
+        assert_eq!(
+            anchor,
+            Some(mouse_ops::DragTarget::TextSelection {
+                anchor: two,
+                cell: Some((two - 1, two + 2)),
+            }),
+            "{src:?}"
+        );
+    }
+}
+
+/// A row with no leading pipe parses its first column as prefix, so a drag from it must not be
+/// clamped to the next cell, a range that excludes its own anchor.
+#[test]
+fn a_drag_from_a_leading_pipe_less_tables_first_cell_is_never_clamped_elsewhere() {
+    let src = "a | b |\n--|--|\n1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let (col, row) = rendered_cell_of(&st, '1');
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
+
+    let Some(mouse_ops::DragTarget::TextSelection { anchor, cell }) = anchor else {
+        panic!("a click arms a text selection: {anchor:?}");
+    };
+    assert!(
+        cell.is_none_or(|(s, e)| (s..=e).contains(&anchor)),
+        "the clamp {cell:?} excludes its anchor {anchor}"
+    );
+}
+
+/// A click on a border or separator lands in the cell in the same column of the table row it
+/// snaps onto: the top border and the heavy rule onto the row below, a thin separator and the
+/// bottom border onto the row above.
+#[test]
+fn click_on_a_table_border_lands_in_the_cell_beside_it() {
+    // Rendered rows: 0 top border, 1 header, 2 heavy rule, 3 data 1, 4 thin separator,
+    // 5 data 2, 6 bottom border.
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    for (row, ch) in [(0u16, 'b'), (2, '2'), (4, '2'), (6, '4')] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let (col, _) = rendered_cell_of(&st, ch);
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
+        assert_eq!(
+            st.cursor.offset,
+            src.find(ch).unwrap(),
+            "a click on row {row} under {ch:?}"
+        );
+    }
+}
+
+/// The quote's bar doesn't narrow its table, so at a narrow width each of the table's rows wraps
+/// its closing pipe onto a continuation row.  A click on any char lands on that char, and one on
+/// a continuation row stays in the cell it continues instead of reading its screen column as the
+/// logical row's.
+#[test]
+fn clicks_on_a_wrapped_quoted_table_land_under_the_pointer() {
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    const W: u16 = 14;
+    const H: u16 = 20;
+    let src = "intro\n\n> | k | v |\n> |---|---|\n> | x | aa bb cc dd ee |\n";
+    let build = || {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(W as usize);
+        st
+    };
+    let click_at = |col: u16, row: u16| {
+        let mut st = build();
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, W as usize);
+        st.cursor.offset
+    };
+
+    let st = build();
+    let theme = theme();
+    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &st,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let symbol = |col: u16, row: u16| {
+        buf.cell((col, row))
+            .and_then(|c| c.symbol().chars().next())
+            .unwrap_or(' ')
+    };
+
+    let mut checked = 0;
+    for row in 1..H {
+        for col in 0..W {
+            let painted = symbol(col, row);
+            if !painted.is_ascii_alphanumeric() {
+                continue;
+            }
+            let at = click_at(col, row);
+            let landed = src.chars().nth(at);
+            assert_eq!(
+                landed,
+                Some(painted),
+                "click at (col {col}, row {row}) shows {painted:?} but landed on {landed:?} \
+                 (offset {at})"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 12,
+        "expected the table's chars to check, got {checked}"
+    );
+
+    // The row below `x │ aa` continues it with its closing pipe.
+    let x_row = (0..H)
+        .find(|&y| (0..W).any(|x| symbol(x, y) == 'x'))
+        .expect("the data row is painted");
+    let pipe_col = (0..W)
+        .find(|&x| symbol(x, x_row + 1) == '│')
+        .expect("fixture: the data row wraps its closing pipe");
+    let at = click_at(pipe_col, x_row + 1);
+    assert!(
+        at >= src.find("aa").unwrap(),
+        "a click on the continuation's pipe landed at {at}, in a cell left of `aa`"
+    );
+}
+
+/// The screen cell `(col, row)` of the first rendered `│` row showing `ch`, for a document that
+/// fits the viewport unscrolled and unwrapped.
+fn rendered_cell_of(st: &EditorState, ch: char) -> (u16, u16) {
+    let (row, text) = st
+        .parsed
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            (
+                i,
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>(),
+            )
+        })
+        .find(|(_, text)| text.contains('│') && text.contains(ch))
+        .expect("the table row renders");
+    let col = text[..text.find(ch).unwrap()].chars().count();
+    (col as u16, row as u16)
+}
+
 // ── Click-drag selection ────────────────────────────────────────────────────
 
 #[test]

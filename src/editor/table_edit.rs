@@ -535,6 +535,17 @@ fn parse_cells(raw: &str) -> Vec<TableCell> {
     cells
 }
 
+/// The cell of raw table line `raw` holding byte `rel_byte`, or `None` outside every cell.  The
+/// line may carry a container prefix (an item's indent, a quote's `> `) before its first `|`.
+/// Text before the first `|` is taken for prefix, so a row with no leading pipe (`1 | 2 |`) has
+/// no cell for its first column's bytes rather than the second column's.
+pub fn cell_at(raw: &str, rel_byte: usize) -> Option<TableCell> {
+    parse_cells(raw)
+        .into_iter()
+        .nth(column_for_offset(raw, rel_byte))
+        .filter(|c| (c.content_start..=c.content_end).contains(&rel_byte))
+}
+
 /// Which column the byte at `rel_byte` (relative to the row's raw string) belongs to.  Bytes
 /// before the first `|` count as column 0, those past the last as the final column.
 fn column_for_offset(raw: &str, rel_byte: usize) -> usize {
@@ -822,6 +833,21 @@ mod tests {
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].raw, r" a \| x ");
         assert_eq!(cells[1].raw, " b ");
+    }
+
+    /// A container prefix before the first `|` is skipped; a first column with no leading pipe
+    /// is no cell, not the next column's.
+    #[test]
+    fn cell_at_skips_a_prefix_and_never_answers_another_cell() {
+        let quoted = "> | a | b |";
+        let b = quoted.find('b').unwrap();
+        assert_eq!(cell_at(quoted, b).map(|c| c.raw), Some(" b ".to_owned()));
+        assert_eq!(cell_at(quoted, 0), None, "the quote's `>`");
+
+        let bare = "1 | 2 |";
+        assert_eq!(cell_at(bare, 0), None, "the leading-pipe-less first column");
+        let two = bare.find('2').unwrap();
+        assert_eq!(cell_at(bare, two).map(|c| c.raw), Some(" 2 ".to_owned()));
     }
 
     #[test]
