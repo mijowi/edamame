@@ -562,13 +562,11 @@ where
 
     loop {
         match events.peek() {
-            None | Some(Event::End(_)) => break,
-            Some(Event::Start(Tag::Paragraph))
-            | Some(Event::Start(Tag::Heading { .. }))
-            | Some(Event::Start(Tag::BlockQuote(_)))
-            | Some(Event::Start(Tag::CodeBlock(_)))
-            | Some(Event::Start(Tag::List(_)))
-            | Some(Event::Rule) => break,
+            None | Some(Event::End(_)) | Some(Event::Rule) => break,
+            // Stop at every block start, not an allowlist of them: a tight item's text has no
+            // `Paragraph` wrapper, so a block that follows it (an HTML block, a table) arrives
+            // here, and folding it in mismatches every `End` after it.
+            Some(Event::Start(tag)) if !is_inline_tag(tag) => break,
             _ => {}
         }
 
@@ -676,6 +674,14 @@ where
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Whether `tag` opens inline content — the only starts [`parse_inlines`] consumes.
+fn is_inline_tag(tag: &Tag) -> bool {
+    matches!(
+        tag,
+        Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link { .. } | Tag::Image { .. }
+    )
+}
 
 /// Consume one `Event::End(_)` if it is next in the stream.
 fn consume_end<'a, I>(events: &mut EventStream<'a, I>)
@@ -836,6 +842,37 @@ mod tests {
                 assert_eq!(items.len(), 2);
             }
             other => panic!("Expected List, got: {:?}", other),
+        }
+    }
+
+    /// A block that follows a tight item's text has no `Paragraph` between them, so
+    /// `parse_inlines` must stop at it.  Folding it into the item's inlines mismatched every
+    /// `End` after it and dropped the rest of the document (#66).
+    #[test]
+    fn block_after_tight_item_text_keeps_later_blocks() {
+        for src in [
+            "- a\n  <div>\n\nafter\n",
+            "- a\n  <div>\n  x\n  </div>\n\nafter\n",
+            "- a\n  | t |\n  |---|\n\nafter\n",
+        ] {
+            let (blocks, ranges) = parse_raw_with_ranges(src);
+            assert_eq!(blocks.len(), 2, "{src:?}: {blocks:?}");
+            assert_eq!(blocks.len(), ranges.len(), "{src:?}: blocks and ranges 1:1");
+            assert!(
+                matches!(&blocks[1], Block::Paragraph { inlines, .. }
+                    if inlines == &[Inline::Text("after".into())]),
+                "{src:?}: {blocks:?}"
+            );
+            let Block::List { items, .. } = &blocks[0] else {
+                panic!("{src:?}: expected a list, got {blocks:?}");
+            };
+            assert_eq!(items.len(), 1);
+            assert!(
+                matches!(&items[0].blocks[0], Block::Paragraph { inlines, .. }
+                    if inlines == &[Inline::Text("a".into())]),
+                "{src:?}: the item's text must not absorb the block: {items:?}"
+            );
+            assert_eq!(items[0].blocks.len(), 2, "{src:?}: {items:?}");
         }
     }
 
