@@ -5,11 +5,14 @@
 //! so revealing the cursor's block as raw makes the document taller exactly while the cursor
 //! rests inside it.  The old reveal is height-neutral and cannot express that.
 //!
-//! `EffectiveRows` presents the document's visual rows as if the revealed block's `N` rendered
-//! lines were replaced by its `M` raw source lines, each wrapped at the current width — a cheap
-//! delta over the base [`VisualRowCache`](crate::document::visual_cache::VisualRowCache), never a
-//! rebuild.  When no block is revealed (Preview, the pre-reveal-delay window, or a non-reflowed
-//! block whose reveal stays height-neutral), it is the identity over the base cache.
+//! `EffectiveRows` presents the document's visual rows as if the revealed paragraph's one flow
+//! row were replaced by its `M` raw source lines, each wrapped at the current width as the
+//! painter wraps it — a cheap delta over the base
+//! [`VisualRowCache`](crate::document::visual_cache::VisualRowCache), never a rebuild.  The
+//! paragraph can sit at any depth, so the replaced row may be one of many in its block (an item's
+//! paragraph in a list); [`row_map::stacked_lines`](crate::document::row_map::stacked_lines)
+//! picks it.  When no paragraph is revealed (Preview, the pre-reveal-delay window, or any other
+//! row, whose reveal stays height-neutral), it is the identity over the base cache.
 //!
 //! The base cache clamps every wrapped row count to `>= 1`; the raw wrap counts here must too, or
 //! a blank raw line reports zero rows and every prefix sum past it drifts.
@@ -18,24 +21,26 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use crate::document::ParsedDoc;
-use crate::ui::line_render::visual_rows_of_str;
+use crate::ui::line_render::revealed_row_count;
 
 /// What a visual row resolves to under the reveal patch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowHit {
     /// A rendered line (index into `parsed.lines`) and its wrap sub-row.
     Rendered { line: usize, sub: usize },
-    /// A raw source line of the revealed block — `raw_line` indexes the block's raw lines — and
-    /// its wrap sub-row.
+    /// A raw source line of the revealed paragraph — `raw_line` is the block-relative source line
+    /// (the line's offset from its block's first line) — and its wrap sub-row.
     Raw { raw_line: usize, sub: usize },
 }
 
-/// The reveal patch: the revealed block's rendered span and its raw lines' wrap geometry.
+/// The reveal patch: the revealed row's rendered span and its raw lines' wrap geometry.
 /// Opaque to callers (built by [`EffectiveRows::with_reveal`], shared via [`EffectiveRowsCache`]).
 #[derive(Debug, Clone)]
 pub struct Patch {
-    /// Rendered-line range `[start, end)` of the revealed block.
+    /// Rendered-line range `[start, end)` of the revealed row.
     rendered: Range<usize>,
+    /// Block-relative source line of the first raw line.
+    first_line: usize,
     /// Base visual rows in lines `[0, start)`.
     base_before: usize,
     /// Base visual rows in `[start, end)` — the rows the patch replaces.
@@ -61,9 +66,9 @@ pub struct EffectiveRows<'a> {
 }
 
 /// Per-`EditorState` memo for the reveal patch, so a frame's repeated `effective_rows` calls build
-/// it once.  Keyed by `(parsed_version, width, revealed-block rendered-start)` — the only inputs
-/// that change the patch; the revealed block's raw form depends on the block, not the cursor's
-/// column within it, so intra-block cursor moves stay a cache hit.  `None` reveal start = identity.
+/// it once.  Keyed by `(parsed_version, width, revealed-row rendered-start)` — the only inputs
+/// that change the patch; the revealed paragraph's raw form depends on the paragraph, not the
+/// cursor's position within it, so moves inside it stay a cache hit.  `None` reveal = identity.
 #[derive(Debug, Clone, Default)]
 pub struct EffectiveRowsCache {
     key: Option<(u64, usize, Option<usize>)>,
@@ -102,12 +107,14 @@ impl<'a> EffectiveRows<'a> {
         }
     }
 
-    /// View with the block at rendered range `rendered` revealed to `raw_lines`.  `raw_lines` are
-    /// the block's raw source lines (soft breaks split back out); each is wrapped at `width`.
+    /// View with the row at rendered range `rendered` revealed to `raw_lines`: the paragraph's raw
+    /// source lines (soft breaks split back out), the first of them block-relative line
+    /// `first_line`.  Each is wrapped at `width`.
     pub fn with_reveal(
         parsed: &'a ParsedDoc,
         width: usize,
         rendered: Range<usize>,
+        first_line: usize,
         raw_lines: &[&str],
     ) -> Self {
         let width = width.max(1);
@@ -115,7 +122,9 @@ impl<'a> EffectiveRows<'a> {
             parsed,
             width,
             base_total: parsed.total_visual_rows(width),
-            patch: Some(Rc::new(Patch::build(parsed, width, rendered, raw_lines))),
+            patch: Some(Rc::new(Patch::build(
+                parsed, width, rendered, first_line, raw_lines,
+            ))),
         }
     }
 
@@ -145,23 +154,26 @@ impl<'a> EffectiveRows<'a> {
         (self.base_total, self.patch.clone())
     }
 
-    /// Rendered-line range of the revealed block, or `None` on the identity view.  The reveal
+    /// Rendered-line range of the revealed row, or `None` on the identity view.  The reveal
     /// loop uses `.start` to know where the raw-line unit is spliced in.
     pub fn block_rendered(&self) -> Option<Range<usize>> {
         self.patch.as_ref().map(|p| p.rendered.clone())
     }
 
-    /// Wrap count (>= 1) of raw line `raw_line`, or 1 out of range / on the identity view.
+    /// Wrap count (>= 1) of block-relative raw line `raw_line`, or 1 out of range / on the
+    /// identity view.
     pub fn raw_wrap_at(&self, raw_line: usize) -> usize {
         self.patch
             .as_ref()
-            .and_then(|p| p.raw_wrap.get(raw_line).copied())
+            .and_then(|p| p.raw_wrap.get(raw_line.checked_sub(p.first_line)?).copied())
             .unwrap_or(1)
     }
 
-    /// Number of raw lines the revealed block expands to (0 on the identity view).
-    pub fn raw_line_count(&self) -> usize {
-        self.patch.as_ref().map_or(0, |p| p.raw_wrap.len())
+    /// The block-relative source lines the revealed row expands to (empty on the identity view).
+    pub fn raw_lines(&self) -> Range<usize> {
+        self.patch
+            .as_ref()
+            .map_or(0..0, |p| p.first_line..p.first_line + p.raw_wrap.len())
     }
 
     /// Total visual rows with the patch applied.
@@ -172,14 +184,16 @@ impl<'a> EffectiveRows<'a> {
         }
     }
 
-    /// Visual row a raw line of the revealed block starts on (absolute, document coordinates).
-    /// Panics only if called on the identity view — callers gate on [`Self::has_reveal`].
+    /// Visual row block-relative raw line `raw_line` of the revealed row starts on (absolute,
+    /// document coordinates), clamped into the stack.  Panics only if called on the identity
+    /// view — callers gate on [`Self::has_reveal`].
     pub fn raw_line_visual_row(&self, raw_line: usize) -> usize {
         let p = self
             .patch
             .as_ref()
             .expect("raw_line_visual_row on identity view");
-        p.base_before + p.raw_prefix[raw_line.min(p.raw_wrap.len())]
+        let idx = raw_line.saturating_sub(p.first_line).min(p.raw_wrap.len());
+        p.base_before + p.raw_prefix[idx]
     }
 
     /// What visual row `v` resolves to under the patch.
@@ -203,7 +217,10 @@ impl<'a> EffectiveRows<'a> {
                 .partition_point(|&s| s <= local)
                 .saturating_sub(1);
             let sub = local - p.raw_prefix[raw_line];
-            return RowHit::Raw { raw_line, sub };
+            return RowHit::Raw {
+                raw_line: p.first_line + raw_line,
+                sub,
+            };
         }
         // After the block: shift back into base coordinates by the height delta.
         let base_coord = v + p.base_block_rows - raw_total;
@@ -214,8 +231,14 @@ impl<'a> EffectiveRows<'a> {
 
 impl Patch {
     /// Build the patch: measure each raw line's wrap at `width` and its prefix sums, plus the base
-    /// rows the block spans (which the raw expansion replaces).
-    fn build(parsed: &ParsedDoc, width: usize, rendered: Range<usize>, raw_lines: &[&str]) -> Self {
+    /// rows the row spans (which the raw expansion replaces).
+    fn build(
+        parsed: &ParsedDoc,
+        width: usize,
+        rendered: Range<usize>,
+        first_line: usize,
+        raw_lines: &[&str],
+    ) -> Self {
         let base_before = parsed.visual_rows_before(rendered.start, width);
         let base_end = parsed.visual_rows_before(rendered.end, width);
         let base_block_rows = base_end.saturating_sub(base_before);
@@ -225,7 +248,7 @@ impl Patch {
         raw_prefix.push(0usize);
         let mut acc = 0usize;
         for line in raw_lines {
-            let rows = visual_rows_of_str(line, width).len().max(1);
+            let rows = revealed_row_count(line, width);
             raw_wrap.push(rows);
             acc += rows;
             raw_prefix.push(acc);
@@ -233,6 +256,7 @@ impl Patch {
 
         Self {
             rendered,
+            first_line,
             base_before,
             base_block_rows,
             raw_wrap,
@@ -252,6 +276,7 @@ mod tests {
     use crate::config::Theme;
     use crate::document::ParsedDoc;
     use crate::ui::line_render::visual_rows_for_line;
+    use ratatui::text::Line;
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
@@ -277,10 +302,21 @@ mod tests {
     }
 
     /// Brute-force expansion of the effective visual-row sequence: one `RowHit` per visual row.
+    /// Raw lines count as the painter wraps them (a `Line` of the raw text, its hanging indent
+    /// detected from its marker), independently of the patch's own measure.
     fn expand(
         parsed: &ParsedDoc,
         width: usize,
         reveal: Option<(Range<usize>, &[&str])>,
+    ) -> Vec<RowHit> {
+        expand_from(parsed, width, reveal, 0)
+    }
+
+    fn expand_from(
+        parsed: &ParsedDoc,
+        width: usize,
+        reveal: Option<(Range<usize>, &[&str])>,
+        first_line: usize,
     ) -> Vec<RowHit> {
         let mut out = Vec::new();
         let n = parsed.lines.len();
@@ -290,10 +326,13 @@ mod tests {
         };
         for line in 0..n {
             if line == start && !raw.is_empty() {
-                for (raw_line, text) in raw.iter().enumerate() {
-                    let rows = visual_rows_of_str(text, width).len().max(1);
+                for (i, text) in raw.iter().enumerate() {
+                    let rows = visual_rows_for_line(&Line::raw(*text), width).max(1);
                     for sub in 0..rows {
-                        out.push(RowHit::Raw { raw_line, sub });
+                        out.push(RowHit::Raw {
+                            raw_line: first_line + i,
+                            sub,
+                        });
                     }
                 }
             }
@@ -315,7 +354,7 @@ mod tests {
     ) {
         let er = match &reveal {
             None => EffectiveRows::identity(parsed, width),
-            Some((r, raw)) => EffectiveRows::with_reveal(parsed, width, r.clone(), raw),
+            Some((r, raw)) => EffectiveRows::with_reveal(parsed, width, r.clone(), 0, raw),
         };
         let expected = expand(
             parsed,
@@ -387,6 +426,45 @@ mod tests {
         }
     }
 
+    /// A nested paragraph's patch replaces its one flow row inside a multi-row block (a list),
+    /// names its lines block-relative, and wraps them as the painter does: a raw `- ` marker and a
+    /// continuation's indent hang their wrapped rows.
+    #[test]
+    fn a_nested_reveal_splices_one_row_inside_its_block() {
+        let parsed = reflowed("- one\n- alpha bravo charlie\n  delta echo foxtrot\n- four\n");
+        let row = parsed
+            .lines
+            .iter()
+            .position(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .contains("alpha bravo charlie delta")
+            })
+            .expect("the item's paragraph must render as one flow row");
+        let raw = ["- alpha bravo charlie", "  delta echo foxtrot"];
+        for width in [80, 12, 9] {
+            let er = EffectiveRows::with_reveal(&parsed, width, row..row + 1, 1, &raw);
+            let expected = expand_from(&parsed, width, Some((row..row + 1, &raw)), 1);
+            assert_eq!(er.total_visual_rows(), expected.len(), "width {width}");
+            for (v, want) in expected.iter().enumerate() {
+                assert_eq!(er.line_at_visual_row(v), *want, "row {v} at width {width}");
+            }
+            assert_eq!(er.raw_lines(), 1..3);
+            for line in er.raw_lines() {
+                let vr = er.raw_line_visual_row(line);
+                assert_eq!(
+                    expected[vr],
+                    RowHit::Raw {
+                        raw_line: line,
+                        sub: 0
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn raw_line_visual_row_matches_expansion() {
         let parsed = reflowed("intro\n\none\ntwo\nthree\n\nafter\n");
@@ -403,7 +481,7 @@ mod tests {
             .unwrap();
         let raw = vec!["one", "two", "three"];
         let width = 8;
-        let er = EffectiveRows::with_reveal(&parsed, width, block..block + 1, &raw);
+        let er = EffectiveRows::with_reveal(&parsed, width, block..block + 1, 0, &raw);
         let expected = expand(&parsed, width, Some((block..block + 1, &raw)));
         // The first visual row of each raw line must be a `Raw { sub: 0 }` at the reported row.
         for raw_line in 0..raw.len() {

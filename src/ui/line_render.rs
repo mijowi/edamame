@@ -345,6 +345,8 @@ fn paint_row(
         }
         x += 1;
     }
+    // The last char's cell, while every char of the row has one (for the full-row EOL cursor).
+    let mut last_cell = None;
     for (rel_idx, (ch, style)) in chars[start..end].iter().enumerate() {
         let cells = char_cells(*ch) as u16;
         if cells == 0 || x >= area_end {
@@ -353,8 +355,10 @@ fn paint_row(
             if cells == 0 {
                 continue;
             }
+            last_cell = None;
             break;
         }
+        last_cell = Some(x);
         let abs_col = abs_col_base + rel_idx;
         let cursor_style = cursor_col_override
             .filter(|(col, _)| *col == abs_col)
@@ -385,6 +389,16 @@ fn paint_row(
         }
         x += 1;
         fill_col += 1;
+    }
+    // A row ending the line that fills every cell leaves the EOL cursor no blank to sit on:
+    // draw it over the last char instead, rather than nowhere.
+    if let (None, Some(lx), Some((_, s))) = (cursor_cell, last_cell, eol_cursor) {
+        if end == chars.len() {
+            if let Some(cell) = buf.cell_mut((lx, abs_y)) {
+                cell.set_style(s);
+                cursor_cell = Some((lx, abs_y));
+            }
+        }
     }
     cursor_cell
 }
@@ -618,6 +632,27 @@ pub fn visual_rows_of_chars(
 pub fn visual_rows_of_str(text: &str, width: usize) -> Vec<(usize, usize, usize)> {
     let chars: Vec<(char, Style)> = text.chars().map(|c| (c, Style::default())).collect();
     visual_rows_of_chars(&chars, width, 0)
+}
+
+/// The wrap of a raw source line as the reveal paints it: `render_line`'s hanging indent, detected
+/// from the line's own leading marker (`- `, `> `, `1. `, an indent), plus that indent.  The indent
+/// is the *effective* one: when `indent + 1 >= width` the painter falls back to a flat layout.
+/// The reveal's row count (`EffectiveRows`), its click mapping and the cursor's sub-row (stacked
+/// or revealed in place) all read this, so none of them can disagree with the painter about where
+/// a revealed line wraps.  Callers mapping a column must shift it by the indent on sub-rows past
+/// the first.
+pub fn revealed_rows_of_str(text: &str, width: usize) -> (Vec<(usize, usize, usize)>, usize) {
+    let width = width.max(1);
+    let indent = compute_hanging_indent_str(text);
+    let indent = if indent + 1 >= width { 0 } else { indent };
+    let chars: Vec<(char, Style)> = text.chars().map(|c| (c, Style::default())).collect();
+    (visual_rows_of_chars(&chars, width, indent), indent)
+}
+
+/// Rows (>= 1) a revealed raw source line paints at `width`: [`revealed_rows_of_str`]'s count,
+/// with an empty line taking one row.
+pub fn revealed_row_count(text: &str, width: usize) -> usize {
+    revealed_rows_of_str(text, width).0.len().max(1)
 }
 
 /// Rows a styled `Line` occupies at `width`, hanging indent included — the same layout
@@ -1196,6 +1231,41 @@ mod tests {
         assert_eq!(last_col_in_row(rows[1], true), 14);
         // A single-char row can never be clamped below its own start.
         assert_eq!(last_col_in_row((7, 8, 8), false), 7);
+    }
+
+    /// A line whose last row fills every cell has no trailing blank for an end-of-line cursor,
+    /// so the cursor is drawn over the last char, unwrapped or on a wrapped last row.  A line
+    /// cut off unwrapped never shows its end, so its cursor stays hidden.
+    #[test]
+    fn eol_cursor_on_a_full_row_paints_over_the_last_char() {
+        let style = Style::default().fg(ratatui::style::Color::Red);
+        let area = Rect::new(0, 0, 10, 3);
+        // The cell and the symbol left under the cursor: the last char, or the trailing blank
+        // a line one cell shorter keeps.
+        for (text, wrap, want) in [
+            ("abcdefghij", true, Some(((9, 0), "j"))),
+            ("abcdefghij", false, Some(((9, 0), "j"))),
+            ("abcdefghij abcdefghij", true, Some(((9, 1), "j"))),
+            ("abcdefghi", true, Some(((9, 0), " "))),
+            ("abcdefghijk", false, None),
+        ] {
+            let mut buf = TuiBuf::empty(area);
+            let col = text.chars().count();
+            let (_, cursor) = render_line_reporting_cursor(
+                &Line::from(text),
+                area,
+                &mut buf,
+                0,
+                wrap,
+                Some((col, style)),
+                0,
+            );
+            assert_eq!(cursor, want.map(|(cell, _)| cell), "{text:?}, wrap {wrap}");
+            if let Some((cell, symbol)) = want {
+                assert_eq!(buf[cell].fg, ratatui::style::Color::Red, "{text:?}");
+                assert_eq!(buf[cell].symbol(), symbol, "{text:?}");
+            }
+        }
     }
 
     #[test]

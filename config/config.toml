@@ -25,7 +25,8 @@ appearance = "dark"
 # Render consecutive blank lines verbatim instead of collapsing them.
 # preserve_blank_lines = true
 
-# Reflow soft-wrapped prose into one paragraph, re-wrapped to the viewport.
+# Reflow soft-wrapped prose into one paragraph, re-wrapped to the viewport,
+# inside list items, blockquotes and footnotes too.
 # reflow = true
 
 # Up/Down move by visual (wrapped) rows, keeping the screen column.

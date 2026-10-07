@@ -37,7 +37,11 @@ edamame parses CommonMark plus [GitHub Flavored Markdown](https://github.github.
 
 **Paragraphs reflow to the width of your terminal.** If you hard-wrap prose in the source — a line break every 80 columns, say — those single line breaks are treated as spaces. edamame joins them back into one paragraph and wraps it to fit the view, instead of showing a stack of ragged short lines. A deliberate line break — two trailing spaces or a backslash at the end of a line — is kept. Turn reflow off with **Reflow paragraphs** in the settings overlay, or `reflow = false` in `config.toml`.
 
-Reflow applies to top-level paragraphs. Text inside a list item, a blockquote or a footnote keeps your line breaks whether reflow is on or off, so each source line gets its own row. The exception is a line break inside bold, italic or link text, which joins the two lines onto one row. Blank lines inside a blockquote (a line holding only `>`) show as empty quoted rows, exactly as many as you wrote. A link reference definition (`[label]: /url`) shows nothing, inside a quote or out.
+Reflow applies to every paragraph, including the text of a list item, a blockquote or a footnote, which wraps under its bullet or bar. When the cursor enters a reflowed paragraph, it opens up to show your source lines exactly as written, `>` and `-` markers included, so you can edit them, and folds back up when you leave.
+
+With reflow off, every paragraph keeps your line breaks, one row per source line. The exception is a line break inside bold, italic or link text, which joins the two lines onto one row.
+
+Blank lines inside a blockquote (a line holding only `>`) show as empty quoted rows, exactly as many as you wrote. A link reference definition (`[label]: /url`) shows nothing, inside a quote or out.
 
 **Frontmatter is shown as data, not prose.** A `---`-delimited YAML block (or a `+++`-delimited TOML one) at the top of a file renders verbatim — one row per source line, dimmed, with each key picked out from its value. It stays fully editable, and it is left out of an HTML export, since it describes the document rather than belonging to it.
 

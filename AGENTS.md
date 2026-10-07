@@ -184,8 +184,9 @@ src/
     parsed_doc.rs   # re-parse on change; caches AST + source map + row origins;
                     #   virtual blank blocks
     row_map.rs      # rendered row ↔ source line and row char ↔ source column, from the
-                    #   recorded RowOrigins; the reveal gate (`reveals`); the table row a
-                    #   row belongs to, borders snapped (`table_row`)
+                    #   recorded RowOrigins; the reveal gates (`reveals`; `stacked_lines`,
+                    #   a reflowed paragraph's flow row that reveals as its stacked source
+                    #   lines); the table row a row belongs to, borders snapped (`table_row`)
 
   editor.rs / editor/   # EditorState, Mode, RAW_REVEAL_DELAY
     edit_ops.rs     # Action → EditorState mutations
@@ -264,7 +265,9 @@ src/
     diff_view.rs        # DiffView + DiffViewState (stacked review)
     editor_view.rs      # dispatches to the three sub-views
     line_render.rs      # render_line / render_line_with_cursor: word-aware wrap,
-                        #   trailing-cell fill; shared by Preview and Rendered
+                        #   trailing-cell fill; shared by Preview and Rendered.
+                        #   revealed_rows_of_str / revealed_row_count: the one wrap
+                        #   measure for raw source on a revealed row
     preview.rs, raw_view.rs, rendered_view.rs (+ rendered_view/{paint, cell_overlay,
                         #   raw_text}.rs)         # the three editor sub-views
     export_theme_modal.rs, insert_table_modal.rs, save_copy_modal.rs  # text inputs

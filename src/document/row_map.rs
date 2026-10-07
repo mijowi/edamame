@@ -110,6 +110,42 @@ pub fn revealed_diagram_line(parsed: &ParsedDoc, block: usize, row: usize) -> Op
     (line == k).then_some(line)
 }
 
+/// The source lines row `row` of `block` expands to when it is the revealed cursor row: `Some`
+/// for a reflowed paragraph's flow row, at any depth, whose raw form is its source lines stacked
+/// (taller than the one wrapped row it renders as), `None` for every other row, which reveals in
+/// place.  The one gate the reveal patch (`EffectiveRows`), the view, the click and the reveal
+/// timer share.  A paragraph reflows when reflow is on and it has no hard break
+/// ([`paragraph_can_reflow`](crate::markdown::renderer::paragraph_can_reflow), the renderer's
+/// rule); its flow is then its only row, a `Flow` origin over the paragraph's lines.  That holds
+/// for a one-line paragraph too (each item of a list of one-liners), which stacks its one line.
+pub fn stacked_lines(parsed: &ParsedDoc, block: usize, row: usize) -> Option<Range<u32>> {
+    if !parsed.reflow_paragraphs {
+        return None;
+    }
+    let (origins, band) = own_origins(parsed, block);
+    let origin = origins.get(row.checked_sub(band)?)?;
+    if !matches!(
+        origin.cols,
+        ColOrigin::Content {
+            kind: ContentKind::Flow,
+            ..
+        }
+    ) {
+        return None;
+    }
+    let lines = origin.lines.clone()?;
+    let range_start = parsed.source_map.original_range_for_block(block)?.start;
+    let ast = parsed.real_block_for_byte(range_start)?;
+    match leaf_at(ast, lines.start)? {
+        Block::Paragraph { inlines, .. }
+            if crate::markdown::renderer::paragraph_can_reflow(inlines) =>
+        {
+            Some(lines)
+        }
+        _ => None,
+    }
+}
+
 // ── Columns ───────────────────────────────────────────────────────────────
 
 /// A position in a block's source: a block-relative line and a char column on it.  Ordered

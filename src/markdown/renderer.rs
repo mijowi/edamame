@@ -245,9 +245,9 @@ impl<'t> Renderer<'t> {
         out: &mut RowSink,
         indent_prefix: &str,
         // Whether `block` is a top-level document block.  Nested calls (blockquote children,
-        // list-item blocks, footnote-definition bodies) pass `false`: their paragraphs never
-        // reflow (see `render_paragraph`), a setext H2 gets no rule, and a list renders loose
-        // spacing only directly inside a quote (see `render_blockquote`).
+        // list-item blocks, footnote-definition bodies) pass `false`: a setext H2 gets no rule,
+        // and a list renders loose spacing only directly inside a quote (see
+        // `render_blockquote`).
         top_level: bool,
     ) {
         match block {
@@ -275,13 +275,7 @@ impl<'t> Renderer<'t> {
                         out,
                     );
                 } else {
-                    self.render_paragraph(
-                        inlines,
-                        src,
-                        out,
-                        indent_prefix,
-                        self.reflow_paragraphs && top_level,
-                    );
+                    self.render_paragraph(inlines, src, out, indent_prefix);
                 }
             }
             Block::CodeBlock {
@@ -681,16 +675,8 @@ impl<'t> Renderer<'t> {
         src: &SrcLines,
         out: &mut RowSink,
         indent_prefix: &str,
-        // Reflow this paragraph.  Only true for a genuinely top-level `Block::Paragraph`: the
-        // rendered-row ↔ source-line consumers (gutter, mouse, overlay, `EffectiveRows`) key on
-        // a top-level `Block::Paragraph` via `real_block_for_byte`.
-        reflow: bool,
     ) {
-        // A paragraph with a hard break renders as several logical lines, each spanning several
-        // source lines — a shape the consumers can't map (they assume a reflowed paragraph is one
-        // rendered line).  Fall back to one row per source line for it, exactly like reflow-off.
-        let reflow = reflow && !inlines.iter().any(|i| matches!(i, Inline::HardBreak));
-
+        let reflow = self.paragraph_reflows(inlines);
         let prefix = indent_prefix.to_string();
         let mut rows =
             paragraph_rows(inlines, src, reflow, to_u32(str_cells(indent_prefix))).peekable();
@@ -710,6 +696,16 @@ impl<'t> Renderer<'t> {
                 out.push(Line::from(spans), origin);
             }
         }
+    }
+
+    /// Whether a paragraph of `inlines` renders as one reflowed flow, at any depth: reflow is on
+    /// and the paragraph has no hard break.  A hard break would make the flow several logical
+    /// lines, each spanning several source lines, which the stacked reveal (one row expanding to
+    /// its source lines) can't express, so such a paragraph keeps one row per source line, as
+    /// with reflow off.  [`row_map::stacked_lines`](crate::document::row_map::stacked_lines)
+    /// asks the same question of the AST.
+    pub(crate) fn paragraph_reflows(&self, inlines: &[Inline]) -> bool {
+        self.reflow_paragraphs && paragraph_can_reflow(inlines)
     }
 
     // ── Code block ────────────────────────────────────────────────
@@ -1210,6 +1206,12 @@ pub(super) fn paragraph_rows<'a>(
         })
 }
 
+/// Whether a paragraph of `inlines` reflows when reflow is on: it has no hard break.  See
+/// [`Renderer::paragraph_reflows`].
+pub(crate) fn paragraph_can_reflow(inlines: &[Inline]) -> bool {
+    !inlines.iter().any(|i| matches!(i, Inline::HardBreak))
+}
+
 /// Soft and hard breaks inside `inlines`' emphasis, links and highlights: line breaks that don't
 /// split a paragraph segment.
 fn nested_breaks(inlines: &[Inline]) -> usize {
@@ -1666,6 +1668,42 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, vec!["one", "two", "three"]);
+    }
+
+    /// Reflow reaches nested paragraphs too: a list item's first and later paragraphs, a
+    /// quote's, a footnote's, each one flow behind its prefix, while a hard break keeps its
+    /// paragraph one row per source line at any depth.
+    #[test]
+    fn reflow_joins_nested_paragraphs_into_one_flow_each() {
+        let lines = renderer()
+            .with_viewport_width(80)
+            .with_reflow_paragraphs(true)
+            .render(&parse(
+                "- a\n  soft\n\n  later\n  para\n- b\\\n  hard\n\n> q\n> more\n\n[^n]: one\n    two\n",
+            ));
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "• a soft",
+                "    later para",
+                "• b",
+                "  hard",
+                "▎ q more",
+                "  n.  one two ↩",
+            ],
+            "{texts:?}"
+        );
     }
 
     /// Reflow joins soft breaks into one *logical* line; wrapping to the

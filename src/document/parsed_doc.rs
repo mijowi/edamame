@@ -102,10 +102,10 @@ pub struct ParsedDoc {
     /// text on first use.
     row_cache: Vec<OnceCell<RowCache>>,
     /// Whether this parse rendered prose paragraphs with reflow on (soft breaks → spaces,
-    /// wrapped as one flow).  Row and column questions read the flow from its `RowOrigin`; what
-    /// still branches on it (through [`is_reflowed_paragraph_at`](Self::is_reflowed_paragraph_at))
-    /// is the reveal's timing and its stacked raw lines, in `editor::state`,
-    /// `state_cursor_block` and `mouse_ops::coord`.
+    /// wrapped as one flow, at any depth).  Row and column questions read the flow from its
+    /// `RowOrigin`; what still branches on it (through
+    /// [`row_map::stacked_lines`](crate::document::row_map::stacked_lines)) is the reveal's
+    /// timing and its stacked raw lines.
     pub reflow_paragraphs: bool,
     /// `(block_idx, band_rows)` for a `$$...$$` block currently revealed with the live math
     /// preview, or `None`.  When set, that block's rendered rows split into a top preview band of
@@ -440,29 +440,6 @@ impl ParsedDoc {
             // starts with no preview split.
             math_source_offset: None,
         }
-    }
-
-    /// Whether the block covering `byte` is a paragraph rendered with reflow on *and* collapsed
-    /// to a single rendered logical line.  The single gate the reflow-aware consumers (gutter,
-    /// mouse, overlay, `EffectiveRows`) share so they agree on which blocks lost the 1:1
-    /// source-line ↔ rendered-row correspondence.  Resolved through
-    /// [`real_block_for_byte`](Self::real_block_for_byte), never a raw `blocks` index (whose
-    /// space counts blank-line virtual blocks).
-    ///
-    /// A paragraph with a hard break does not reflow (`render_paragraph`), so it renders as
-    /// several logical lines and the single-line check excludes it — those consumers keep the
-    /// per-source-line path.  A soft-break-only paragraph stays one logical line even when it
-    /// wraps to several *visual* rows, so wrapping is unaffected.
-    pub fn is_reflowed_paragraph_at(&self, byte: usize) -> bool {
-        self.reflow_paragraphs
-            && matches!(
-                self.real_block_for_byte(byte),
-                Some(crate::markdown::Block::Paragraph { .. })
-            )
-            && {
-                let r = self.source_map.rendered_lines_for_byte(byte);
-                r.end.saturating_sub(r.start) == 1
-            }
     }
 
     /// Every row's origin, 1:1 with [`lines`](Self::lines).

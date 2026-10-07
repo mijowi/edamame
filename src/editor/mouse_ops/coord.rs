@@ -300,27 +300,29 @@ pub fn rendered_sub_line_to_offset(
     // A reflowed paragraph revealed in Rendered mode shows its raw source lines *stacked*, so
     // `sub_row_within_line` walks those lines' wrap rows.  Find the raw line and wrap sub it
     // lands on, map the cell column within that raw line, and resolve to a buffer offset via the
-    // raw line's buffer position — the same shape as the diagram reveal below.  (Preview always
-    // shows the flow, which `row_map` maps like any other row.)
-    if state.parsed.is_reflowed_paragraph_at(block.range.start)
-        && state.mode == Mode::Rendered
-        && state.cursor_block_revealed()
-        && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state)
+    // raw line's buffer position — the same shape as the diagram reveal below.  The paragraph
+    // may be nested, so the stack is the block's lines `EffectiveRows` names, not all of them.
+    // (Preview always shows the flow, which `row_map` maps like any other row.)
+    let effective = state.effective_rows(viewport_width);
+    if effective
+        .block_rendered()
+        .is_some_and(|r| r.contains(&rendered_line_idx))
     {
-        let raw_lines = crate::ui::rendered_view::revealed_source_lines(block_text);
+        let stack = effective.raw_lines();
+        let block_lines = crate::ui::rendered_view::raw_source_lines(block_text);
         let mut remaining = sub_row_within_line;
-        let mut chosen = raw_lines.len().saturating_sub(1);
+        let mut chosen = stack.end.saturating_sub(1).max(stack.start);
         let mut wrap_sub = 0usize;
-        for (i, rl) in raw_lines.iter().enumerate() {
-            let n = revealed_raw_rows(rl, viewport_width).0.len().max(1);
+        for line in stack.clone() {
+            let n = effective.raw_wrap_at(line);
             if remaining < n {
-                chosen = i;
+                chosen = line;
                 wrap_sub = remaining;
                 break;
             }
             remaining -= n;
         }
-        let raw_line_text = raw_lines.get(chosen).copied().unwrap_or("");
+        let raw_line_text = block_lines.get(chosen).copied().unwrap_or("");
         let raw_col = raw_click_col(raw_line_text, wrap_sub, col, viewport_width);
         let first_buf_line = state.buffer.rope().byte_to_line(block.range.start);
         let target = (first_buf_line + chosen).min(state.buffer.line_count().saturating_sub(1));
@@ -432,7 +434,7 @@ fn table_click_to_offset(
 /// The char of `line_text` under cell `col` on wrap row `sub` of the line, laid out as the
 /// reveal painter lays out raw source.
 fn raw_click_col(line_text: &str, sub: usize, col: usize, viewport_width: usize) -> usize {
-    let (rows, indent) = revealed_raw_rows(line_text, viewport_width);
+    let (rows, indent) = line_render::revealed_rows_of_str(line_text, viewport_width);
     let sub = sub.min(rows.len().saturating_sub(1));
     let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
     let (start, end, _) = row;
@@ -483,7 +485,6 @@ fn locate_block(state: &EditorState, rendered_line_idx: usize) -> Option<BlockLo
 struct CursorReveal {
     block_idx: usize,
     block_lines: std::ops::Range<usize>,
-    block_start: usize,
     text: String,
     /// The revealed cursor row and the raw line it paints (see [`is_revealed_cursor_row`]).
     cursor_row: usize,
@@ -513,7 +514,6 @@ fn cursor_reveal(state: &EditorState) -> Option<CursorReveal> {
     Some(CursorReveal {
         block_idx,
         block_lines,
-        block_start: block_range.start,
         text,
         cursor_row: crate::editor::state::cursor_rendered_line_idx(state),
         cursor_line: crate::editor::state::cursor_raw_line(state),
@@ -548,15 +548,20 @@ fn revealed_raw_row_count(
         let raw_line = row_line
             .and_then(|l| block_text.split('\n').nth(l))
             .unwrap_or("");
-        return Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1));
+        return Some(line_render::revealed_row_count(raw_line, viewport_width));
     }
 
     // A revealed reflowed paragraph is one rendered line that reveals to its *stacked* raw lines,
     // so its row count is the sum of every raw line's wrap count — not just the first line's.
-    if state.parsed.is_reflowed_paragraph_at(reveal.block_start) {
-        let total: usize = crate::ui::rendered_view::revealed_source_lines(block_text)
-            .iter()
-            .map(|rl| revealed_raw_rows(rl, viewport_width).0.len().max(1))
+    // Its block's other rows (an item's siblings, a quote's other paragraphs) stay rendered.
+    let effective = state.effective_rows(viewport_width);
+    if effective
+        .block_rendered()
+        .is_some_and(|r| r.contains(&rendered_line_idx))
+    {
+        let total: usize = effective
+            .raw_lines()
+            .map(|line| effective.raw_wrap_at(line))
             .sum();
         return Some(total.max(1));
     }
@@ -576,7 +581,7 @@ fn revealed_raw_row_count(
     if !row_map::reveals(&state.parsed, reveal.block_idx, cursor_row_in_block) {
         return None;
     }
-    Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1))
+    Some(line_render::revealed_row_count(raw_line, viewport_width))
 }
 
 /// Whether `rendered_line_idx` is the revealed cursor row of block `block_idx`, which paints
@@ -598,28 +603,6 @@ fn is_revealed_cursor_row(state: &EditorState, block_idx: usize, rendered_line_i
             block_idx,
             rendered_line_idx.saturating_sub(block_start),
         )
-}
-
-/// Wrap layout of a raw source line exactly as the reveal painter lays it out, plus the
-/// hanging indent it used.  `render_line` derives that indent from the line's leading marker,
-/// so `visual_rows_of_str` (indent 0) would disagree on both row count and continuation start
-/// columns.  Callers must shift `col` by the indent on sub-rows past the first.
-///
-/// The indent is the *effective* one: when `indent + 1 >= width` the painter falls back to a
-/// flat layout, and reporting the raw marker width would push every continuation row into
-/// `char_idx_at_cell_col`'s forbidden-indent zone.
-fn revealed_raw_rows(raw_line: &str, viewport_width: usize) -> (Vec<(usize, usize, usize)>, usize) {
-    let width = viewport_width.max(1);
-    let indent = line_render::compute_hanging_indent_str(raw_line);
-    let indent = if indent + 1 >= width { 0 } else { indent };
-    let chars: Vec<(char, ratatui::style::Style)> = raw_line
-        .chars()
-        .map(|c| (c, ratatui::style::Style::default()))
-        .collect();
-    (
-        line_render::visual_rows_of_chars(&chars, width, indent),
-        indent,
-    )
 }
 
 /// Byte range within `block_text` of raw line `raw_line_idx`, clamped to the block's last line.
@@ -998,6 +981,32 @@ mod tests {
         assert_eq!(off_col, 10);
     }
 
+    /// A revealed nested reflowed paragraph stacks only its own lines, past its block's first:
+    /// a click on its second stacked row lands on that source line's char, container indent and
+    /// all, and the sibling item below it still maps through its rendered row.
+    #[test]
+    fn click_in_revealed_nested_flow_maps_to_its_stacked_raw_line() {
+        let src = "- one\n- two\n  three\n- four\n";
+        let mut st = EditorState::new(Buffer::from_str(src), theme());
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(80);
+        st.sync_reflow_for_mode();
+        st.cursor.offset = src.find("two").unwrap();
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None;
+        assert!(st.effective_rows(80).has_reveal());
+        // Rows: 0 `• one`, 1 the stack (`- two`, `  three`), 2 `• four`.  Col 3 of the stack's
+        // second row is the `h` of `three`.
+        let off = rendered_sub_line_to_offset(&st, 1, 1, 3, 80);
+        assert_eq!(off, src.find("hree").unwrap());
+        // The stack's walk counts both raw rows; `four` stays rendered, its `f` at col 2.
+        let reveal = cursor_reveal(&st);
+        assert_eq!(revealed_raw_row_count(&st, reveal.as_ref(), 1, 80), Some(2));
+        assert_eq!(revealed_raw_row_count(&st, reveal.as_ref(), 2, 80), None);
+        let off = rendered_sub_line_to_offset(&st, 2, 0, 2, 80);
+        assert_eq!(off, src.find("four").unwrap());
+    }
+
     /// A cursor on a line rendering no row of its own (the blank between an item's paragraphs)
     /// shares the next line's row, and the revealed row paints the cursor's line, not that one:
     /// its wrap count and a click on it must both be the blank line's.
@@ -1028,8 +1037,9 @@ mod tests {
     #[test]
     fn click_in_hard_break_paragraph_stays_per_source_line() {
         let state = preview_state("one two  \nthree\n", 80);
-        assert!(
-            !state.parsed.is_reflowed_paragraph_at(0),
+        assert_eq!(
+            row_map::stacked_lines(&state.parsed, 0, 0),
+            None,
             "a hard-break paragraph is multi-line and must not take the reflow path",
         );
         let off = rendered_sub_line_to_offset(&state, 1, 0, 0, 80);

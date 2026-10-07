@@ -113,11 +113,11 @@ impl<'t> Renderer<'t> {
                             let prefix_cells: usize =
                                 spans.iter().map(|s| str_cells(&s.content)).sum();
                             let continuation = " ".repeat(prefix_cells);
-                            // One row per source line, like the item's later paragraphs: no
-                            // nested paragraph reflows (see `render_paragraph`).
+                            // Reflowed as one flow, or one row per source line, like the
+                            // item's later paragraphs (see `render_paragraph`).
+                            let join = self.paragraph_reflows(inlines);
                             let mut rows =
-                                paragraph_rows(inlines, src, false, to_u32(prefix_cells))
-                                    .peekable();
+                                paragraph_rows(inlines, src, join, to_u32(prefix_cells)).peekable();
                             let mut first = true;
                             while let Some((segment, origin)) = rows.next() {
                                 let rendered = self.render_inlines(segment, checked_text_style);

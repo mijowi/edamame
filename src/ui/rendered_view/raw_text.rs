@@ -1,3 +1,4 @@
+use crate::document::row_map::RawPos;
 use crate::editor::EditorState;
 
 /// Split raw block source into lines, dropping the phantom empty entry a trailing
@@ -41,18 +42,6 @@ pub(crate) fn revealed_source_line_count(source: &str) -> usize {
         .take_while(|line| line.trim().is_empty())
         .count();
     total.saturating_sub(trailing).max(1)
-}
-
-/// The raw source lines a block reveals: [`raw_source_lines`] with trailing blank lines dropped
-/// (never below one).  The reflow reveal stacks these, so it must use the same set
-/// [`revealed_source_line_count`] counts — a paragraph's byte range absorbs the blank line after
-/// it, and that blank owns its own rendered row, so revealing it too would over-count the block.
-pub(crate) fn revealed_source_lines(source: &str) -> Vec<&str> {
-    let mut lines = raw_source_lines(source);
-    while lines.len() > 1 && lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines
 }
 
 /// Byte offset within `block_source` where raw line `line_idx` starts.
@@ -104,14 +93,13 @@ pub(super) fn text_sel_cols(
     ))
 }
 
-/// Raw source of the cursor's block, plus where the cursor sits inside it — the single
-/// derivation shared by `RenderedView` and `editor::state::cursor_rendered_line_idx`, which
-/// used to drift when computed twice.
+/// Raw source of the cursor's block, plus where the cursor sits inside it: [`block_source`]
+/// and [`cursor_block_pos`] together, for `RenderedView`, which paints from the text.
 ///
 /// Does not cover `RenderedView`'s stale-parse path, which rebuilds the source from
 /// `cursor_block_line_range`.
 pub(crate) struct RawBlockCursor {
-    /// Raw source text of the block, as `original_range_for_byte` bounds it.
+    /// Raw source text of the block, as `original_range_for_block` bounds it.
     pub source: String,
     /// Index of the cursor's line within [`raw_source_lines`] of `source`.
     pub raw_line: usize,
@@ -120,59 +108,76 @@ pub(crate) struct RawBlockCursor {
 }
 
 /// Extract the cursor block's raw source and locate the cursor within it.
-pub(crate) fn raw_block_cursor(state: &EditorState, cursor_byte: usize) -> RawBlockCursor {
-    let source: String = state
-        .parsed
-        .source_map
-        .original_range_for_byte(cursor_byte)
-        .map(|r| {
-            let contents = state.buffer.contents();
-            let end = r.end.min(contents.len());
-            contents.get(r.start..end).unwrap_or("").to_owned()
-        })
-        .unwrap_or_default();
-    let (raw_line, col) = cursor_position_in_block(state, cursor_byte, &source);
+pub(crate) fn raw_block_cursor(state: &EditorState) -> RawBlockCursor {
+    let Some((block, pos)) = cursor_block_pos(state) else {
+        return RawBlockCursor {
+            source: String::new(),
+            raw_line: 0,
+            col: 0,
+        };
+    };
     RawBlockCursor {
-        source,
-        raw_line,
-        col,
+        source: block_source(state, block),
+        raw_line: pos.line,
+        col: pos.col,
     }
 }
 
-/// `(raw_line_index, col)` of the cursor within the block; col is in chars. The index is into
-/// [`raw_source_lines`], so a cursor at or past the end clamps to the last real line.
-fn cursor_position_in_block(
-    state: &EditorState,
-    cursor_byte: usize,
-    raw_source: &str,
-) -> (usize, usize) {
-    if raw_source.is_empty() {
-        return (0, 0);
-    }
-
-    let block_start_byte = state
+/// The raw source of block `block` (a source-map index), read off the live buffer: the block
+/// alone, never a copy of the whole document.
+pub(crate) fn block_source(state: &EditorState, block: usize) -> String {
+    let rope = state.buffer.rope();
+    state
         .parsed
         .source_map
-        .original_range_for_byte(cursor_byte)
-        .map(|r| r.start)
-        .unwrap_or(0);
+        .original_range_for_block(block)
+        .map(|r| {
+            let end = r.end.min(rope.len_bytes());
+            let start = r.start.min(end);
+            rope.slice(rope.byte_to_char(start)..rope.byte_to_char(end))
+                .to_string()
+        })
+        .unwrap_or_default()
+}
 
-    let cursor_offset_in_block = cursor_byte.saturating_sub(block_start_byte);
-
-    let lines = raw_source_lines(raw_source);
-    let mut byte_pos = 0usize;
-    for (line_idx, line) in lines.iter().enumerate() {
-        let line_end = byte_pos + line.len();
-        if cursor_offset_in_block <= line_end {
-            let col_bytes = cursor_offset_in_block.saturating_sub(byte_pos);
-            let col = line[..col_bytes.min(line.len())].chars().count();
-            return (line_idx, col);
+/// The cursor's block (a source-map index) and its position there: the line within
+/// [`raw_source_lines`] of the block's source and the char column on it.  The single derivation
+/// every cursor-row question reads — `RenderedView` (through [`raw_block_cursor`]),
+/// `editor::state::cursor_rendered_line_idx` / `cursor_raw_line`, the reflow reveal
+/// (`EditorState::cursor_stacked_row`) and the click mapping — so they can't drift apart.
+///
+/// Lines are counted at `\n` only, as [`raw_source_lines`] splits them, not at every break
+/// `ropey` knows.  A cursor past the block's last line (its extended range runs on, or the
+/// phantom line after a final newline) clamps to that line's end; one before the block's start
+/// to its start.  Walks the block's chunks in the rope without copying them.
+pub(crate) fn cursor_block_pos(state: &EditorState) -> Option<(usize, RawPos)> {
+    let rope = state.buffer.rope();
+    let cursor_byte = rope.char_to_byte(state.cursor.offset);
+    let block = state.parsed.source_map.block_for_byte(cursor_byte)?;
+    let range = state.parsed.source_map.original_range_for_block(block)?;
+    let end = range.end.min(rope.len_bytes());
+    let start = range.start.min(end);
+    // A trailing newline ends the last line rather than opening another (`raw_source_lines`).
+    let content_end = if end > start && rope.byte(end - 1) == b'\n' {
+        end - 1
+    } else {
+        end
+    };
+    let at = cursor_byte.clamp(start, content_end);
+    let mut pos = RawPos { line: 0, col: 0 };
+    for chunk in rope
+        .slice(rope.byte_to_char(start)..rope.byte_to_char(at))
+        .chunks()
+    {
+        match chunk.rfind('\n') {
+            Some(i) => {
+                pos.line += chunk.bytes().filter(|&b| b == b'\n').count();
+                pos.col = chunk[i + 1..].chars().count();
+            }
+            None => pos.col += chunk.chars().count(),
         }
-        byte_pos = line_end + 1; // +1 for the '\n'
     }
-
-    let last_line = lines.last().copied().unwrap_or("");
-    (lines.len().saturating_sub(1), last_line.chars().count())
+    Some((block, pos))
 }
 
 #[cfg(test)]
@@ -188,6 +193,59 @@ mod tests {
         assert_eq!(raw_line_sel_cols(src, 10, 1, "цd", (15, 16)), Some((1, 2)));
         // A range ending at the line's start, or covering only line 0, misses it.
         assert_eq!(raw_line_sel_cols(src, 10, 1, "цd", (10, 13)), None);
+    }
+
+    /// `cursor_block_pos` walks the rope; it must place every cursor exactly where splitting the
+    /// block's source at `\n` would, the way `raw_source_lines` and the painter count: past
+    /// breaks `ropey` alone counts as lines (`\r`, U+2028), on a trailing blank
+    /// the block absorbs, and clamped past the block's end.
+    #[test]
+    fn cursor_block_pos_counts_lines_as_the_block_source_splits_them() {
+        use crate::config::Theme;
+        use crate::document::Buffer;
+
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        for src in [
+            "alpha\nbravo\n\nnext\n",
+            "a\u{2028}b\nc d\n",
+            "lone\rcr\nline\n",
+            "- a\n  b\n\n  c\n- d\n",
+            "> q\n> r\n",
+            "| a |\n|---|\n| ж |\n",
+            "no newline",
+            "",
+        ] {
+            let mut state = EditorState::new(Buffer::from_str(src), theme);
+            // The buffer normalizes line endings, so the reference reads its text.
+            let text = state.buffer.contents();
+            for offset in 0..=state.buffer.len_chars() {
+                state.cursor.offset = offset;
+                let Some((block, pos)) = cursor_block_pos(&state) else {
+                    continue;
+                };
+                // The reference: the block's source split at `\n`, the cursor clamped into it.
+                let range = state
+                    .parsed
+                    .source_map
+                    .original_range_for_block(block)
+                    .unwrap();
+                let source = &text[range.start..range.end.min(text.len())];
+                let at = state.buffer.rope().char_to_byte(offset).max(range.start) - range.start;
+                let lines = raw_source_lines(source);
+                let mut want = (lines.len() - 1, lines.last().unwrap().chars().count());
+                let mut line_start = 0;
+                for (i, line) in lines.iter().enumerate() {
+                    if at <= line_start + line.len() {
+                        want = (i, line[..at.saturating_sub(line_start)].chars().count());
+                        break;
+                    }
+                    line_start += line.len() + 1;
+                }
+                assert_eq!((pos.line, pos.col), want, "offset {offset} in {src:?}");
+                let raw = raw_block_cursor(&state);
+                assert_eq!(raw.source, source, "offset {offset} in {src:?}");
+            }
+        }
     }
 
     #[test]

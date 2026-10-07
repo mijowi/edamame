@@ -43,15 +43,16 @@ impl EditorState {
         visual_row: usize,
     ) -> Option<usize> {
         use crate::editor::effective_rows::RowHit;
-        // Route through `EffectiveRows` so a revealed reflowed block's raw expansion is counted:
-        // its rows are raw source lines, and rows below it shift.  Identity everywhere else, so
-        // this equals the base `line_at_visual_row` outside that reveal.
+        // Route through `EffectiveRows` so a revealed reflowed paragraph's raw expansion is
+        // counted: its rows are raw source lines, and rows below it shift.  Identity everywhere
+        // else, so this equals the base `line_at_visual_row` outside that reveal.
         match effective.line_at_visual_row(visual_row) {
             RowHit::Raw { raw_line, sub } => {
                 if sub != 0 {
                     return None; // a wrap continuation of a raw line carries no number
                 }
-                // Each revealed raw line is a source line: the block's first source line + offset.
+                // Each revealed raw line is a source line: `raw_line` is block-relative, so the
+                // block's first source line + it.
                 let cursor_byte = self.buffer.rope().char_to_byte(self.cursor.offset);
                 let block_start = self
                     .parsed
@@ -317,7 +318,9 @@ mod tests {
     /// one line numbered every row below it with the line above its own.
     #[test]
     fn emphasis_across_a_break_keeps_the_numbers_below_it() {
-        let state = state_for("- *a\n  b* c\n  d\n", 80);
+        // With reflow off, so the item keeps a row per source line.
+        let mut state = state_for("- *a\n  b* c\n  d\n", 80);
+        state.set_reflow(false);
         // Rows: `• a b c` (lines 0–1), `d`.
         assert_eq!(labels(&state, 80)[..2], [Some(0), Some(2)]);
     }
@@ -362,7 +365,9 @@ mod tests {
                 &[Some(0), Some(1), Some(2)][..],
             ),
         ] {
+            // With reflow off, so an item's soft break keeps its row.
             let mut state = state_for(source, 80);
+            state.set_reflow(false);
             let labels = labels(&state, 80);
             assert_eq!(labels[..expected.len()], *expected, "{source:?}");
             for (row, line) in expected
@@ -476,6 +481,46 @@ mod tests {
             numbered.contains(&4),
             "`after` (line 4) must keep its own number: {labels:?}"
         );
+    }
+
+    /// A nested reflowed paragraph (an item's) numbers its flow row with its first source line
+    /// only, its folded lines unnumbered, while it stays rendered; revealed, its stacked raw lines
+    /// each carry their own number, and every row below keeps its own.
+    #[test]
+    fn a_nested_reflowed_paragraph_numbers_its_lines() {
+        let source = "- one\n- alpha\n  bravo\n  charlie\n- four\n";
+        let mut state = state_for(source, 80);
+        // Entered on its first line, so the reveal delay runs: the item's flow is one row.
+        state.cursor.offset = source.find("alpha").unwrap();
+        state.update_cursor_block();
+        assert_eq!(labels(&state, 80)[..3], [Some(0), Some(1), Some(4)]);
+
+        state.cursor_block_entered_at = None;
+        let effective = state.effective_rows(80);
+        assert!(effective.has_reveal());
+        let revealed: Vec<_> = (0..effective.total_visual_rows())
+            .map(|row| state.source_line_at_visual_row_with(&effective, row))
+            .collect();
+        assert_eq!(revealed[..5], [Some(0), Some(1), Some(2), Some(3), Some(4)]);
+    }
+
+    /// The same for a quote's paragraph, one of two in its block: collapsed, its flow row takes
+    /// its first line's number; stacked, each line its own, and the paragraph below keeps its.
+    #[test]
+    fn a_quoted_reflowed_paragraph_numbers_its_lines() {
+        let source = "> alpha\n> bravo\n> charlie\n>\n> last\n";
+        let mut state = state_for(source, 80);
+        state.cursor.offset = source.find("alpha").unwrap();
+        state.update_cursor_block();
+        assert_eq!(labels(&state, 80)[..3], [Some(0), Some(3), Some(4)]);
+
+        state.cursor_block_entered_at = None;
+        let effective = state.effective_rows(80);
+        assert!(effective.has_reveal());
+        let revealed: Vec<_> = (0..effective.total_visual_rows())
+            .map(|row| state.source_line_at_visual_row_with(&effective, row))
+            .collect();
+        assert_eq!(revealed[..5], [Some(0), Some(1), Some(2), Some(3), Some(4)]);
     }
 
     /// A version-keyed cache would rebuild the full-document walk on every keystroke.

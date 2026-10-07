@@ -10,7 +10,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Changed
 
-- Text in a list item keeps your line breaks, with each source line on its own row, the way the item's later paragraphs already did. Before, an item's first paragraph was joined onto one row.
+- Paragraphs inside list items, blockquotes and footnotes now reflow to the width of your terminal, like top-level paragraphs already did. Moving the cursor into one shows its source lines as written, ready to edit. With reflow off, every paragraph keeps your line breaks, one row per source line. Before, a list item's first paragraph was joined onto one row while its later paragraphs kept their breaks.
 - Blank `>` lines in a blockquote show as empty quoted rows, exactly as many as you wrote. Before, the quote put one blank row between its parts whether or not the source had one.
 
 ### Fixed
@@ -25,6 +25,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Search matches, selections, and the yank highlight in a table cell now show on text after bold, italic, code, or a link in the same cell, and on the right row when the cell wraps. Before, they were missing or misplaced there.
 - In a table, the cursor shows on the character it's on while you search or drag, and for a moment before the cell switches to its raw text. Before, it sat past that character, by one column on a cell's first character and further after bold, italic, code or a link.
 - The yank highlight in vim mode now covers the text you yanked on a line you're editing, in a heading, and inside a Mermaid diagram or math block you're editing, and lines below a paragraph you're editing no longer highlight a row off.
+- The cursor at the end of a line exactly as wide as the window, in Raw mode or on a line you're editing, now shows on the line's last character. Before, it disappeared.
 
 ## [0.1.5] - 2026-10-05
 

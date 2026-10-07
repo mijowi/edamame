@@ -31,9 +31,15 @@ impl EditorState {
             Some(start_line..end_line + 1)
         });
 
-        // Crossing into a different block drops the "revealed as one unit" latch: the new block
-        // must earn its own reveal (a dwell, or the immediate reflow-from-below case below).
-        if previous_block_idx != self.cursor_block_idx {
+        // Crossing into a different block, or into or out of a reflowed paragraph (which can be
+        // one of many in a list or quote), drops the "revealed as one unit" latch: the new block
+        // or paragraph must earn its own reveal (a dwell, or the immediate reflow-from-below case
+        // below).
+        let previous_unit = self.cursor_stacked_unit;
+        self.cursor_stacked_unit = self.cursor_stacked_row().map(|stacked| stacked.unit());
+        let entering = previous_block_idx != self.cursor_block_idx
+            || previous_unit != self.cursor_stacked_unit;
+        if entering {
             self.cursor_reveal_latched = false;
         }
 
@@ -49,17 +55,16 @@ impl EditorState {
             // The one exception is *entering* a reflowed paragraph on a line other than its first
             // — an upward move or a click.  Its raw form is taller than its rendered form, so
             // during the delay the collapsed single flow row can't show the cursor on its true
-            // line: it would sit on that top row and then drop when the block expands.  Reveal
+            // line: it would sit on that top row and then drop when the paragraph expands.  Reveal
             // such an entry at once (and latch it) so the cursor lands on the right line
             // immediately.  A top-line entry (a downward move) keeps the delay — its line *is* the
             // flow row, so nothing jumps and fast downward scrolling stays smooth.
-            let entering_block = previous_block_idx != self.cursor_block_idx;
-            let on_first_line = self
-                .cursor_block_line_range
-                .as_ref()
-                .is_some_and(|r| current_line == r.start);
-            if entering_block && !on_first_line && self.parsed.is_reflowed_paragraph_at(cursor_byte)
-            {
+            let off_first_line = self.cursor_stacked_unit.is_some_and(|(_, first)| {
+                self.cursor_block_line_range
+                    .as_ref()
+                    .is_some_and(|r| current_line != r.start + first as usize)
+            });
+            if entering && off_first_line {
                 self.cursor_block_entered_at = None;
                 self.cursor_reveal_latched = true;
             } else {
@@ -110,10 +115,7 @@ impl EditorState {
             return;
         }
         let is_one_unit = self.cursor_block_idx.is_some_and(|idx| {
-            self.parsed.is_diagram_reveal_block(idx) || {
-                let cursor_byte = self.buffer.rope().char_to_byte(self.cursor.offset);
-                self.parsed.is_reflowed_paragraph_at(cursor_byte)
-            }
+            self.parsed.is_diagram_reveal_block(idx) || self.cursor_stacked_row().is_some()
         });
         if is_one_unit && self.cursor_block_revealed() {
             self.cursor_reveal_latched = true;
@@ -339,6 +341,61 @@ mod tests {
         assert!(
             st.cursor_block_entered_at.is_some(),
             "entering on the first line must keep the reveal delay",
+        );
+    }
+
+    /// A nested reflowed paragraph is a unit of its own, though its block (a list) holds others:
+    /// entering one on a line other than its first reveals it at once, from a sibling item's
+    /// paragraph as from outside the list.
+    #[test]
+    fn entering_a_nested_reflowed_paragraph_from_below_reveals_immediately() {
+        let src = "- one\n- two\n  three\n- four\n  five\n";
+        let mut st = EditorState::new(Buffer::from_str(src), theme());
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(80);
+        st.sync_reflow_for_mode();
+        // Revealed and latched in the last item's paragraph.
+        st.cursor.offset = src.find("five").unwrap();
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None;
+        st.latch_cursor_reveal();
+        assert!(st.cursor_reveal_latched);
+
+        // Up into the item above: same block, another paragraph, entered on its second line.
+        st.cursor.offset = src.find("three").unwrap();
+        st.update_cursor_block();
+        assert!(
+            st.cursor_block_entered_at.is_none(),
+            "entering a nested reflowed paragraph off its first line must skip the delay",
+        );
+        assert!(st.cursor_reveal_latched, "and latch it");
+        assert_eq!(st.effective_rows(80).raw_lines(), 1..3);
+    }
+
+    /// Leaving a nested reflowed paragraph for another row of its block (a sibling item's first
+    /// line) drops its latch: the new row honors the delay, as a new block would.
+    #[test]
+    fn leaving_a_nested_reflowed_paragraph_drops_its_latch() {
+        let src = "- one\n- two\n  three\n- four\n";
+        let mut st = EditorState::new(Buffer::from_str(src), theme());
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(80);
+        st.sync_reflow_for_mode();
+        st.cursor.offset = src.find("three").unwrap();
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None;
+        st.latch_cursor_reveal();
+        assert!(st.cursor_reveal_latched);
+
+        st.cursor.offset = src.find("four").unwrap();
+        st.update_cursor_block();
+        assert!(
+            !st.cursor_reveal_latched,
+            "a sibling paragraph must earn its own reveal"
+        );
+        assert!(
+            !st.cursor_block_revealed(),
+            "entering it on its first line keeps the delay"
         );
     }
 

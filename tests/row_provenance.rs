@@ -492,6 +492,16 @@ const CORPUS: &[&str] = &[
     "x == y... and a ==hi== b...\n",
     // Fences whose rows are all chrome, nested where char 0 is a container prefix.
     "- a\n\n  ```rust\n  x\n  ```\n\n> - ```\n>   y\n>   ```\n",
+    // Nested paragraphs that reflow (Phase 7): a quote's, an item's first and later ones, a
+    // list in a quote, a task's, lazy continuations, and markup spanning a soft break.
+    "> first para\n>\n> alpha bravo\n> charlie *delta\n> echo* foxtrot\n>\n> last\n",
+    "- one\n- alpha bravo charlie\n  delta echo foxtrot golf\n- three\n",
+    "1. a\n2. b\n   bravo\n\n   second para\n   more words\n",
+    "> - a\n>   b soft\n> - c\n",
+    "- [ ] task text\n  more text\n- [x] done\n",
+    "> alpha\nlazy line\n\nafter\n",
+    "- alpha\nlazy line\n",
+    "[^n]: note one\n    two three\n\nref[^n]\n",
 ];
 
 #[test]
@@ -686,20 +696,45 @@ fn columns_round_trip_on_the_corpus() {
 /// For every cell of every painted row and one past its text, a click puts the cursor somewhere,
 /// and a click on the cell where the indicator then shows leaves it there.  The cursor's row
 /// stays rendered (the reveal delay is kept running), which is the case `row_map` maps; a click
-/// that edits the document (a task box) is skipped.
+/// that edits the document (a task box) or follows a footnote is skipped.
 fn check_click_and_paint(src: &str, width: u16) -> Result<(), String> {
+    check_click_and_paint_from(src, width, None)
+}
+
+/// [`check_click_and_paint`], with the cursor starting at byte `revealed_at` (when given) and
+/// its row revealed throughout: every paint and click sees the reveal on, so a reflowed
+/// paragraph under the cursor shows its source lines stacked.  A click on a stacked raw cell
+/// showing a char must also put the cursor on that very char.
+fn check_click_and_paint_from(
+    src: &str,
+    width: u16,
+    revealed_at: Option<usize>,
+) -> Result<(), String> {
     const HEIGHT: u16 = 40;
     let cursor_style = Style::default()
         .fg(Color::Rgb(1, 2, 3))
         .bg(Color::Rgb(4, 5, 6));
+    let reveal = |st: &mut EditorState| {
+        // A click starts a drag that its release would end; a drag holds the reveal off.
+        st.drag_in_progress = false;
+        st.cursor_block_entered_at = if revealed_at.is_some() {
+            None
+        } else {
+            Some(Instant::now())
+        };
+    };
     let fresh = || {
         let mut st = EditorState::new(Buffer::from_str(src), theme());
         st.mode = Mode::Rendered;
         st.set_viewport_width(usize::from(width));
+        if let Some(byte) = revealed_at {
+            st.cursor.offset = st.buffer.rope().byte_to_char(byte);
+            st.update_cursor_block();
+        }
         st
     };
     let paint = |st: &mut EditorState| {
-        st.cursor_block_entered_at = Some(Instant::now());
+        reveal(st);
         let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
         let mut view_state = RenderedViewState::default();
         terminal
@@ -718,7 +753,7 @@ fn check_click_and_paint(src: &str, width: u16) -> Result<(), String> {
         terminal.backend().buffer().clone()
     };
     let click = |st: &mut EditorState, col: u16, row: u16| {
-        st.cursor_block_entered_at = Some(Instant::now());
+        reveal(st);
         let action = MouseAction::Click {
             col,
             row,
@@ -735,7 +770,17 @@ fn check_click_and_paint(src: &str, width: u16) -> Result<(), String> {
         st.cursor.offset
     };
 
-    let base = paint(&mut fresh());
+    let mut start = fresh();
+    let base = paint(&mut start);
+    // The visual rows the start's reveal paints as stacked raw source.
+    let effective = start.effective_rows(usize::from(width));
+    let stacked = |y: u16| {
+        effective.has_reveal()
+            && matches!(
+                effective.line_at_visual_row(usize::from(y)),
+                edamame::editor::effective_rows::RowHit::Raw { .. }
+            )
+    };
     for y in 0..HEIGHT {
         let symbols: Vec<String> = (0..width)
             .map(|x| {
@@ -749,8 +794,18 @@ fn check_click_and_paint(src: &str, width: u16) -> Result<(), String> {
         for x in 0..=(last as u16 + 1).min(width - 1) {
             let mut st = fresh();
             let at = click(&mut st, x, y);
-            if st.buffer.contents() != src {
+            if st.buffer.contents() != src || st.pending_link_follow.is_some() {
                 continue;
+            }
+            let symbol = symbols[usize::from(x)].as_str();
+            if stacked(y) && !symbol.trim().is_empty() {
+                let shown = st.buffer.contents().chars().nth(at).map(String::from);
+                if shown.as_deref() != Some(symbol) {
+                    return Err(format!(
+                        "a click on stacked ({x}, {y}), showing {symbol:?}, put the cursor at \
+                         {at}, on {shown:?}"
+                    ));
+                }
             }
             let painted = paint(&mut st);
             let indicator = (0..HEIGHT)
@@ -777,14 +832,136 @@ fn check_click_and_paint(src: &str, width: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// [`check_click_and_paint`] over the corpus, wide and wrapping.  Footnotes are left out: a
-/// click on a reference or a definition's leader follows it rather than placing the cursor.
+/// [`check_click_and_paint`] over the corpus, wide and wrapping.
 #[test]
 fn clicking_where_the_cursor_shows_keeps_it_there() {
-    for src in CORPUS.iter().filter(|s| !s.contains("[^")) {
+    for src in CORPUS {
         for width in [40, 12] {
             check_click_and_paint(src, width)
                 .unwrap_or_else(|e| panic!("width {width}: {e}\nin {src:?}"));
+        }
+    }
+}
+
+/// Corpus entries [`clicking_around_a_revealed_row_keeps_the_cursor_where_it_shows`] skips at
+/// 12 cells, each a known bug outside row provenance.  A quoted table too wide to shrink into 12
+/// cells wraps its rows in `line_render`; with a cell revealed, the cursor after `b` paints on
+/// the wrapped row, and a click there lands on `b`, one char left (issue #69).  A revealed line
+/// exactly as wide as the viewport (`[^1]: a note`) has no blank cell for a cursor at its end,
+/// so the painter draws that cursor over the last char, and a click there lands on that char
+/// (`paint_row`; accepted, since an extra row for it would change every row count).
+const KNOWN_REVEALED_MISSES: &[&str] = &[
+    "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+    "[^1]: a note\n    more\n\nref[^1]\n",
+];
+
+/// [`check_click_and_paint_from`] over the corpus with the cursor's row revealed: the cursor on
+/// each non-blank line in turn, mid-line, so every reflowed paragraph stacks with the cursor on
+/// each of its lines and every other row reveals in place.
+#[test]
+fn clicking_around_a_revealed_row_keeps_the_cursor_where_it_shows() {
+    for src in CORPUS {
+        let mut line_start = 0;
+        for line in src.split_inclusive('\n') {
+            let content = line.trim_end();
+            if !content.trim().is_empty() {
+                let mid = content
+                    .char_indices()
+                    .nth(content.chars().count() / 2)
+                    .unwrap()
+                    .0;
+                let at = line_start + mid;
+                for width in [40, 12] {
+                    if width == 12 && KNOWN_REVEALED_MISSES.contains(src) {
+                        continue;
+                    }
+                    check_click_and_paint_from(src, width, Some(at)).unwrap_or_else(|e| {
+                        panic!("width {width}, cursor at {at}: {e}\nin {src:?}")
+                    });
+                }
+            }
+            line_start += line.len();
+        }
+    }
+}
+
+/// Nested reflowed paragraphs, revealed (Phase 7): the cursor rests in one, which shows its
+/// source lines stacked, whole, container prefixes and all.  Every click, wide and wrapping, on
+/// the stack and around it, lands where the indicator then shows, and on the stack exactly on
+/// the char clicked: across a soft break, past a wrap, through markup spanning a break, and at
+/// each depth.
+#[test]
+fn clicking_a_revealed_nested_flow_keeps_the_cursor_where_it_shows() {
+    for (src, needles) in [
+        (
+            "> first para\n>\n> alpha bravo\n> charlie *delta\n> echo* foxtrot\n>\n> last\n",
+            &["charlie", "alpha"][..],
+        ),
+        (
+            "- one\n- alpha bravo charlie\n  delta echo foxtrot golf\n- three\n",
+            &["delta", "bravo"],
+        ),
+        (
+            "1. a\n2. b\n   bravo\n\n   second para\n   more words\n",
+            &["more"],
+        ),
+        // At 12 cells the hanging indent wraps `abcdefghijk` onto a row of its own, which a
+        // flat wrap of the raw line wouldn't: the stack's rows are the painter's.
+        (
+            "- one\n- ab abcdefghijk\n  more words\n- three\n",
+            &["more", "ab "],
+        ),
+        ("> - a\n>   b soft\n> - c\n", &["soft"]),
+        ("- [ ] task text\n  more text\n- [x] done\n", &["more"]),
+        (
+            "- a\n  - b\n    soft *word*\n    - c\n      deep word\n\nafter\n",
+            &["soft", "deep"],
+        ),
+        ("> alpha\nlazy line\n\nafter\n", &["lazy"]),
+        ("- alpha\nlazy line\n", &["lazy"]),
+    ] {
+        for needle in needles {
+            let at = src.find(needle).unwrap();
+            for width in [40, 12] {
+                // The cursor's paragraph must actually stack, or this tests nothing new.
+                let mut st = EditorState::new(Buffer::from_str(src), theme());
+                st.mode = Mode::Rendered;
+                st.set_viewport_width(width);
+                st.cursor.offset = st.buffer.rope().byte_to_char(at);
+                st.update_cursor_block();
+                st.cursor_block_entered_at = None;
+                assert!(
+                    st.effective_rows(width).has_reveal(),
+                    "{needle:?} must reveal stacked in {src:?}"
+                );
+                check_click_and_paint_from(src, width as u16, Some(at))
+                    .unwrap_or_else(|e| panic!("width {width}, at {needle:?}: {e}\nin {src:?}"));
+            }
+        }
+    }
+}
+
+/// A revealed footnote paragraph, first or later, stacks like any nested one: every click, wide
+/// and wrapping, lands where the indicator then shows, and on the stack on the char clicked.  A
+/// click on the reference, the leader or the raw `[^n]:` follows it and is skipped.
+#[test]
+fn clicking_a_revealed_footnote_flow_keeps_the_cursor_where_it_shows() {
+    let src = "ref[^n]\n\n[^n]: note one\n    two three\n\n    second para\n    more words\n";
+    for needle in ["note", "three", "second", "words"] {
+        let at = src.find(needle).unwrap();
+        for width in [40, 12] {
+            let mut st = EditorState::new(Buffer::from_str(src), theme());
+            st.mode = Mode::Rendered;
+            st.set_viewport_width(width);
+            st.cursor.offset = st.buffer.rope().byte_to_char(at);
+            st.update_cursor_block();
+            st.cursor_block_entered_at = None;
+            assert!(
+                st.effective_rows(width).has_reveal(),
+                "{needle:?} must reveal stacked"
+            );
+            check_click_and_paint_from(src, width as u16, Some(at))
+                .unwrap_or_else(|e| panic!("width {width}, at {needle:?}: {e}"));
         }
     }
 }

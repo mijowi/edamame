@@ -338,6 +338,114 @@ fn reflowed_paragraph_reveals_all_raw_source_lines_stacked() {
     );
 }
 
+/// A nested reflowed paragraph (a quote's, an item's) reveals the same way, but alone: its one
+/// flow row expands to its whole source lines, container prefix included (`> `, `- `, the
+/// continuation indent), while the rows around it — the quote's other paragraphs, the sibling
+/// items, a footnote's first paragraph — stay rendered and the rows below shift down past the
+/// stack.
+#[test]
+fn nested_reflowed_paragraph_reveals_its_whole_source_lines_stacked() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let width = 40u16;
+    for (src, needle, expected) in [
+        (
+            "> first para\n>\n> alpha bravo\n> charlie delta\n>\n> last\n",
+            "charlie",
+            &[
+                "▎ first para",
+                "▎",
+                "> alpha bravo",
+                "> charlie delta",
+                "▎",
+                "▎ last",
+            ][..],
+        ),
+        (
+            "- one\n- alpha bravo\n  charlie delta\n- three\n",
+            "charlie",
+            &["• one", "- alpha bravo", "  charlie delta", "• three"],
+        ),
+        (
+            // `b soft` continues item `a`'s paragraph, so both its lines stack.
+            "> - a\n>   b soft\n> - c\n",
+            "soft",
+            &["> - a", ">   b soft", "▎ • c"],
+        ),
+        (
+            "- a\n  - b\n    soft word\n- c\n",
+            "soft",
+            &["• a", "  - b", "    soft word", "• c"],
+        ),
+        (
+            // A footnote's first paragraph stacks from its `[^n]:` line; the second stays a flow.
+            "ref[^n]\n\n[^n]: note one\n    two three\n\n    second para\n    more\n\nafter\n",
+            "two",
+            &[
+                "ref[n]",
+                "",
+                "[^n]: note one",
+                "    two three",
+                "      second para more ↩",
+                "",
+                "after",
+            ],
+        ),
+        (
+            // Its second paragraph: the first stays one rendered flow behind the leader.
+            "ref[^n]\n\n[^n]: note one\n    two three\n\n    second para\n    more\n\nafter\n",
+            "more",
+            &[
+                "ref[n]",
+                "",
+                "  n.  note one two three",
+                "    second para",
+                "    more",
+                "",
+                "after",
+            ],
+        ),
+    ] {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.set_viewport_width(width as usize);
+        state.set_reflow(true);
+        state.cursor.offset = src.find(needle).unwrap();
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: &state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..expected.len() as u16)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(rows, expected, "in {src:?}");
+    }
+}
+
 /// Regression: with the cursor on the phantom final line (after the source's
 /// trailing '\n'), the last real block must stay rendered.  Before the
 /// phantom-line virtual block existed, the cursor fell back to the last real
@@ -2310,6 +2418,7 @@ fn rendered_view_selection_on_a_last_items_nested_item_covers_it() {
 /// A nested item's continuation line renders at the renderer's child indent, deeper than the
 /// source's; mapping it 1:1 washed the cells two to the left of the match.  The third level's
 /// six-space indent would parse as an indented code block on its own, so the map must not.
+/// With reflow off, so each continuation keeps a row of its own.
 #[test]
 fn rendered_view_selection_on_a_nested_items_continuation_covers_it() {
     use edamame::document::{Buffer, Selection};
@@ -2324,6 +2433,7 @@ fn rendered_view_selection_on_a_nested_items_continuation_covers_it() {
     for (needle, row, expected) in [("word*", 2u16, "word"), ("word\n", 4, "word")] {
         let mut state = EditorState::new(Buffer::from_str(src), theme);
         state.mode = Mode::Rendered;
+        state.set_reflow(false);
         state.set_viewport_width(width as usize);
         let start = src.find(needle).unwrap();
         state.selection = Some(Selection {

@@ -223,7 +223,8 @@ impl EditorState {
                     .line_at_visual_row(visual_row)
                 {
                     RowHit::Raw { raw_line, .. } => {
-                        // Inside a revealed reflowed block: snap to that raw source line's start.
+                        // Inside a revealed reflowed paragraph: snap to that raw source line's
+                        // start (`raw_line` is block-relative).
                         let cursor_byte = self.buffer.rope().char_to_byte(self.cursor.offset);
                         let Some(range) =
                             self.parsed.source_map.original_range_for_byte(cursor_byte)
