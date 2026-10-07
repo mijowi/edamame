@@ -8,15 +8,14 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use pulldown_cmark::{
-    html as cmark_html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{html as cmark_html, CodeBlockKind, CowStr, Event, Options, Tag, TagEnd};
 
 use super::runner::{write_atomically, ExportOutcome, Exported};
 use crate::diagram;
 use crate::document::parsed_doc::{gfm_slug, uniquify_slug};
 use crate::image::normalize_svg;
 use crate::markdown::highlight::{self, TokenClass};
+use crate::markdown::parse_offsets::DocParser;
 use crate::markdown::parser::post_pass::is_html_comment_only;
 use images::{local_image, ImageResolver};
 
@@ -116,7 +115,9 @@ pub(super) struct Rendered {
 /// [`render_html`], also reporting how many images were left out, for the export workers.
 pub(super) fn render(markdown: &str, opts: &HtmlExportOptions) -> Result<Rendered> {
     // Collected so the rewrite passes can mutate events in place.
-    let mut events: Vec<Event> = Parser::new_ext(markdown, parser_options(markdown)).collect();
+    let mut events: Vec<Event> = DocParser::with_options(markdown, parser_options())
+        .into_events()
+        .collect();
 
     // Before `replace_math`, which turns heading math into plain text: the slug reads the
     // `InlineMath` events the in-app parser sees.
@@ -197,7 +198,7 @@ fn render_and_write(markdown: &str, target: &Path, opts: &HtmlExportOptions) -> 
 
 /// The parser options every export pass uses, so [`outside_images`] sees exactly the images
 /// [`render_html`] would.
-fn parser_options(markdown: &str) -> Options {
+fn parser_options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
@@ -209,13 +210,10 @@ fn parser_options(markdown: &str) -> Options {
     // even with figures disabled — so inline `$…$` and un-rendered display math collapse back to
     // their literal source instead of pulldown's `<span class="math">` wrapper.
     options.insert(Options::ENABLE_MATH);
-    // Without the frontmatter extension a `---` block parses as a thematic break plus a setext
-    // H2, and the export opens with the YAML keys as its loudest heading.  It is gated on *this*
-    // document's opening delimiter, through the shared `metadata_options_for`: the extensions are
-    // not anchored to the document start on their own, so leaving them on unconditionally would
-    // let a mid-document `---` claim the section under it — and the writer emits nothing for a
-    // metadata block, so that section would vanish from the export silently.
-    options |= crate::markdown::parse_offsets::metadata_options_for(markdown);
+    // No metadata-block extension: `DocParser` applies it to the frontmatter alone.  Without it
+    // a `---` block parses as a thematic break plus a setext H2, and the export opens with the
+    // YAML keys as its loudest heading; with it on everywhere, a later `---` can claim the
+    // section under it, which the writer then drops silently.
 
     options
 }
@@ -841,7 +839,7 @@ pub fn outside_images(markdown: &str, source_dir: &Path) -> Vec<PathBuf> {
     let mut body = String::new();
     cmark_html::push_html(
         &mut body,
-        Parser::new_ext(markdown, parser_options(markdown)),
+        DocParser::with_options(markdown, parser_options()).into_events(),
     );
     let sources = Arc::new(Mutex::new(Vec::<String>::new()));
     let record = Arc::clone(&sources);
@@ -1038,6 +1036,17 @@ mod tests {
         let md = "+++\na = 1\n+++\n\n---\nSection\n---\n\nEnd.\n";
         let html = render_html(md, &opts_inline_css()).unwrap();
         assert!(!html.contains("a = 1"), "got: {html}");
+        assert!(html.contains("Section"), "got: {html}");
+    }
+
+    /// Below real frontmatter the extension stays off: a quote opening with `---`, closed by a
+    /// later one, once became a second metadata block the writer dropped.
+    #[test]
+    fn a_dash_pair_below_frontmatter_is_not_dropped_from_the_export() {
+        let md = "---\ntitle: Foo\n---\n\n> ---\n> Quoted.\n\n---\n## Section\n\n---\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(!html.contains("title: Foo"), "got: {html}");
+        assert!(html.contains("Quoted."), "got: {html}");
         assert!(html.contains("Section"), "got: {html}");
     }
 

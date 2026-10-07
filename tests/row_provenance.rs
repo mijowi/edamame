@@ -502,6 +502,8 @@ const CORPUS: &[&str] = &[
     "> alpha\nlazy line\n\nafter\n",
     "- alpha\nlazy line\n",
     "[^n]: note one\n    two three\n\nref[^n]\n",
+    // Frontmatter is the byte-0 block only: a `---` opening a quote below it is a rule.
+    "---\nt: x\n---\n\n> ---\n> b\n\n---\n",
 ];
 
 #[test]

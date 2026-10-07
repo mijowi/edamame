@@ -190,9 +190,9 @@ mod markdown_gen;
 mod positions {
 
     use edamame::markdown::ast::ListItem;
-    use edamame::markdown::parse_offsets::options_for;
+    use edamame::markdown::parse_offsets::DocParser;
     use edamame::markdown::{parse_raw_with_ranges, Block, LineSpan, SrcLines};
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    use pulldown_cmark::{Event, Tag, TagEnd};
 
     struct Lines<'s> {
         src: &'s str,
@@ -263,7 +263,7 @@ mod positions {
             // A task box inside a heading is the heading's literal text (GFM has a box only at
             // the start of a paragraph); a paragraph's own box is the item's chrome.
             let mut in_heading = false;
-            let events = Parser::new_ext(src, options_for(src))
+            let events = DocParser::new(src)
                 .into_offset_iter()
                 .filter(|(e, _)| {
                     match e {

@@ -9,7 +9,7 @@ pub use post_pass::{
 
 use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, MetadataBlockKind, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, MetadataBlockKind, Tag, TagEnd};
 
 use super::ast::{inlines_to_plain, Block, Inline, ListItem, MetadataKind, SrcLines};
 use super::parse_offsets;
@@ -42,7 +42,7 @@ pub fn parse(text: &str) -> Vec<Block> {
 /// editor pipeline uses [`parse_raw_with_ranges`]; this is the ranges-free entry point, which
 /// skips draining the events the AST builder leaves unread.
 pub fn parse_raw(text: &str) -> Vec<Block> {
-    let parser = Parser::new_ext(text, parse_offsets::options_for(text));
+    let parser = parse_offsets::DocParser::new(text);
     let mut events = EventStream::new(text, parser.into_offset_iter());
     parse_blocks(&mut events, true)
 }
@@ -75,7 +75,7 @@ pub struct DocParse {
 pub fn parse_document(text: &str) -> DocParse {
     #[cfg(test)]
     BLOCK_PARSE_COUNT.with(|c| c.set(c.get() + 1));
-    let parser = Parser::new_ext(text, parse_offsets::options_for(text));
+    let parser = parse_offsets::DocParser::new(text);
     // Definitions are collected by the parser's first pass, before any event is pulled.
     let link_labels = parser
         .reference_definitions()
