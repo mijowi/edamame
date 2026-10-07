@@ -29,6 +29,8 @@ use std::ops::Range;
 use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::inline_col_map::{InlineColMap, RefLabels};
+
 /// Minimum column width — narrower leaves no room for a `...` truncation indicator.
 pub const MIN_COL_WIDTH: usize = 3;
 
@@ -544,61 +546,124 @@ pub fn rendered_pipe_cells(line: &Line<'_>) -> Vec<usize> {
     positions
 }
 
-/// Map a raw char column to the matching rendered column, aligning the two pipe sequences.
-/// `None` when the pipe counts disagree (alignment row, border).
-pub fn table_raw_col_to_rendered_col(
+/// Where the char at raw column `raw_col` of a table row shows on the rendered row: the wrap
+/// sub-line holding its glyph and its char column there (a `cursor_col_override`).  `row_lines`
+/// are the row's rendered sub-lines.  Columns go through the cell's [`CellContent`], so a char
+/// after hidden markers (`**b** x`) lands on its glyph, as a click there lands on the char.  A
+/// column in a cell's leading whitespace lands on the pad space; one past the content, past its
+/// last glyph, never beyond the cell's trailing pad.  The cell is found as the cell reveal finds
+/// it (`compute_cell_overlay`): a column on a pipe belongs to the cell before it.  `None` when
+/// the pipe counts disagree (alignment row, border).
+pub fn table_raw_col_to_rendered(
     raw_row: &str,
-    rendered_line: &Line<'_>,
+    row_lines: &[Line<'_>],
     raw_col: usize,
-) -> Option<usize> {
+    labels: &RefLabels,
+) -> Option<(usize, usize)> {
+    let first = row_lines.first()?;
     let raw_pipes = raw_pipe_positions(raw_row);
-    let rendered_pipes = rendered_pipe_positions(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+    let pipe_cells = rendered_pipe_cells(first);
+    if raw_pipes.len() < 2 || pipe_cells.len() != raw_pipes.len() {
         return None;
     }
     let col_count = raw_pipes.len() - 1;
-
-    // Cell `i` spans (raw_pipes[i] + 1) .. raw_pipes[i + 1].
-    let cell_idx = (0..col_count)
-        .find(|&i| raw_col < raw_pipes[i + 1])
-        .unwrap_or(col_count - 1);
+    let preceding = raw_pipes.iter().take_while(|&&p| p < raw_col).count();
+    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
     let raw_cell_start = raw_pipes[cell_idx] + 1;
-    let rend_cell_start = rendered_pipes[cell_idx] + 1;
-    let rend_cell_end = rendered_pipes[cell_idx + 1];
+    let raw_chars: Vec<char> = raw_row.chars().collect();
+    let width = pipe_cells[cell_idx + 1].saturating_sub(pipe_cells[cell_idx] + 3);
+    let cell = CellContent::new(
+        &raw_chars[raw_cell_start..raw_pipes[cell_idx + 1]],
+        width,
+        labels,
+    );
 
-    let raw_offset_in_cell = raw_col.saturating_sub(raw_cell_start);
-    let raw_cell_text: String = raw_row
-        .chars()
-        .skip(raw_cell_start)
-        .take(raw_pipes[cell_idx + 1].saturating_sub(raw_cell_start))
-        .collect();
-    let raw_leading = raw_cell_text
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    // Rendered cell is `<space><content><pad><space>`, so a click in the raw content
-    // region maps to 1 + (offset past the raw leading whitespace).
-    let rend_offset_in_cell = if raw_offset_in_cell <= raw_leading {
-        0
-    } else {
-        1 + (raw_offset_in_cell - raw_leading)
+    let offset = raw_col.saturating_sub(raw_cell_start);
+    // `None` for the pad space, else the char index into the sub-line's chunk.
+    let (sub, in_chunk) = match offset.checked_sub(cell.leading) {
+        None => (0, None),
+        Some(k) => {
+            let rendered = match k.checked_sub(cell.raw_len) {
+                None => cell.map.raw_to_rendered(k),
+                Some(past) => cell.map.rendered_len() + past,
+            };
+            // Whitespace a wrap drops at a break stays at the end of the chunk before it.
+            let sub = cell
+                .chunks
+                .iter()
+                .rposition(|(start, _)| *start <= rendered)
+                .unwrap_or(0);
+            let (start, text) = &cell.chunks[sub];
+            let pos = rendered - start;
+            let pos = if sub + 1 < cell.chunks.len() {
+                pos.min(text.chars().count())
+            } else {
+                pos
+            };
+            (sub.min(row_lines.len() - 1), Some(pos))
+        }
     };
-    let rend_cell_width = rend_cell_end.saturating_sub(rend_cell_start);
-    Some(rend_cell_start + rend_offset_in_cell.min(rend_cell_width))
+    // Char positions differ per sub-line once a wide glyph sits left of the cell.
+    let pipes = rendered_pipe_positions(&row_lines[sub]);
+    let (open, close) = (*pipes.get(cell_idx)?, *pipes.get(cell_idx + 1)?);
+    let col = in_chunk.map_or(open + 1, |pos| open + 2 + pos);
+    Some((sub, col.min(close.saturating_sub(1))))
 }
 
-/// Map a raw char-column range to the rendered segments visible on wrap-chunk `sub`.
-/// Cells wrap independently, so each contributes at most one segment.  Used by the
-/// selection / search overlay painter on continuation sub-lines, where
-/// [`table_raw_col_to_rendered_col`]'s first-chunk mapping doesn't apply.  Chunk layout is
-/// computed over raw cell text while the renderer wraps marker-stripped chars, so segments
-/// are approximate for styled cells.  Empty when the pipe sequences don't match.
+/// One table cell's content as `render_table_row` lays it out: the raw cell (the chars between
+/// its pipes) trimmed, an [`InlineColMap`] from that to the marker-collapsed text the renderer
+/// shows, and that text's wrap chunks at the cell's width.  The click and the overlay both read
+/// cells through it, so they agree with the renderer on which chunk holds which char even where
+/// inline markers (`**`, backticks, a link's URL) are hidden.
+pub struct CellContent {
+    /// Raw chars of whitespace before the content, within the cell.
+    pub leading: usize,
+    /// Raw chars of content, after `leading`.
+    pub raw_len: usize,
+    /// Raw content (past `leading`) ⇄ rendered content.
+    pub map: InlineColMap,
+    /// `(rendered char start, text)` of each wrap chunk; at least one.
+    pub chunks: Vec<(usize, String)>,
+}
+
+impl CellContent {
+    /// `raw_cell` is the cell's raw chars between its pipes, `width` its content width in
+    /// terminal cells, and `labels` the document's, so a reference link collapses as it renders.
+    pub fn new(raw_cell: &[char], width: usize, labels: &RefLabels) -> Self {
+        let leading = raw_cell.iter().take_while(|c| c.is_whitespace()).count();
+        let trailing = raw_cell[leading..]
+            .iter()
+            .rev()
+            .take_while(|c| c.is_whitespace())
+            .count();
+        let content = &raw_cell[leading..raw_cell.len() - trailing];
+        let map = InlineColMap::build_inline(&content.iter().collect::<String>(), labels);
+        // The rendered text, as raw chars at the positions the map keeps: what the renderer wraps
+        // (a smart-punctuation glyph stands in as its run's first char, the same width).
+        let rendered: String = map.rendered_to_raw_vec()[..map.rendered_len()]
+            .iter()
+            .map(|&raw| content.get(raw).copied().unwrap_or(' '))
+            .collect();
+        Self {
+            leading,
+            raw_len: content.len(),
+            map,
+            chunks: wrap_cell_with_indices(&rendered, width.max(1)),
+        }
+    }
+}
+
+/// Map a raw char-column range to the rendered segments visible on wrap-chunk `sub`, in char
+/// columns of `rendered_line`.  Cells wrap independently, so each contributes at most one
+/// segment, mapped through the cell's [`CellContent`].  Used by the selection / search overlay
+/// painter.  Empty when the pipe sequences don't match.
 pub fn table_raw_col_range_to_rendered_segments(
     raw_row: &str,
     rendered_line: &Line<'_>,
     raw_start: usize,
     raw_end: usize,
     sub: usize,
+    labels: &RefLabels,
 ) -> Vec<(usize, usize)> {
     let raw_pipes = raw_pipe_positions(raw_row);
     let rendered_pipes = rendered_pipe_positions(rendered_line);
@@ -606,40 +671,30 @@ pub fn table_raw_col_range_to_rendered_segments(
     if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
         return Vec::new();
     }
-    let col_count = raw_pipes.len() - 1;
     let raw_chars: Vec<char> = raw_row.chars().collect();
     let mut out = Vec::new();
-    for i in 0..col_count {
+    for i in 0..raw_pipes.len() - 1 {
         let raw_cell_start = raw_pipes[i] + 1;
-        let raw_cell_end = raw_pipes[i + 1];
-        let cell_chars = &raw_chars[raw_cell_start..raw_cell_end];
-        let leading = cell_chars.iter().take_while(|c| c.is_whitespace()).count();
-        let trailing = cell_chars
-            .iter()
-            .rev()
-            .take_while(|c| c.is_whitespace())
-            .count();
-        let content_len = cell_chars.len().saturating_sub(leading + trailing);
-        let trimmed: String = cell_chars[leading..leading + content_len].iter().collect();
         // Wrap at the cell's width in cells, as the renderer did; the segment is char columns.
-        let width = rendered_cells[i + 1]
-            .saturating_sub(rendered_cells[i] + 3)
-            .max(1);
-        let chunks = wrap_cell_with_indices(&trimmed, width);
-        let Some((chunk_start, chunk_text)) = chunks.get(sub) else {
+        let width = rendered_cells[i + 1].saturating_sub(rendered_cells[i] + 3);
+        let cell = CellContent::new(&raw_chars[raw_cell_start..raw_pipes[i + 1]], width, labels);
+        let Some((chunk_start, chunk_text)) = cell.chunks.get(sub) else {
             continue;
         };
-        let lo_raw = raw_cell_start + leading + chunk_start;
-        let hi_raw = lo_raw + chunk_text.chars().count();
-        let s = raw_start.max(lo_raw);
-        let e = raw_end.min(hi_raw);
+        let content_start = raw_cell_start + cell.leading;
+        let to_rendered = |raw: usize| {
+            cell.map
+                .raw_to_rendered(raw.saturating_sub(content_start).min(cell.raw_len))
+        };
+        let s = to_rendered(raw_start).max(*chunk_start);
+        let e = to_rendered(raw_end).min(chunk_start + chunk_text.chars().count());
         if s >= e {
             continue;
         }
         let rend_chunk_start = rendered_pipes[i] + 2;
         out.push((
-            rend_chunk_start + (s - lo_raw),
-            rend_chunk_start + (e - lo_raw),
+            rend_chunk_start + (s - chunk_start),
+            rend_chunk_start + (e - chunk_start),
         ));
     }
     out
@@ -1147,11 +1202,56 @@ mod tests {
     }
 
     #[test]
-    fn table_raw_col_to_rendered_col_maps_first_cell() {
-        // Both sides share a leading space, so raw col 2 ('a') maps to rendered col 2.
+    fn table_raw_col_to_rendered_maps_plain_cells() {
+        // Both sides share a leading space, so raw col 2 ('a') maps to rendered col 2, and the
+        // space before it (raw col 1) to the pad space.
         let raw = "| a | b |";
-        let rendered = line_with("│ a │ b │");
-        assert_eq!(table_raw_col_to_rendered_col(raw, &rendered, 2), Some(1));
+        let rendered = [line_with("│ a │ b │")];
+        let labels = RefLabels::default();
+        let at = |col| table_raw_col_to_rendered(raw, &rendered, col, &labels);
+        assert_eq!(at(2), Some((0, 2)));
+        assert_eq!(at(1), Some((0, 1)));
+        assert_eq!(at(6), Some((0, 6)));
+        // Past `a`, and on the pipe after it: both still the first cell, past its glyph.
+        assert_eq!(at(3), Some((0, 3)));
+        assert_eq!(at(4), Some((0, 3)));
+    }
+
+    #[test]
+    fn table_raw_col_to_rendered_lands_on_the_glyph_past_hidden_markers() {
+        let raw = "| a | **b** x |";
+        let rendered = [line_with("│ a │ b x │")];
+        let labels = RefLabels::default();
+        let at = |c: &str| table_raw_col_to_rendered(raw, &rendered, raw.find(c).unwrap(), &labels);
+        assert_eq!(at("x"), Some((0, 8)));
+        assert_eq!(at("b*"), Some((0, 6)));
+        // On an opening marker: the glyph it opens.
+        assert_eq!(at("**b"), Some((0, 6)));
+    }
+
+    #[test]
+    fn table_raw_col_to_rendered_finds_the_wrap_sub_line() {
+        // `**alpha** bravo` renders `alpha` / `bravo` at width 5.
+        let raw = "| x | **alpha** bravo |";
+        let rendered = [line_with("│ x │ alpha │"), line_with("│   │ bravo │")];
+        let labels = RefLabels::default();
+        let at = |c: &str| table_raw_col_to_rendered(raw, &rendered, raw.find(c).unwrap(), &labels);
+        assert_eq!(at("bravo"), Some((1, 6)));
+        assert_eq!(at("avo"), Some((1, 8)));
+        assert_eq!(at("alpha"), Some((0, 6)));
+    }
+
+    /// The column is a char index into its own sub-line: a wide glyph in the column to the left
+    /// puts the cell fewer chars than cells in.
+    #[test]
+    fn table_raw_col_to_rendered_counts_chars_past_wide_glyphs() {
+        let raw = "| 日本 | ab |";
+        let rendered = [line_with("│ 日本 │ ab │")];
+        let col = raw.find('b').map(|b| raw[..b].chars().count()).unwrap();
+        let (sub, at) =
+            table_raw_col_to_rendered(raw, &rendered, col, &RefLabels::default()).unwrap();
+        assert_eq!(sub, 0);
+        assert_eq!(rendered[0].spans[0].content.chars().nth(at), Some('b'));
     }
 
     #[test]
@@ -1159,24 +1259,65 @@ mod tests {
         // Cell 1 wraps into ["alpha", "bravo"]; sub-line 1 shows "bravo" at raw 12..17.
         let raw = "| x | alpha bravo |";
         let rendered = line_with("│   │ bravo │");
-        let segs = table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 1);
+        let labels = RefLabels::default();
+        let segs = table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 1, &labels);
         assert_eq!(segs, vec![(7, 10)]);
-        assert!(table_raw_col_range_to_rendered_segments(raw, &rendered, 2, 3, 1).is_empty());
-        assert!(table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 2).is_empty());
+        assert!(
+            table_raw_col_range_to_rendered_segments(raw, &rendered, 2, 3, 1, &labels).is_empty()
+        );
+        assert!(
+            table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 2, &labels).is_empty()
+        );
+    }
+
+    #[test]
+    fn rendered_segments_skip_hidden_markers() {
+        // `*b* x` renders `b x`: one chunk, `x` at rendered col 8, where the raw `x` is 4 into
+        // the cell's content.
+        let raw = "| a | *b* x |";
+        let rendered = line_with("│ a │ b x │");
+        let labels = RefLabels::default();
+        let x = raw.find('x').unwrap();
+        assert_eq!(
+            table_raw_col_range_to_rendered_segments(raw, &rendered, x, x + 1, 0, &labels),
+            vec![(8, 9)]
+        );
+        // A range over the whole of `*b*` covers just the `b`.
+        let b = raw.find('*').unwrap();
+        assert_eq!(
+            table_raw_col_range_to_rendered_segments(raw, &rendered, b, b + 3, 0, &labels),
+            vec![(6, 7)]
+        );
+        // A cell reading `2. a` is inline text, not a list item.
+        let raw = "| 2. a |";
+        let rendered = line_with("│ 2. a │");
+        let a = raw.find('a').unwrap();
+        assert_eq!(
+            table_raw_col_range_to_rendered_segments(raw, &rendered, a, a + 1, 0, &labels),
+            vec![(5, 6)]
+        );
     }
 
     #[test]
     fn rendered_segments_empty_on_pipe_mismatch() {
         let raw = "| a | b |";
         let rendered = line_with("├───┼───┤");
-        assert!(table_raw_col_range_to_rendered_segments(raw, &rendered, 2, 3, 0).is_empty());
+        assert!(table_raw_col_range_to_rendered_segments(
+            raw,
+            &rendered,
+            2,
+            3,
+            0,
+            &RefLabels::default()
+        )
+        .is_empty());
     }
 
     #[test]
-    fn table_raw_col_to_rendered_col_returns_none_on_pipe_mismatch() {
+    fn table_raw_col_to_rendered_returns_none_on_pipe_mismatch() {
         let raw = "| a | b |";
-        let rendered = line_with("├───┼───┤");
-        assert!(table_raw_col_to_rendered_col(raw, &rendered, 2).is_none());
+        let rendered = [line_with("├───┼───┤")];
+        assert!(table_raw_col_to_rendered(raw, &rendered, 2, &RefLabels::default()).is_none());
     }
 
     #[test]

@@ -97,6 +97,19 @@ pub fn line_for_row(parsed: &ParsedDoc, block: usize, row: usize) -> usize {
         .map_or(0, |l| l as usize)
 }
 
+/// The block-relative source line row `row` of diagram `block` (a mermaid fence, `$$…$$` math)
+/// paints while revealed: its rows show the source lines 1:1, shifted down past any math-preview
+/// band.  `None` for a band row, which paints empty behind the formula, for a reserved row past
+/// the source (the origins clamp it to the last line, but it paints as padding until the
+/// reservation shrinks to the source), and past the block's rows.  The one rule the click, the
+/// raw row count and the view share for a diagram's rows.
+pub fn revealed_diagram_line(parsed: &ParsedDoc, block: usize, row: usize) -> Option<usize> {
+    let (origins, band) = own_origins(parsed, block);
+    let k = row.checked_sub(band)?;
+    let line = origins.get(k)?.lines.as_ref()?.start as usize;
+    (line == k).then_some(line)
+}
+
 // ── Columns ───────────────────────────────────────────────────────────────
 
 /// A position in a block's source: a block-relative line and a char column on it.  Ordered

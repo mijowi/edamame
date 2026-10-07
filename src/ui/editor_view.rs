@@ -276,12 +276,17 @@ impl<'a> StatefulWidget for EditorView<'a> {
 
         // ── Search-match + yank-flash overlays (Preview + Rendered) ─
         // A post-pass over the rendered cells: both views walk `parsed.lines` with the same
-        // wrap, so one overlay walk serves both.  Raw mode paints these inline instead.
+        // wrap, so one overlay walk serves both — as long as nothing is revealed.  Search and a
+        // `:s` preview turn the reveal off; the yank flash doesn't, so in Rendered mode
+        // `RenderedView` paints it with the selection, against what each row shows.  Raw mode
+        // paints these inline instead.
         if matches!(mode, Mode::Preview | Mode::Rendered) {
             super::rendered_view::paint_search_overlays(self.state, buf, doc_area, self.theme);
             super::rendered_view::paint_substitute_preview_overlays(
                 self.state, buf, doc_area, self.theme,
             );
+        }
+        if mode == Mode::Preview {
             super::rendered_view::paint_yank_flash(self.state, buf, doc_area, self.theme);
         }
 

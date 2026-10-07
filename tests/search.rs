@@ -159,6 +159,45 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
     terminal.backend().buffer().clone()
 }
 
+/// A match in a table cell lights the text it matched even after inline
+/// markers the cell hides, on the first row and on a wrapped continuation.
+/// The overlay used to wrap the raw cell (markers included) and offset into
+/// it one for one, so `x` in `*b* x` showed nowhere.
+#[test]
+fn rendered_view_paints_matches_past_hidden_markers_in_table_cells() {
+    let t = theme();
+    // (cell, query, row of the match, its cells)
+    let cases = [
+        ("*b* x", "x", 3, 10..11),
+        ("`c` [l](http://u) z", "z", 3, 12..13),
+        // Wraps to `bold words` / `wrap here`: the match is on the second row.
+        ("**bold** words wrap here", "here", 4, 13..17),
+    ];
+    for (cell, query, row, want) in cases {
+        let src = format!("intro\n\n| a | {cell} |\n|---|---|\n| 1 | 2 |\n");
+        let mut st = state_with_search(&src, query, None);
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(22);
+        let buf = render_editor(&mut st, 22, 12);
+        let lit = |y: u16| -> Vec<u16> {
+            (0..22u16)
+                .filter(|&x| {
+                    let bg = buf.cell((x, y)).unwrap().style().bg;
+                    bg == t.selection.bg || bg == t.selection_muted.bg
+                })
+                .collect()
+        };
+        for y in 2..8u16 {
+            let expected: Vec<u16> = if y == row {
+                want.clone().collect()
+            } else {
+                vec![]
+            };
+            assert_eq!(lit(y), expected, "{cell:?} /{query}: row {y}");
+        }
+    }
+}
+
 #[test]
 fn rendered_view_paints_all_matches_with_focused_emphasis() {
     let t = theme();

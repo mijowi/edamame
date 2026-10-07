@@ -147,9 +147,9 @@ pub(super) fn paint_byte_range_overlay(
     let Some(block_idx) = editor.parsed.source_map.block_for_byte(block_range.start) else {
         return;
     };
-    // An image's reserved rows show no text to select.  A diagram's map 1:1 onto its source.
-    if editor.parsed.is_image_block(block_idx) && !editor.parsed.is_diagram_reveal_block(block_idx)
-    {
+    // An image's reserved rows show no text to highlight.  A revealed diagram's rows show raw
+    // source, but `RenderedView` paints their selection and yank flash itself, against that text.
+    if editor.parsed.is_image_block(block_idx) {
         return;
     }
     let rendered_span = editor.parsed.source_map.rendered_lines_for_block(block_idx);
@@ -195,6 +195,7 @@ pub(super) fn paint_byte_range_overlay(
             col_at(line_sel_start),
             col_at(line_sel_end),
             hit.sub,
+            parsed.ref_labels(),
         ) {
             paint_cols_on_line(
                 line, buf, area, y_start, rows_used, skip_rows, rs, re, style,
@@ -226,25 +227,6 @@ pub(super) fn paint_byte_range_overlay(
             col: rope.byte_to_char(abs) - rope.byte_to_char(from),
         }
     };
-    // A diagram's rows show its source lines 1:1 when revealed (below any math-preview band,
-    // which `lines_of_row` already skipped).
-    if editor.parsed.is_diagram_reveal_block(block_idx) {
-        let (s, e) = (pos_at(sel_s).col, pos_at(sel_e).col);
-        if s < e {
-            paint_cols_on_line(
-                line,
-                buf,
-                area,
-                y_start,
-                rows_used,
-                skip_rows,
-                s.min(actual_rendered),
-                e.min(actual_rendered),
-                style,
-            );
-        }
-        return;
-    }
     let origin = &editor.parsed.row_origins()[rendered_line_idx];
     let ColOrigin::Content { kind, .. } = origin.cols else {
         // Chrome (a fence label, a rule) has no column relation: the whole row washes, or
@@ -453,7 +435,8 @@ pub(crate) fn paint_substitute_preview_overlays(
 }
 
 /// Post-render pass: neovim-style yank highlight over [`EditorState::yank_flash`]'s range.
-/// Same walk as [`paint_search_overlays`].
+/// Same walk as [`paint_search_overlays`].  Preview only: Rendered mode paints the flash in
+/// `RenderedView`'s loop, which knows what a revealed row shows.
 pub(crate) fn paint_yank_flash(editor: &EditorState, buf: &mut TuiBuf, area: Rect, theme: &Theme) {
     let Some(flash) = editor.active_yank_flash() else {
         return;

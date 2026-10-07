@@ -555,8 +555,9 @@ impl ParsedDoc {
 
     /// Rows of the live math-preview band above the revealed raw source for `block_idx`, or `0`
     /// when the block has no such band (not the revealed math block, mermaid, or preview off).
-    /// Every rendered-row ⇄ source-line mapping shifts the source down by this amount.  See
-    /// [`math_source_offset`](Self::math_source_offset).
+    /// Every rendered-row ⇄ source-line mapping shifts the source down by this amount, and
+    /// `document::row_map` is its only reader: everything else asks it (a diagram's rows through
+    /// `row_map::revealed_diagram_line`).  See [`math_source_offset`](Self::math_source_offset).
     pub(crate) fn latex_source_offset(&self, block_idx: usize) -> usize {
         match self.math_source_offset {
             Some((idx, band)) if idx == block_idx => band,

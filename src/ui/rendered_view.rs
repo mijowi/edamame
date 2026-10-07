@@ -7,7 +7,7 @@ use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, widgets::Sta
 use crate::config::Theme;
 use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
-use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered_col};
+use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered};
 
 use super::image_view::{self, ImageLayoutSnapshot};
 use super::line_render::{
@@ -25,10 +25,10 @@ use self::paint::{
 pub(crate) use self::paint::{
     paint_search_overlays, paint_substitute_preview_overlays, paint_yank_flash,
 };
-use self::raw_text::raw_line_byte_start;
 pub(crate) use self::raw_text::{
     raw_block_cursor, raw_source_lines, revealed_source_line_count, revealed_source_lines,
 };
+use self::raw_text::{raw_line_byte_start, raw_line_sel_cols, text_sel_cols};
 
 /// State for the `RenderedView` widget; owned by `EditorViewState`, updated every frame.
 #[derive(Debug, Default)]
@@ -202,6 +202,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // show the cursor's own line, which `cursor_col` counts along (a stale parse can name
         // another).
         let wrapped_cell = cursor_table
+            .as_ref()
             .filter(|t| t.cells && t.index >= 1 && t.line == cursor_raw_line)
             .and_then(|t| {
                 compute_wrapped_cell_overlay(
@@ -243,6 +244,29 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
         // Jitter suppression: keep the block rendered until the reveal delay elapses.
         let reveal_raw = editor.cursor_block_revealed();
+        // Where the cursor shows on a table row drawn formatted (before the reveal fires, or while
+        // search, a `:s` preview or a drag holds it off): on the glyph it is on, the row line and
+        // char column of `table_raw_col_to_rendered`, which is also where a click there puts it.
+        // Hidden markers make that differ from where the reveal then draws it, in raw text, and in
+        // a wrapped cell the sub-line can differ too.
+        let table_indicator = cursor_table
+            .as_ref()
+            .filter(|t| t.cells && t.line == cursor_raw_line)
+            .and_then(|t| {
+                let rows =
+                    cursor_block_lines.start + t.rows.start..cursor_block_lines.start + t.rows.end;
+                let (sub, col) = table_raw_col_to_rendered(
+                    raw_lines.get(cursor_raw_line).copied().unwrap_or(""),
+                    editor.parsed.lines.get(rows.clone())?,
+                    cursor_col,
+                    editor.parsed.ref_labels(),
+                )?;
+                Some((rows.start + sub, col))
+            });
+        let indicator_line = match table_indicator {
+            Some((line, _)) if !reveal_raw => line,
+            _ => cursor_rendered_line,
+        };
         let cursor_visible = editor.cursor_visible();
 
         let cursor_indicator_style = self.cursor_style;
@@ -250,16 +274,42 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let total_rendered = editor.parsed.lines.len();
         let wrap = true;
 
-        // Selected byte range, intersected per line below.
-        let selection_bytes = editor.selection.map(|s| {
-            let r = crate::editor::vim_ops::visual_span(&s, &editor.buffer, self.visual_kind);
-            let rope = editor.buffer.rope();
-            (rope.char_to_byte(r.start), rope.char_to_byte(r.end))
-        });
+        // The highlighted byte range, intersected per line below: the selection, else the yank
+        // flash.  Both are painted here, not in a post-pass, because a revealed row shows raw text
+        // and a stacked reveal changes row heights, which only this loop knows: each reveal branch
+        // highlights its own raw text, and the overlay below takes every other row.  Yanking ends
+        // a visual selection, so the two rarely coexist.
+        let highlight_bytes = editor
+            .selection
+            .map(|s| {
+                let r = crate::editor::vim_ops::visual_span(&s, &editor.buffer, self.visual_kind);
+                let rope = editor.buffer.rope();
+                (rope.char_to_byte(r.start), rope.char_to_byte(r.end))
+            })
+            .or_else(|| editor.active_yank_flash().map(|f| (f.start, f.end)));
         let block_range_for_cursor = editor
             .parsed
             .source_map
             .original_range_for_byte(cursor_byte);
+        // A revealed diagram's (mermaid, `$$…$$`) row `row` in block: the source line it paints
+        // (`None` for a math-preview band row or padding past the source), that line's raw text,
+        // and its highlighted columns.
+        let diagram_row = |row: usize| {
+            let src_idx = crate::document::row_map::revealed_diagram_line(
+                &editor.parsed,
+                cursor_block_idx,
+                row,
+            )
+            .filter(|&s| s < raw_lines.len());
+            let raw_text = src_idx.map_or("", |s| raw_lines[s]);
+            let sel_cols = src_idx
+                .zip(highlight_bytes)
+                .zip(block_range_for_cursor.as_ref())
+                .and_then(|((s, sel), block)| {
+                    raw_line_sel_cols(&raw_block_source, block.start, s, raw_text, sel)
+                });
+            (src_idx, raw_text, sel_cols)
+        };
 
         let mut vis_y: usize = 0;
         while vis_y < height {
@@ -305,19 +355,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         break;
                     }
                     let sub_skip = if raw_idx == first_raw { first_sub } else { 0 };
-                    let sel_cols = selection_bytes.zip(block_start).and_then(|((sa, sb), bs)| {
-                        let raw_line_start_in_block =
-                            raw_line_byte_start(&raw_block_source, raw_idx);
-                        let raw_line_start_abs = bs + raw_line_start_in_block;
-                        let raw_line_end_abs = raw_line_start_abs + raw_text.len();
-                        let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
-                        let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
-                        if start_byte >= end_byte {
-                            return None;
-                        }
-                        let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
-                        let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
-                        Some((start_col, end_col))
+                    let sel_cols = highlight_bytes.zip(block_start).and_then(|(sel, bs)| {
+                        raw_line_sel_cols(&raw_block_source, bs, raw_idx, raw_text, sel)
                     });
                     let styled = make_raw_line_over(raw_text, sel_cols, self.theme, reveal_base);
                     let cursor_override = (cursor_visible && raw_idx == cursor_raw_line)
@@ -354,7 +393,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         ""
                     };
                     let cursor_on_this = sub == 0 && cursor_raw_line == 0;
-                    let styled = make_raw_line_with_selection(raw_text, None, self.theme);
+                    let sel_cols = highlight_bytes
+                        .filter(|_| sub == 0)
+                        .zip(block_range_for_cursor.as_ref())
+                        .and_then(|(sel, block)| {
+                            raw_line_sel_cols(&raw_block_source, block.start, 0, raw_text, sel)
+                        });
+                    let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
                     let cursor_override = (cursor_on_this && cursor_visible)
                         .then_some((cursor_col, cursor_indicator_style));
                     rows_used = render_line_with_cursor_from_visual(
@@ -379,19 +424,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 };
                 let raw_text = raw_lines.get(sub).copied().unwrap_or("");
                 let cursor_on_this = cursor_raw_line == sub;
-                let sel_cols = selection_bytes.and_then(|(sa, sb)| {
+                let sel_cols = highlight_bytes.and_then(|sel| {
                     let block_start = block_range_for_cursor.as_ref()?.start;
-                    let raw_line_start_in_block = raw_line_byte_start(&raw_block_source, sub);
-                    let raw_line_start_abs = block_start + raw_line_start_in_block;
-                    let raw_line_end_abs = raw_line_start_abs + raw_text.len();
-                    let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
-                    let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
-                    if start_byte >= end_byte {
-                        return None;
-                    }
-                    let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
-                    let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
-                    Some((start_col, end_col))
+                    raw_line_sel_cols(&raw_block_source, block_start, sub, raw_text, sel)
                 });
                 let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
                 let cursor_override = (cursor_on_this && cursor_visible)
@@ -411,30 +446,16 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 // background, the closing fence a padded placeholder (or the raw fence with
                 // cursor), and rows past the source padded so the reservation reads as one
                 // block.
-                let sub = virtual_idx - cursor_block_lines.start;
-                let raw_text = raw_lines.get(sub).copied().unwrap_or("");
-                let cursor_on_this = cursor_raw_line == sub;
+                let (src_idx, raw_text, sel_cols) =
+                    diagram_row(virtual_idx - cursor_block_lines.start);
+                let cursor_on_this = src_idx == Some(cursor_raw_line);
                 let last_raw_idx = raw_lines.len().saturating_sub(1);
-                let is_opening_fence_row = sub == 0 && raw_lines.len() >= 2;
-                let is_closing_fence_row =
-                    sub == last_raw_idx && raw_lines.len() >= 2 && raw_text.trim() == "```";
-                let in_source = sub < raw_lines.len();
+                let is_opening_fence_row = src_idx == Some(0) && raw_lines.len() >= 2;
+                let is_closing_fence_row = src_idx == Some(last_raw_idx)
+                    && raw_lines.len() >= 2
+                    && raw_text.trim() == "```";
+                let in_source = src_idx.is_some();
                 let width = area.width as usize;
-
-                let sel_cols = selection_bytes.and_then(|(sa, sb)| {
-                    let block_start = block_range_for_cursor.as_ref()?.start;
-                    let raw_line_start_in_block = raw_line_byte_start(&raw_block_source, sub);
-                    let raw_line_start_abs = block_start + raw_line_start_in_block;
-                    let raw_line_end_abs = raw_line_start_abs + raw_text.len();
-                    let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
-                    let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
-                    if start_byte >= end_byte {
-                        return None;
-                    }
-                    let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
-                    let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
-                    Some((start_col, end_col))
-                });
 
                 let styled = if cursor_on_this && (is_opening_fence_row || is_closing_fence_row) {
                     make_raw_line_with_selection(raw_text, sel_cols, self.theme)
@@ -484,19 +505,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 // (so the image keeps the block's top edge and doesn't
                 // jump): band rows paint empty — `image_view` overlays the
                 // formula there — and the source rows shift down by `band`
-                // (`latex_source_offset`).  With the preview off, `band` is
-                // 0 and the source paints from row 0.  Either way the
-                // formula's URL hashes its source, so moving the cursor out
-                // collapses the block back to a freshly rendered image.
-                let band = editor.parsed.latex_source_offset(cursor_block_idx);
-                let sub = virtual_idx - cursor_block_lines.start;
-                // Source line under this rendered row, or `None` for a
-                // band row (which paints empty behind the formula overlay).
-                let src_idx = sub.checked_sub(band).filter(|&s| s < raw_lines.len());
-                let raw_text = src_idx
-                    .and_then(|s| raw_lines.get(s))
-                    .copied()
-                    .unwrap_or("");
+                // (`row_map::revealed_diagram_line`).  With the preview
+                // off there is no band and the source paints from row 0.
+                // Either way the formula's URL hashes its source, so moving
+                // the cursor out collapses the block back to a freshly
+                // rendered image.
+                let (src_idx, raw_text, sel_cols) =
+                    diagram_row(virtual_idx - cursor_block_lines.start);
                 let cursor_on_this = src_idx == Some(cursor_raw_line);
                 // Delimiter rows only when the block has separate opening /
                 // closing lines (a one-line `$$x$$` is neither).  The
@@ -512,20 +527,6 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     && raw_lines.len() >= 2
                     && raw_text.trim() == "$$";
                 let width = area.width as usize;
-                let sel_cols = src_idx.zip(selection_bytes).and_then(|(s, (sa, sb))| {
-                    let block_start = block_range_for_cursor.as_ref()?.start;
-                    let raw_line_start_in_block = raw_line_byte_start(&raw_block_source, s);
-                    let raw_line_start_abs = block_start + raw_line_start_in_block;
-                    let raw_line_end_abs = raw_line_start_abs + raw_text.len();
-                    let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
-                    let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
-                    if start_byte >= end_byte {
-                        return None;
-                    }
-                    let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
-                    let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
-                    Some((start_col, end_col))
-                });
                 let styled = if src_idx.is_none() {
                     // Band row: transparent so the formula image shows.
                     make_raw_line_with_selection("", None, self.theme)
@@ -567,22 +568,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     rows_used =
                         render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
                             as usize;
-                    let sel_in_cell = selection_bytes.and_then(|(sa, sb)| {
+                    let sel_in_cell = highlight_bytes.and_then(|sel| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
                         // Every chunk is a slice of the single raw row `cursor_raw_line`.
-                        let raw_line_start_in_block =
-                            raw_line_byte_start(&raw_block_source, cursor_raw_line);
-                        let cell_byte_start =
-                            block_start + raw_line_start_in_block + overlay.raw_cell_byte_start;
-                        let cell_byte_end = cell_byte_start + overlay.raw_text.len();
-                        let lo = sa.max(cell_byte_start).min(cell_byte_end);
-                        let hi = sb.max(cell_byte_start).min(cell_byte_end);
-                        if lo >= hi {
-                            return None;
-                        }
-                        let start_col = overlay.raw_text[..lo - cell_byte_start].chars().count();
-                        let end_col = overlay.raw_text[..hi - cell_byte_start].chars().count();
-                        Some((start_col, end_col))
+                        let cell_start = block_start
+                            + raw_line_byte_start(&raw_block_source, cursor_raw_line)
+                            + overlay.raw_cell_byte_start;
+                        text_sel_cols(&overlay.raw_text, cell_start, sel)
                     });
                     overlay_raw_cell(
                         buf,
@@ -618,21 +610,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
                             as usize;
 
-                    let sel_in_cell = selection_bytes.and_then(|(sa, sb)| {
+                    let sel_in_cell = highlight_bytes.and_then(|sel| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
-                        let raw_line_start_in_block =
-                            raw_line_byte_start(&raw_block_source, cursor_raw_line);
-                        let cell_byte_start =
-                            block_start + raw_line_start_in_block + overlay.raw_cell_byte_start;
-                        let cell_byte_end = cell_byte_start + overlay.raw_text.len();
-                        let lo = sa.max(cell_byte_start).min(cell_byte_end);
-                        let hi = sb.max(cell_byte_start).min(cell_byte_end);
-                        if lo >= hi {
-                            return None;
-                        }
-                        let start_col = overlay.raw_text[..lo - cell_byte_start].chars().count();
-                        let end_col = overlay.raw_text[..hi - cell_byte_start].chars().count();
-                        Some((start_col, end_col))
+                        let cell_start = block_start
+                            + raw_line_byte_start(&raw_block_source, cursor_raw_line)
+                            + overlay.raw_cell_byte_start;
+                        text_sel_cols(&overlay.raw_text, cell_start, sel)
                     });
                     overlay_raw_cell(
                         buf,
@@ -645,20 +628,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     );
                 } else {
                     // Non-table block, or a pipe-mismatched table line (mid-edit alignment row).
-                    let sel_cols = selection_bytes.and_then(|(sa, sb)| {
+                    let sel_cols = highlight_bytes.and_then(|sel| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
-                        let raw_line_start_in_block =
-                            raw_line_byte_start(&raw_block_source, cursor_raw_line);
-                        let raw_line_start_abs = block_start + raw_line_start_in_block;
-                        let raw_line_end_abs = raw_line_start_abs + raw_text.len();
-                        let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
-                        let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
-                        if start_byte >= end_byte {
-                            return None;
-                        }
-                        let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
-                        let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
-                        Some((start_col, end_col))
+                        raw_line_sel_cols(
+                            &raw_block_source,
+                            block_start,
+                            cursor_raw_line,
+                            raw_text,
+                            sel,
+                        )
                     });
                     let styled = make_raw_line_over(raw_text, sel_cols, self.theme, reveal_base);
                     let cursor_override =
@@ -673,21 +651,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         skip_rows,
                     ) as usize;
                 }
-            } else if virtual_idx == cursor_rendered_line && (!reveal_raw || !cursor_row_reveals) {
+            } else if virtual_idx == indicator_line && (!reveal_raw || !cursor_row_reveals) {
                 // Rendered line plus a cursor indicator: the jitter-delay window before
                 // `reveal_raw` (drawing it now avoids a column jump when the reveal fires),
                 // or a row that never de-renders (a code body, frontmatter).
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
                     // Where a click on that char would have put the cursor, inverted: the row's
                     // origin says how its columns relate to the cursor's line.
-                    let visual_col = if let Some(w) = &wrapped_cell {
-                        w.visual_col
-                    } else if is_table {
-                        // Padded cells shift the column; land on the same visual col the cell
-                        // overlay will use on reveal.
-                        let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
-                        table_raw_col_to_rendered_col(raw_text, line, cursor_col)
-                            .unwrap_or(cursor_col)
+                    let visual_col = if is_table {
+                        table_indicator.map_or(cursor_col, |(_, col)| col)
                     } else {
                         crate::document::row_map::raw_to_rendered_col_near(
                             &editor.parsed,
@@ -727,9 +699,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 }
             }
 
-            // Lines that painted their own selection (the revealed line, setext / mermaid /
-            // wrapped-cell subs) are skipped.
-            if let Some((sa, sb)) = selection_bytes {
+            // Lines that painted their own highlight (the revealed line, big-H1 / setext / diagram
+            // rows, wrapped-cell subs, the stacked reflow) are skipped.  A big H1's rule stays
+            // rendered, so it takes the overlay.
+            if let Some((sa, sb)) = highlight_bytes {
+                let big_h1_revealed = reveal_raw
+                    && is_big_h1_block
+                    && in_cursor_block
+                    && virtual_idx - cursor_block_lines.start < cursor_block_own.saturating_sub(1);
                 let setext_revealed = reveal_raw && is_setext && in_cursor_block;
                 let diagram_revealed = reveal_raw && is_diagram_block && in_cursor_block;
                 let wrapped_revealed = reveal_raw && wrapped_sub_idx_opt.is_some();
@@ -737,6 +714,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 // Separate suppression cases; clippy's collapse hides which is which.
                 #[allow(clippy::nonminimal_bool)]
                 if !(reveal_raw && virtual_idx == cursor_rendered_line && cursor_row_reveals)
+                    && !big_h1_revealed
                     && !setext_revealed
                     && !diagram_revealed
                     && !wrapped_revealed

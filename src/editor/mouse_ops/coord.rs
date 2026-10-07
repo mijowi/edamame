@@ -330,13 +330,15 @@ pub fn rendered_sub_line_to_offset(
     // Rows the view paints as raw source (a diagram's reserved rows, the cursor's own revealed
     // row) map `col` against the raw line's own wrap layout, since the rendered `Line` isn't
     // what the user sees.  The revealed row paints the cursor's line; a diagram's rows show
-    // their source lines 1:1 below any math-preview band, whose own rows resolve to the first.
+    // their source lines 1:1 below any math-preview band, whose own rows resolve to the first
+    // line, and above any padding past the source, whose rows resolve to the last.
     let revealed_row = is_revealed_cursor_row(state, block.idx, rendered_line_idx);
     if revealed_row || state.parsed.is_diagram_reveal_block(block.idx) {
         let raw_line_idx = if revealed_row {
             crate::editor::state::cursor_raw_line(state)
         } else {
-            row_map::line_for_row(&state.parsed, block.idx, block.sub_idx)
+            row_map::revealed_diagram_line(&state.parsed, block.idx, block.sub_idx)
+                .unwrap_or_else(|| row_map::line_for_row(&state.parsed, block.idx, block.sub_idx))
         };
         let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
         let line_text = &block_text[line_byte_start..line_byte_end];
@@ -414,7 +416,15 @@ fn table_click_to_offset(
     // Rendered cells are padded to layout width; map through the pipe positions so the click
     // stays inside the clicked cell.
     let raw_col = cells_line
-        .and_then(|line| table_click_to_raw_col(line_text, line, clamped_col, table_sub))
+        .and_then(|line| {
+            table_click_to_raw_col(
+                line_text,
+                line,
+                clamped_col,
+                table_sub,
+                state.parsed.ref_labels(),
+            )
+        })
         .unwrap_or(clamped_col);
     raw_col_to_buffer_char(state, block, line_byte_start, line_text, raw_col)
 }
@@ -528,14 +538,16 @@ fn revealed_raw_row_count(
     let block_text = reveal.text.as_str();
 
     if state.parsed.is_diagram_reveal_block(reveal.block_idx) {
-        // The source line the row shows, past any math-preview band (whose rows clamp to the
-        // first line).
-        let row_line = row_map::line_for_row(
+        // The source line the row shows; a math-preview band row or padding past the source
+        // paints empty, one row.
+        let row_line = row_map::revealed_diagram_line(
             &state.parsed,
             reveal.block_idx,
             rendered_line_idx.saturating_sub(reveal.block_lines.start),
         );
-        let raw_line = block_text.split('\n').nth(row_line).unwrap_or("");
+        let raw_line = row_line
+            .and_then(|l| block_text.split('\n').nth(l))
+            .unwrap_or("");
         return Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1));
     }
 
@@ -679,12 +691,10 @@ fn raw_col_to_buffer_char(
 /// by pipe positions).  Leading padding lands on the first content char; trailing padding
 /// clamps just past the chunk's last char so the cursor never jumps into the next cell.
 ///
-/// Content columns are routed through the cell's [`InlineColMap`](crate::markdown::InlineColMap)
-/// so a click inside a cell with hidden inline markers (`` `code` ``, `**bold**`, a link)
-/// lands on the glyph under the cursor rather than the raw position the same *count* of chars
-/// in.  The wrap chunks are computed over the
-/// marker-collapsed (rendered) content, matching what `render_table_row` actually wraps, so the
-/// two agree even on continuation sub-lines.
+/// Content columns go through the cell's [`CellContent`](table_layout::CellContent), so a click
+/// inside a cell with hidden inline markers (`` `code` ``, `**bold**`, a link) lands on the glyph
+/// under the cursor, and wrap chunks are those `render_table_row` drew, even on continuation
+/// sub-lines.  `labels` are the document's, so a reference link collapses as it renders.
 ///
 /// `sub` is the wrap-chunk index of the clicked sub-line within its logical row.  `None` when
 /// the line isn't a table row (separator, border); the caller falls back to the char-by-char
@@ -694,6 +704,7 @@ fn table_click_to_raw_col(
     rendered_line: &Line<'_>,
     rendered_col: usize,
     sub: usize,
+    labels: &crate::markdown::RefLabels,
 ) -> Option<usize> {
     let raw_pipes = table_layout::raw_pipe_positions(raw_line);
     let rendered_pipes = table_layout::rendered_pipe_cells(rendered_line);
@@ -708,67 +719,35 @@ fn table_click_to_raw_col(
     let rend_cell_start = rendered_pipes[cell_idx] + 1;
     let rend_cell_end = rendered_pipes[cell_idx + 1];
     let raw_cell_start = raw_pipes[cell_idx] + 1;
-    let raw_cell_end = raw_pipes[cell_idx + 1];
+    let raw_chars: Vec<char> = raw_line.chars().collect();
+    let raw_cell = &raw_chars[raw_cell_start..raw_pipes[cell_idx + 1]];
 
-    let raw_cell_text: String = raw_line
-        .chars()
-        .skip(raw_cell_start)
-        .take(raw_cell_end - raw_cell_start)
-        .collect();
-
-    let clicked = rendered_col.max(rend_cell_start);
-    let rend_offset_in_cell = clicked.saturating_sub(rend_cell_start);
-
-    let raw_chars: Vec<char> = raw_cell_text.chars().collect();
-    let raw_leading = raw_chars.iter().take_while(|c| c.is_whitespace()).count();
-    let raw_trailing = raw_chars
-        .iter()
-        .rev()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    let content_chars = raw_chars.len().saturating_sub(raw_leading + raw_trailing);
-
+    let rend_offset_in_cell = rendered_col
+        .max(rend_cell_start)
+        .saturating_sub(rend_cell_start);
     // A rendered cell is `│` + space + content + space (see `render_table_row`).
-    let cell_width = rend_cell_end.saturating_sub(rend_cell_start + 2).max(1);
-    let trimmed: String = raw_chars[raw_leading..raw_leading + content_chars]
-        .iter()
-        .collect();
+    let cell_width = rend_cell_end.saturating_sub(rend_cell_start + 2);
+    let cell = table_layout::CellContent::new(raw_cell, cell_width, labels);
+    let rendered_to_raw = cell.map.rendered_to_raw_vec();
+    let raw_content_col = |rendered: usize| rendered_to_raw[rendered.min(cell.map.rendered_len())];
 
-    // Compose with the cell's inline collapse map: markers (backtick delimiters, `**`, a link's
-    // URL) are hidden in the rendered cell, so a rendered content column is fewer chars in than
-    // the raw column it addresses.  `rendered_to_raw` skips exactly those markers.
-    let map = crate::markdown::InlineColMap::build(&trimmed);
-    let rendered_to_raw = map.rendered_to_raw_vec();
-    let raw_content_col = |rendered: usize| rendered_to_raw[rendered.min(map.rendered_len())];
-
-    // Wrap the marker-collapsed content the renderer paints, so chunk offsets are in the same
-    // (rendered) coordinate space as `rend_offset_in_cell`.
-    let trimmed_chars: Vec<char> = trimmed.chars().collect();
-    let rendered_content: String = (0..map.rendered_len())
-        .map(|r| {
-            trimmed_chars
-                .get(rendered_to_raw[r])
-                .copied()
-                .unwrap_or(' ')
-        })
-        .collect();
-    let chunks = table_layout::wrap_cell_with_indices(&rendered_content, cell_width);
     // Blank padding sub-lines of a short cell map to the end of its content.
-    let (chunk_start, chunk_text) = chunks
+    let (chunk_start, chunk_text) = cell
+        .chunks
         .get(sub)
         .map(|(start, text)| (*start, text.as_str()))
-        .unwrap_or((map.rendered_len(), ""));
+        .unwrap_or((cell.map.rendered_len(), ""));
 
     let raw_offset_in_cell = if rend_offset_in_cell <= 1 {
-        raw_leading + raw_content_col(chunk_start)
+        cell.leading + raw_content_col(chunk_start)
     } else {
         // The click is a screen cell; a wide glyph before it spans two.
         let content_col =
             line_render::char_idx_at_cell_col(chunk_text.chars(), rend_offset_in_cell - 1, 0);
-        raw_leading + raw_content_col(chunk_start + content_col.min(chunk_text.chars().count()))
+        cell.leading + raw_content_col(chunk_start + content_col.min(chunk_text.chars().count()))
     };
 
-    Some(raw_cell_start + raw_offset_in_cell.min(raw_chars.len()))
+    Some(raw_cell_start + raw_offset_in_cell.min(raw_cell.len()))
 }
 
 /// The table-cell band under a Preview click: the inclusive rendered-line range of the cell's
@@ -845,6 +824,7 @@ mod tests {
     use super::*;
     use crate::config::Theme;
     use crate::document::Buffer;
+    use crate::markdown::RefLabels;
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
@@ -949,16 +929,19 @@ mod tests {
         let line = Line::from("│ 日本 │ ab │");
         let raw_col = |c: char| raw.chars().position(|x| x == c).unwrap();
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 10, 0),
+            table_click_to_raw_col(raw, &line, 10, 0, &RefLabels::default()),
             Some(raw_col('b'))
         );
-        assert_eq!(table_click_to_raw_col(raw, &line, 9, 0), Some(raw_col('a')));
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 2, 0),
+            table_click_to_raw_col(raw, &line, 9, 0, &RefLabels::default()),
+            Some(raw_col('a'))
+        );
+        assert_eq!(
+            table_click_to_raw_col(raw, &line, 2, 0, &RefLabels::default()),
             Some(raw_col('日'))
         );
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 3, 0),
+            table_click_to_raw_col(raw, &line, 3, 0, &RefLabels::default()),
             Some(raw_col('本'))
         );
     }

@@ -22,6 +22,9 @@ Each released version's section is also what ships as the GitHub release notes: 
 - A footnote whose label holds wide characters (such as CJK) now lines up its continuation lines under its text.
 - A table inside a list item or blockquote now edits a cell at a time like any other table: a click lands in the cell you clicked, the cell you're in shows its raw text while the grid stays drawn, a selection highlights just the text it covers, and a drag that starts in a cell stays inside it. Before, the whole row turned back into pipes, and clicks landed a few characters off.
 - Clicking a table's border or a line between its rows puts the cursor in the cell beside the click, instead of on a pipe or in the spaces around a cell's text.
+- Search matches, selections, and the yank highlight in a table cell now show on text after bold, italic, code, or a link in the same cell, and on the right row when the cell wraps. Before, they were missing or misplaced there.
+- In a table, the cursor shows on the character it's on while you search or drag, and for a moment before the cell switches to its raw text. Before, it sat past that character, by one column on a cell's first character and further after bold, italic, code or a link.
+- The yank highlight in vim mode now covers the text you yanked on a line you're editing, in a heading, and inside a Mermaid diagram or math block you're editing, and lines below a paragraph you're editing no longer highlight a row off.
 
 ## [0.1.5] - 2026-10-05
 

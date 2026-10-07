@@ -2631,6 +2631,444 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
     }
 }
 
+/// Before the reveal shrinks the reservation to the source (the frame
+/// `sync_image_reveal` hasn't run for yet), the image's rows outnumber the
+/// source lines.  The rows past the source pad the block: they must not
+/// repeat its last line, even with the cursor on it.
+#[test]
+fn mermaid_reveal_pads_rows_past_the_source() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Four source lines against eight reserved rows.
+    let src = "```mermaid\nflowchart TD\nA-->B\n```\n";
+    let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 8);
+    state.mode = Mode::Rendered;
+    // Cursor on the closing fence, so its row shows the raw fence.
+    let byte = src.rfind("```").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(byte);
+    state.update_cursor_block();
+    state.cursor_block_entered_at = None;
+
+    let backend = TestBackend::new(20, 9);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..20u16)
+            .map(|x| buf.cell((x, y)).unwrap().symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+    assert_eq!(
+        row_text(3),
+        "```",
+        "the closing fence shows raw under the cursor"
+    );
+    for y in 4..8u16 {
+        assert_eq!(row_text(y), "", "row {y} past the source must be padding");
+    }
+}
+
+/// A yank flash over a revealed diagram's source line paints that line's
+/// raw text, and nothing on the rows around it.  The post-pass overlay
+/// skips image rows, so the reveal paints the flash itself, as it does a
+/// selection; it used to land on the placeholder `Line`'s cells, whose width
+/// was 0 on every row but the label's.
+#[test]
+fn yank_flash_paints_a_revealed_diagrams_source_line() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::terminal::Capabilities;
+    use edamame::ui::bottom_region::{HintContent, HintSet};
+    use edamame::ui::{EditorView, EditorViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "```mermaid\nflowchart TD\nA-->B\n```\n";
+    for (line, row) in [("flowchart TD", 1u16), ("```mermaid", 0)] {
+        let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 8);
+        state.mode = Mode::Rendered;
+        // Cursor at the end of `A-->B`, clear of the flashed line.
+        let cursor = src.find("A-->B").unwrap() + "A-->B".len();
+        state.cursor.offset = state.buffer.rope().byte_to_char(cursor);
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None;
+        let start = state.buffer.rope().byte_to_char(src.find(line).unwrap());
+        state.flash_yank(start, start + line.chars().count());
+
+        let backend = TestBackend::new(30, 9);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut view_state = EditorViewState::new();
+        let caps = Capabilities::default();
+        terminal
+            .draw(|frame| {
+                let view = EditorView {
+                    state: &mut state,
+                    theme,
+                    filename: "test.md",
+                    show_table_buttons: false,
+                    table_drop_indicator: None,
+                    capabilities: &caps,
+                    show_line_numbers: false,
+                    is_scrolling: false,
+                    hint: HintContent::Chords(HintSet::default()),
+                    vim_mode_label: None,
+                    visual_kind: None,
+                    editor_cursor_style: theme.status_mode_rendered,
+                    max_width_enabled: false,
+                    max_width_cols: 0,
+                    scrollbar_active: false,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let flashed = |y: u16| -> Vec<u16> {
+            (0..30u16)
+                .filter(|&x| buf.cell((x, y)).unwrap().style().bg == theme.selection.bg)
+                .collect()
+        };
+        if row == 1 {
+            // A body row shows its raw text, and the flash covers all of it.
+            let n = line.chars().count() as u16;
+            assert_eq!(flashed(1), (0..n).collect::<Vec<_>>(), "{line:?}");
+        } else {
+            // The opening fence shows its ` mermaid ` label without the
+            // cursor: there is no raw text to flash.
+            assert_eq!(flashed(0), Vec::<u16>::new(), "{line:?}");
+        }
+        for y in (0..8u16).filter(|&y| y != row) {
+            assert_eq!(flashed(y), Vec::<u16>::new(), "{line:?}: row {y}");
+        }
+    }
+}
+
+/// A yank flash over a revealed block paints the raw text each row shows, at
+/// its raw columns, and rows below a stacked reveal stay aligned.  The flash
+/// used to be a post-pass over the rendered layout, so it landed at rendered
+/// columns over raw text, washed a big H1's blanked rows whole, and was a row
+/// off below a revealed reflowed paragraph.
+#[test]
+fn yank_flash_paints_revealed_rows_at_their_raw_columns() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::terminal::Capabilities;
+    use edamame::ui::bottom_region::{HintContent, HintSet};
+    use edamame::ui::{EditorView, EditorViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // (source, cursor at, flashed text, reflow, big H1, highlighted cells per row 0..6)
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &str, &str, bool, bool, [std::ops::Range<u16>; 6])] = &[
+        // The cursor's row shows `a **bold** word`: `word` is at raw col 11.
+        (
+            "a **bold** word\n\nnext\n",
+            "a **",
+            "word",
+            false,
+            false,
+            [11..15, 0..0, 0..0, 0..0, 0..0, 0..0],
+        ),
+        (
+            "- a **b** word\n- c\n",
+            "a **",
+            "word",
+            false,
+            false,
+            [10..14, 0..0, 0..0, 0..0, 0..0, 0..0],
+        ),
+        (
+            "Title *x* end\n===\n\nnext\n",
+            "Title",
+            "end",
+            false,
+            false,
+            [10..13, 0..0, 0..0, 0..0, 0..0, 0..0],
+        ),
+        // The underline shows raw, so only its three chars light.
+        (
+            "Title *x* end\n---\n\nnext\n",
+            "Title",
+            "---",
+            false,
+            false,
+            [0..0, 0..3, 0..0, 0..0, 0..0, 0..0],
+        ),
+        // Big H1: the raw line, a blanked row, then the rendered rule, which as
+        // chrome washes whole under a flash of its line.
+        (
+            "# **T** end\n\nnext\n",
+            "# **",
+            "end",
+            false,
+            true,
+            [8..11, 0..0, 0..30, 0..0, 0..0, 0..0],
+        ),
+        // A revealed reflowed paragraph stacks its two source lines.
+        (
+            "a **b** c\nmore word\n\nnext\n",
+            "a **",
+            "word",
+            true,
+            false,
+            [0..0, 5..9, 0..0, 0..0, 0..0, 0..0],
+        ),
+        (
+            "a **b** c\nmore word\n\nnext\n",
+            "a **",
+            "next",
+            true,
+            false,
+            [0..0, 0..0, 0..0, 0..4, 0..0, 0..0],
+        ),
+    ];
+    for (src, at, flash, reflow, big_h1, expected) in cases {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.set_viewport_width(30);
+        state.set_reflow(!*reflow);
+        state.set_reflow(*reflow);
+        state.set_big_h1(*big_h1);
+        let cursor = src.find(at).unwrap();
+        state.cursor.offset = state.buffer.rope().byte_to_char(cursor);
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None;
+        let start = state.buffer.rope().byte_to_char(src.find(flash).unwrap());
+        state.flash_yank(start, start + flash.chars().count());
+
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut view_state = EditorViewState::new();
+        let caps = Capabilities::default();
+        terminal
+            .draw(|frame| {
+                let view = EditorView {
+                    state: &mut state,
+                    theme,
+                    filename: "test.md",
+                    show_table_buttons: false,
+                    table_drop_indicator: None,
+                    capabilities: &caps,
+                    show_line_numbers: false,
+                    is_scrolling: false,
+                    hint: HintContent::Chords(HintSet::default()),
+                    vim_mode_label: None,
+                    visual_kind: None,
+                    editor_cursor_style: theme.status_mode_rendered,
+                    max_width_enabled: false,
+                    max_width_cols: 0,
+                    scrollbar_active: false,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        for (y, want) in expected.iter().enumerate() {
+            let y = y as u16;
+            let got: Vec<u16> = (0..30u16)
+                .filter(|&x| buf.cell((x, y)).unwrap().style().bg == theme.selection.bg)
+                .collect();
+            assert_eq!(
+                got,
+                want.clone().collect::<Vec<_>>(),
+                "{src:?}, flash {flash:?}: row {y}"
+            );
+        }
+    }
+}
+
+/// In a cell without hidden markers the raw and formatted text line up, so
+/// the cursor keeps its column when the cell reveals.  On a cell's first char
+/// it used to land one column left before the reveal, on the pad space.
+#[test]
+fn table_cursor_keeps_its_column_when_a_plain_cell_reveals() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| a | bb |\n|---|---|\n| 1 | 2 |\n";
+    // On `a`, the first char of a cell, and on the second `b`, past it.
+    for (at, col) in [
+        (src.find('a').unwrap(), 2u16),
+        (src.find("b |").unwrap(), 9),
+    ] {
+        let mut columns = Vec::new();
+        for revealed in [false, true] {
+            let mut state = EditorState::new(Buffer::from_str(src), theme);
+            state.mode = Mode::Rendered;
+            state.set_viewport_width(30);
+            state.cursor.offset = state.buffer.rope().byte_to_char(at);
+            state.update_cursor_block();
+            // Still inside the reveal delay, or past it.
+            state.cursor_block_entered_at = (!revealed).then(std::time::Instant::now);
+
+            let backend = TestBackend::new(30, 6);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut view_state = RenderedViewState::default();
+            terminal
+                .draw(|frame| {
+                    let view = RenderedView {
+                        cursor_style: theme.status_mode_rendered,
+                        visual_kind: None,
+                        drop_indicator: None,
+                        show_table_buttons: false,
+                        state: &state,
+                        theme,
+                    };
+                    frame.render_stateful_widget(view, frame.area(), &mut view_state);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let cursor: Vec<u16> = (0..30u16)
+                .filter(|&x| buf.cell((x, 1)).unwrap().style().bg == theme.status_mode_rendered.bg)
+                .collect();
+            columns.push(cursor);
+        }
+        assert_eq!(
+            columns[0],
+            vec![col],
+            "before the reveal, cursor at byte {at}"
+        );
+        assert_eq!(
+            columns[1],
+            vec![col],
+            "after the reveal, cursor at byte {at}"
+        );
+    }
+}
+
+/// While a table row is drawn formatted (before its cell reveals, or for as
+/// long as search holds the reveal off), the cursor shows on the glyph it is
+/// on, past any markers the cell hides, and on the right sub-line of a wrapped
+/// cell; a click there puts it back on the same char.  It used to count raw
+/// chars over the formatted text, so it sat past its glyph (in the padding,
+/// during a whole search).  The reveal then draws it in the raw text.
+#[test]
+fn table_cursor_shows_on_its_glyph_while_the_row_is_formatted() {
+    use crossterm::event::KeyModifiers;
+    use edamame::document::Buffer;
+    use edamame::editor::{mouse_ops, EditorState};
+    use edamame::input::MouseAction;
+    use edamame::search::SearchState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // (source, cursor on, viewport width, screen row, formatted col, revealed col)
+    let cases = [
+        // `b x y` formatted, `**b** x y` revealed.
+        (
+            "| a | **b** x y |\n|---|---|\n| 1 | 2222222222222 |\n",
+            "x y",
+            40,
+            1,
+            10,
+            14,
+        ),
+        // `alpha` / `bravo` formatted; raw `**alph` / `a**` / `bravo` scrolls to its last
+        // two chunks for a cursor in `bravo`, and shows its first for one in `alpha`.
+        (
+            "| h | k |\n|---|---|\n| a | **alpha** bravo |\n",
+            "avo",
+            16,
+            4,
+            10,
+            10,
+        ),
+        (
+            "| h | k |\n|---|---|\n| a | **alpha** bravo |\n",
+            "pha",
+            16,
+            3,
+            10,
+            12,
+        ),
+    ];
+    for (src, on, width, row, formatted, revealed) in cases {
+        let at = src.find(on).unwrap();
+        let cursor_cols = |phase: &str| -> Vec<u16> {
+            let mut state = EditorState::new(Buffer::from_str(src), theme);
+            state.mode = Mode::Rendered;
+            state.set_viewport_width(width as usize);
+            if phase == "search" {
+                state.enter_search(SearchState::new("zzz".to_owned(), None).unwrap());
+            }
+            state.cursor.offset = state.buffer.rope().byte_to_char(at);
+            state.update_cursor_block();
+            state.cursor_block_entered_at = (phase == "delay").then(std::time::Instant::now);
+            let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            let mut view_state = RenderedViewState::default();
+            terminal
+                .draw(|frame| {
+                    let view = RenderedView {
+                        cursor_style: theme.status_mode_rendered,
+                        visual_kind: None,
+                        drop_indicator: None,
+                        show_table_buttons: false,
+                        state: &state,
+                        theme,
+                    };
+                    frame.render_stateful_widget(view, frame.area(), &mut view_state);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..width)
+                .filter(|&x| {
+                    buf.cell((x, row)).unwrap().style().bg == theme.status_mode_rendered.bg
+                })
+                .collect()
+        };
+        assert_eq!(
+            cursor_cols("delay"),
+            vec![formatted],
+            "{on:?} before the reveal"
+        );
+        assert_eq!(
+            cursor_cols("search"),
+            vec![formatted],
+            "{on:?} during search"
+        );
+        assert_eq!(cursor_cols("revealed"), vec![revealed], "{on:?} revealed");
+
+        // A click on the formatted glyph, from outside the table, lands on that char.
+        let mut state = EditorState::new(Buffer::from_str(&format!("{src}\nafter\n")), theme);
+        state.mode = Mode::Rendered;
+        state.set_viewport_width(width as usize);
+        state.cursor.offset = state.buffer.len_chars() - 1;
+        state.update_cursor_block();
+        let click = MouseAction::Click {
+            col: formatted,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        mouse_ops::apply(&mut state, click, &mut None, &[], 20, width as usize);
+        assert_eq!(
+            state.buffer.rope().char_to_byte(state.cursor.offset),
+            at,
+            "{on:?}: a click where the cursor showed"
+        );
+    }
+}
+
 /// Drag-selection highlight must paint on a wrapped cell's continuation
 /// sub-line while the drag is still in progress.  During a drag the raw
 /// reveal is suppressed (`drag_in_progress`), so the generic byte-range

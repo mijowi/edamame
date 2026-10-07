@@ -3,7 +3,7 @@ use ratatui::text::Line;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{
     cells_of, hard_wrap_ranges, last_cluster_start, raw_pipe_positions, rendered_pipe_cells,
-    rendered_pipe_positions, str_cells, wrap_cell_with_indices, CellOverlay,
+    str_cells, wrap_cell_with_indices, CellOverlay,
 };
 
 /// Overlay for a cell whose raw markdown is wider than its rendered cell: hard-wraps the
@@ -83,7 +83,7 @@ pub(super) fn compute_cell_chunk_overlay(
 
 /// Cursor position inside a *wrapped* table cell (one that broke onto several rendered
 /// sub-lines). `RenderedView::render` uses it to move `cursor_rendered_line` onto the right
-/// sub and place the cursor indicator at `visual_col`.
+/// sub once the cell reveals.
 pub(super) struct WrappedCellOverlay {
     /// Sub-line index in `editor.parsed.lines` of the row's first rendered sub.
     pub(super) row_first_line_idx: usize,
@@ -93,10 +93,6 @@ pub(super) struct WrappedCellOverlay {
     pub(super) subs: Vec<CellOverlay>,
     /// Index within `subs` that contains the cursor.
     pub(super) cursor_sub: usize,
-    /// Char index into the rendered row for the cursor indicator (a `cursor_col_override`,
-    /// not a cell column); the jitter-delay branch draws it here so nothing jumps when the
-    /// reveal fires.
-    pub(super) visual_col: usize,
 }
 
 /// One `CellOverlay` per rendered sub-line of the cursor's row, mapping word-wrap chunks of the
@@ -252,18 +248,10 @@ pub(super) fn compute_wrapped_cell_overlay(
         });
     }
 
-    // Chunks paint one cell past the pipe (the pad), which is two chars on in the row's text.
-    let cursor_line = block_lines.get(cursor_sub).unwrap_or(first_line);
-    let visual_col = rendered_pipe_positions(cursor_line)
-        .get(cell_idx)
-        .map_or(subs[cursor_sub].rendered_start, |&pipe| pipe + 2)
-        + cursor_col_in_chunk;
-
     Some(WrappedCellOverlay {
         row_first_line_idx: row_lines.start,
         subs,
         cursor_sub,
-        visual_col,
     })
 }
 
@@ -341,31 +329,6 @@ mod tests {
         let ov = compute_cell_chunk_overlay(raw, &line, closing).expect("wider than the cell");
         assert_eq!(ov.raw_text, "fghije\u{301}");
         assert_eq!(ov.cursor_in_cell, Some(5));
-    }
-
-    /// `visual_col` is a char index into the cursor's sub-line: a wide glyph in the column to
-    /// the left puts the cell fewer chars than cells in.
-    #[test]
-    fn wrapped_overlay_visual_col_counts_chars_past_wide_glyphs() {
-        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
-        let src = "| a | b |\n|---|---|\n| 日本 | aa bb cc dd |\n";
-        let mut state = crate::editor::EditorState::new(Buffer::from_str(src), theme);
-        state.set_viewport_width(16);
-        let raw_row = src.lines().nth(2).unwrap();
-        let cursor_col = raw_row.chars().position(|c| c == 'a').unwrap();
-        let overlay = compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, cursor_col)
-            .expect("the second column wraps");
-        assert_eq!(overlay.cursor_sub, 0);
-        let line: String = state.parsed.lines[overlay.row_first_line_idx]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(
-            line.contains('日'),
-            "fixture: the glyphs share the cursor's sub-line"
-        );
-        assert_eq!(line.chars().nth(overlay.visual_col), Some('a'), "{line:?}");
     }
 
     /// Raw text wider than the rendered height must take the multi-sub path; the single-sub

@@ -1,6 +1,6 @@
 # Row provenance — the renderer records where each row came from
 
-Status: **IN PROGRESS (2026-10-06)** — Phases 0–5 done; 6–7 open. Targeted at the next release, which ships every phase together, nested reflow included. Supersedes the discarded `list-row-mapping` patch (see [Phase 0](#phase-0--discard-the-patch-keep-its-tests)) and absorbs [`nested-reflow.md`](nested-reflow.md) as this plan's Phase 7. Sibling context: [`editing-model.md`](../editing-model.md), [`input.md`](../input.md), [`blockquotes.md`](../blockquotes.md), [`tables.md`](../tables.md).
+Status: **IN PROGRESS (2026-10-06)** — Phases 0–6 done; 7 open. Targeted at the next release, which ships every phase together, nested reflow included. Supersedes the discarded `list-row-mapping` patch (see [Phase 0](#phase-0--discard-the-patch-keep-its-tests)) and absorbs [`nested-reflow.md`](nested-reflow.md) as this plan's Phase 7. Sibling context: [`editing-model.md`](../editing-model.md), [`input.md`](../input.md), [`blockquotes.md`](../blockquotes.md), [`tables.md`](../tables.md).
 
 ## Problem
 
@@ -156,7 +156,7 @@ Every consumer calls these; none of them branches on block kind to pick a mappin
 | `post_pass::annotate_list_blanks`, its fence/marker scanners, `ListItem::blank_lines_before` | spans from §1 |
 | `classify_table_sub_lines`, `is_table_block` on the mapping paths | `ContentKind::TableRow` and the AST kind |
 | `detect_setext` in `RenderedView` and in `ParsedDoc::build` (the H2 rule) | `SrcLines::content_col` (the underline is `None`); the renderer emits the rule |
-| `is_image_block` row pinning; `latex_source_offset`'s scattered call sites | `Chrome` rows from the renderer; one diagram-reveal helper in `row_map` (Phase 6) |
+| `is_image_block` row pinning; `latex_source_offset`'s scattered call sites | `Chrome` rows from the renderer; one diagram-reveal helper in `row_map` (Phase 6, done) |
 
 Unchanged: `SourceMap`'s block-level role (byte → top-level block, extended ranges for cursor lookup, virtual blank blocks), `InlineColMap`, `table_layout`'s cell geometry, `EffectiveRows`' shape and the wrap helpers in `line_render`, the diff view.
 
@@ -370,7 +370,7 @@ What remains is mostly the recording itself, plus `Block` growing from 80 to 112
 - **Two more table checks moved, found in review.** A same-line click's drag suppression (`mouse_ops::apply`) read `is_table_block` over the block, so a click into another cell of a nested table's row skipped it and the cell reveal couldn't swap. The drag clamp (`table_cell_char_range_at`) used `find_table_at`, whose line scan rejects a `> `-prefixed row, so a drag in a quoted table wasn't kept to its cell. Both read `table_row` now; the clamp then parses the raw line's cells (`table_edit::cell_at`), which skips any prefix before the first `|`.
 - **Tests:** `click_on_a_table_inside_a_list_item_lands_in_the_clicked_cell` (`tests/mouse.rs`), `rendered_view_nested_table_highlights_and_reveals_by_cell` (`tests/ui.rs`, both halves fail at HEAD), three `row_map` unit tests, `same_line_click_inside_a_nested_table_still_sets_drag_in_progress` and `a_drag_from_a_table_cell_is_clamped_to_it_at_any_depth` (`tests/mouse.rs`), a top-level and a quoted table in the row-provenance corpus, and from the second review `click_on_a_table_border_lands_in_the_cell_beside_it`, `clicks_on_a_wrapped_quoted_table_land_under_the_pointer`, `a_drag_from_a_leading_pipe_less_tables_first_cell_is_never_clamped_elsewhere` (`tests/mouse.rs`) and `cell_at_skips_a_prefix_and_never_answers_another_cell` (`table_edit`). The corpus already held the nested source, and its `TableRow` agreement arm passed on it before this phase. The round trip still skips table rows (their columns aren't `row_map`'s); the click-and-paint test covers them.
 
-### Phase 6 — images, diagrams, headings (S–M)
+### Phase 6 — images, diagrams, headings (S–M) — done
 
 - Image reserved rows and big-H1 glyph rows become `Chrome`, with `lines` covering the block's source lines. `is_image_block`'s row pinning in `coord.rs` and `state_cursor_block.rs` falls out of `line_for_row`.
 - **The math-preview band stays editor-owned.** `math_source_offset` is set by `EditorState::refresh_parsed` from the current `ImageReveal`. That depends on where the cursor is and on the math-preview setting. Emitting the band from the renderer would put cursor state into the render cache key and invalidate a block's cache on every reveal.
@@ -384,6 +384,17 @@ What remains is mostly the recording itself, plus `Block` growing from 80 to 112
   - `grep -rn 'latex_source_offset' src` finds only its definition and `row_map`;
   - `is_image_block` has no caller in `editor/mouse_ops/coord.rs`.
 
+**Implementation notes (2026-10-06).** Most of this phase had already landed by Phase 5: image reserved rows and big-H1 glyph rows were `Chrome` since Phase 2, and `coord.rs` had no `is_image_block` caller. What remained was the helper. `row_map::revealed_diagram_line` answers a diagram row's source line (`None` for a band row) from `lines_of_row`, and the click (`coord::rendered_sub_line_to_offset`), `revealed_raw_row_count` and both of `RenderedView`'s diagram branches (mermaid and `$$…$$`) call it. Deviations and findings:
+
+- **Image rows keep one line per row** (row `k` shows line `min(k, last)`), not `lines` covering the whole block. Covering lines would make `row_for_line` put the cursor of every revealed diagram line on row 0, so the cursor row would need its own diagram rule; with one line per row, the origins already *are* the 1:1 reveal, and `revealed_diagram_line` simply reads them. Big-H1 glyph rows cover the heading's text lines, as the plan says. The Phase 2 note anticipated this choice.
+- **`latex_source_offset`'s only caller is `row_map::own_origins`**, not `revealed_diagram_line`: `row_for_line` / `row_for_pos` need the band too (the cursor row of a revealed formula sits below it, which `math_preview_offsets_source_rows_below_the_formula_band` pins). The done criterion (only its definition and `row_map`) holds.
+- **That test changed in one assertion.** It read `latex_source_offset` directly; it now checks `math_source_offset` itself, and gained two `revealed_diagram_line` assertions (a band row is `None`, the row below the band's first is line 1). The two criteria conflicted; the grep one won, with the test asserting the same fact.
+- **`is_image_block` in `state_cursor_block.rs` stays.** It isn't row pinning but the reveal's choice of block (`image_reveal_target`), so nothing falls out of `line_for_row` there. `rendered_view::paint`'s use (skip a real image's rows in the overlay) also stays.
+- **Rows past the source are `None` too.** The origins clamp a reserved row past the source to the last line, but until `sync_image_reveal` shrinks the reservation (the first revealed frame) those rows pad the block. Reading the origins directly repeated the last line there (the closing fence, raw under the cursor); the helper answers only rows whose line matches their index, and a click on padding still lands on the last line (`line_for_row`). Test: `mermaid_reveal_pads_rows_past_the_source` (`tests/ui.rs`).
+- **The overlay painter no longer maps diagram rows** (review). Its diagram branch was a fourth 1:1 mapping, and it clamped to the rendered `Line`'s width, which is 0 on every reserved row past the first: a yank flash over a revealed diagram's line showed nowhere, or on the fence label. Search and `:s` turn the reveal off, and the selection was already painted by the view, so the yank flash was the only path that reached the branch. `paint_byte_range_overlay` now skips every image row, and the reveal paints the yank flash with the selection, both through `raw_text::raw_line_sel_cols`, which the setext and stacked reveals share. Test: `yank_flash_paints_a_revealed_diagrams_source_line` (`tests/ui.rs`).
+- **The yank flash moved into `RenderedView`'s loop for every row** (review). Its post-pass walked the rendered layout, but a revealed row shows raw text and a stacked reveal changes row heights: on the cursor's row, a setext or big-H1 heading and a stacked reflowed paragraph it landed at rendered columns over raw text, washed a big H1's blanked rows and a setext underline whole, and was a row off below a revealed paragraph. The view now keeps one highlight range (the selection, else the flash) that the row overlay and every reveal branch use; the post-pass runs in Preview only. The big-H1 reveal also highlights its raw line now and skips the overlay on its blanked rows, which fixes the same wash for a selection. Test: `yank_flash_paints_revealed_rows_at_their_raw_columns` (`tests/ui.rs`).
+- **Two small consistency fixes.** A band or padding row's raw row count is now 1 (it paints empty), where it took the wrap count of the formula's first line or the source's last; and the mermaid branch reads its row's line through the helper rather than using the row index directly. Neither changes output for any reachable case: `$$` never wraps, and mermaid has no band.
+
 ### Phase 7 — nested reflow (L)
 
 `nested-reflow.md`'s §A (nested ranges) is Phase 1, and its §B–§C (per-line metadata, prefix-aware mapping) are Phases 2–4, generalized beyond reflow. What remains is its consumer work: `Flow` origins for list-item, quote, and footnote paragraphs; `EffectiveRows` splicing one flow inside a multi-row block; and the reveal re-drawing container chrome on stacked raw lines. When Phase 4 lands, mark `nested-reflow.md` superseded except for that consumer work; delete it when this phase lands.
@@ -391,6 +402,8 @@ What remains is mostly the recording itself, plus `Block` growing from 80 to 112
 **Done when:** the battery in `nested-reflow.md` § Testing is written as tests and passes. Its round-trips, reveal re-prefixing and gutter cases come from there; its range-scan and generalization items are already covered by Phases 1 and 2. In addition, the agreement and round-trip proptests pass with reflow on over the full generator.
 
 ### Phase 8 — docs (S, alongside each phase)
+
+Done for Phase 6: `editing-model.md` (the band and `revealed_diagram_line`).
 
 Done for Phase 5: `tables.md`, `input.md`, `editing-model.md` (the mid-migration note), and the CHANGELOG (nested tables, border clicks).
 

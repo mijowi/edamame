@@ -1923,8 +1923,8 @@ mod tests {
         state.cursor_block_entered_at = None;
         assert!(state.sync_image_reveal());
         assert_eq!(
-            state.parsed.latex_source_offset(latex_idx),
-            with.preview_rows,
+            state.parsed.math_source_offset,
+            Some((latex_idx, with.preview_rows)),
             "the source offset equals the reserved preview band"
         );
         // Source line 0 (`$$`) now renders `band` rows down, not at the top.
@@ -1937,6 +1937,19 @@ mod tests {
         assert_eq!(
             crate::document::row_map::line_for_row(&state.parsed, latex_idx, 0),
             0
+        );
+        assert_eq!(
+            crate::document::row_map::revealed_diagram_line(&state.parsed, latex_idx, 0),
+            None,
+            "a band row paints no source line"
+        );
+        assert_eq!(
+            crate::document::row_map::revealed_diagram_line(
+                &state.parsed,
+                latex_idx,
+                with.preview_rows + 1
+            ),
+            Some(1)
         );
         assert_eq!(
             crate::document::row_map::line_for_row(&state.parsed, latex_idx, with.preview_rows + 1),

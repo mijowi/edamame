@@ -67,6 +67,43 @@ pub(super) fn raw_line_byte_start(block_source: &str, line_idx: usize) -> usize 
     block_source.len()
 }
 
+/// The char columns `[start, end)` of raw line `line_idx` (whose text is `raw_text`) that the
+/// buffer byte range `range` covers, for a block whose source `block_source` starts at buffer
+/// byte `block_start`; `None` when it covers none of the line.  How every raw-revealed row
+/// intersects the highlight with the line it paints.
+pub(super) fn raw_line_sel_cols(
+    block_source: &str,
+    block_start: usize,
+    line_idx: usize,
+    raw_text: &str,
+    range: (usize, usize),
+) -> Option<(usize, usize)> {
+    text_sel_cols(
+        raw_text,
+        block_start + raw_line_byte_start(block_source, line_idx),
+        range,
+    )
+}
+
+/// [`raw_line_sel_cols`] for any raw `text` starting at buffer byte `text_start` (a revealed
+/// table cell's).
+pub(super) fn text_sel_cols(
+    text: &str,
+    text_start: usize,
+    (range_start, range_end): (usize, usize),
+) -> Option<(usize, usize)> {
+    let text_end = text_start + text.len();
+    let lo = range_start.clamp(text_start, text_end);
+    let hi = range_end.clamp(text_start, text_end);
+    if lo >= hi {
+        return None;
+    }
+    Some((
+        text[..lo - text_start].chars().count(),
+        text[..hi - text_start].chars().count(),
+    ))
+}
+
 /// Raw source of the cursor's block, plus where the cursor sits inside it — the single
 /// derivation shared by `RenderedView` and `editor::state::cursor_rendered_line_idx`, which
 /// used to drift when computed twice.
@@ -141,6 +178,17 @@ fn cursor_position_in_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_line_sel_cols_intersects_the_range_with_one_line() {
+        // Block "ab\nцd\n" at buffer byte 10; line 1 is "цd" at bytes 13..16.
+        let src = "ab\nцd\n";
+        assert_eq!(raw_line_sel_cols(src, 10, 1, "цd", (0, 100)), Some((0, 2)));
+        // A range starting after `ц` (2 bytes) counts it as one char.
+        assert_eq!(raw_line_sel_cols(src, 10, 1, "цd", (15, 16)), Some((1, 2)));
+        // A range ending at the line's start, or covering only line 0, misses it.
+        assert_eq!(raw_line_sel_cols(src, 10, 1, "цd", (10, 13)), None);
+    }
 
     #[test]
     fn raw_source_lines_no_trailing_newline() {
