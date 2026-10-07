@@ -41,9 +41,18 @@ pub type ImageRowOverride<'t> = &'t dyn Fn(&str, usize) -> Option<usize>;
 /// Converts a `Vec<Block>` AST into a `Vec<Line<'static>>` ready for ratatui.
 pub struct Renderer<'t> {
     pub(super) theme: &'t Theme,
-    /// Viewport width in terminal columns; used to size code block backgrounds.
-    pub(super) viewport_width: usize,
-    /// Whether code block lines should wrap at `viewport_width`.
+    /// Viewport width in terminal columns.  Width-sized output reads [`width`](Self::width)
+    /// instead, which subtracts the enclosing containers' prefixes.
+    viewport_width: usize,
+    /// Cells the enclosing containers prefix to every row of the block being rendered: two per
+    /// blockquote level for the `▎ ` bar, a footnote definition's leader width.  A `Cell`, like
+    /// `image_block_seq`, because the render walk takes `&self`; set only by
+    /// [`inset_by`](Self::inset_by), which restores it.
+    ///
+    /// The render cache needs no key for it: only top-level blocks are cached, and they render at
+    /// inset 0, so a nested block's inset is a function of its top-level ancestor's value.
+    inset: Cell<usize>,
+    /// Whether code block lines should wrap at [`width`](Self::width).
     code_wrap: bool,
     /// Rows reserved per `Block::ImageBlock` absent a row override; from
     /// `ImagesConfig::max_height`, so editor and renderer agree.
@@ -79,6 +88,7 @@ impl<'t> Renderer<'t> {
         Self {
             theme,
             viewport_width: 80,
+            inset: Cell::new(0),
             code_wrap: false,
             image_max_height: 24,
             image_row_override: None,
@@ -239,6 +249,22 @@ impl<'t> Renderer<'t> {
 
     // ── Block rendering ───────────────────────────────────────────
 
+    /// Cells available to the block being rendered: the viewport less the prefixes its
+    /// containers will add to each row.  What table widths, rules and code surfaces size to, so
+    /// a quoted one ends at the viewport edge instead of wrapping past it.
+    pub(super) fn width(&self) -> usize {
+        self.viewport_width.saturating_sub(self.inset.get())
+    }
+
+    /// Run `f` with [`width`](Self::width) narrowed by `cells`, for a container rendering
+    /// children it will prefix by that many cells.
+    fn inset_by<R>(&self, cells: usize, f: impl FnOnce() -> R) -> R {
+        let outer = self.inset.replace(self.inset.get() + cells);
+        let r = f();
+        self.inset.set(outer);
+        r
+    }
+
     pub(super) fn render_block(
         &self,
         block: &Block,
@@ -310,7 +336,7 @@ impl<'t> Renderer<'t> {
             }
             Block::HorizontalRule { src } => {
                 out.push(
-                    Line::styled("─".repeat(self.viewport_width.max(1)), self.theme.rule),
+                    Line::styled("─".repeat(self.width().max(1)), self.theme.rule),
                     RowOrigin::chrome(Some(src.first)),
                 );
             }
@@ -423,14 +449,16 @@ impl<'t> Renderer<'t> {
         span: &super::ast::LineSpan,
         out: &mut RowSink,
     ) {
-        let mut body = RowSink::default();
-        for b in blocks {
-            self.render_block(b, &mut body, "", false);
-        }
         let leader = format!("  {label}.  ");
         // Every row sits behind the leader or its width of indent, measured once in cells; the
         // `↩` is trailing chrome.
         let shift = str_cells(&leader);
+        let mut body = RowSink::default();
+        self.inset_by(shift, || {
+            for b in blocks {
+                self.render_block(b, &mut body, "", false);
+            }
+        });
         let cont_indent = " ".repeat(shift);
         let back = " ↩";
 
@@ -568,14 +596,14 @@ impl<'t> Renderer<'t> {
 
         if level == H1 {
             out.push(
-                Line::styled("─".repeat(self.viewport_width.max(1)), self.theme.h1_rule),
+                Line::styled("─".repeat(self.width().max(1)), self.theme.h1_rule),
                 rule_origin,
             );
         } else if level == H2 && top_level && setext {
             // A setext H2's underline renders as a rule of its own the way an H1's does, so
             // the reveal has a row to show it on.
             out.push(
-                Line::styled("─".repeat(self.viewport_width.max(1)), self.theme.rule),
+                Line::styled("─".repeat(self.width().max(1)), self.theme.rule),
                 rule_origin,
             );
         }
@@ -609,7 +637,7 @@ impl<'t> Renderer<'t> {
         if normalized.is_empty() || !normalized.is_ascii() {
             return false;
         }
-        let viewport = self.viewport_width.max(1);
+        let viewport = self.width().max(1);
         let max_chars = viewport / GLYPH_W_PER_CHAR;
         if max_chars == 0 {
             return false;
@@ -781,7 +809,7 @@ impl<'t> Renderer<'t> {
 
         // Capped at the viewport so short lines are never over-padded, which
         // would wrap in the terminal and add a blank line after every code row.
-        let block_width = self.viewport_width.max(1);
+        let block_width = self.width().max(1);
 
         // Body line `i` is the block's source line `i`, or `i + 1` past an opening fence.
         let body_first = usize::from(fenced);
@@ -840,7 +868,7 @@ impl<'t> Renderer<'t> {
         if self.code_wrap {
             // Chars per row: the viewport less the pad cell, and at least one, or a one-cell
             // viewport would never advance.
-            let chunk = self.viewport_width.saturating_sub(1).max(1);
+            let chunk = self.width().saturating_sub(1).max(1);
             for (i, line) in raw_lines.iter().enumerate() {
                 let chars: Vec<char> = line.chars().collect();
                 if chars.is_empty() {
@@ -915,33 +943,36 @@ impl<'t> Renderer<'t> {
         // Every bare `>` line renders as a quoted blank row of its own — before, between, or
         // after the children, wherever the source has one — so the quote stays one row per
         // source line.  Those are the lines the children don't cover, less the `hidden` ones.
+        // The bar is prefix: content behind it starts two cells later, so the children render
+        // two cells narrower.
+        let bar_cells = str_cells("▎ ");
         let mut inner = RowSink::default();
         let blanks = |lines: std::ops::Range<u32>, inner: &mut RowSink| {
             for line in lines.filter(|line| !hidden.contains(line)) {
                 inner.push(Line::from(""), RowOrigin::chrome(Some(line)));
             }
         };
-        let mut next_line = span.start;
-        for block in blocks {
-            let child = block.span();
-            blanks(next_line..child.start, &mut inner);
-            match block {
-                // A loose list keeps its spacing here, so a bare `>` between its items has its
-                // row like any other.
-                Block::List {
-                    ordered,
-                    start,
-                    items,
-                    ..
-                } => self.render_list(*ordered, *start, items, &mut inner, "", true),
-                _ => self.render_block(block, &mut inner, "", false),
+        self.inset_by(bar_cells, || {
+            let mut next_line = span.start;
+            for block in blocks {
+                let child = block.span();
+                blanks(next_line..child.start, &mut inner);
+                match block {
+                    // A loose list keeps its spacing here, so a bare `>` between its items has
+                    // its row like any other.
+                    Block::List {
+                        ordered,
+                        start,
+                        items,
+                        ..
+                    } => self.render_list(*ordered, *start, items, &mut inner, "", true),
+                    _ => self.render_block(block, &mut inner, "", false),
+                }
+                next_line = next_line.max(child.end);
             }
-            next_line = next_line.max(child.end);
-        }
-        blanks(next_line..span.end, &mut inner);
+            blanks(next_line..span.end, &mut inner);
+        });
 
-        // The bar is prefix: content behind it starts two cells later.
-        let bar_cells = str_cells("▎ ");
         for (line, origin) in inner.into_rows() {
             // The quote style is the *base*, not a replacement: each inner span
             // keeps its own resolved style and inherits the wash underneath.
@@ -2265,6 +2296,45 @@ mod tests {
                 line.width() <= 30,
                 "table must compress to the viewport; overflowing line: {:?}",
                 line_text(line)
+            );
+        }
+    }
+
+    /// A container's prefix comes out of its children's width: a table, rule or code surface
+    /// inside a quote (nested or not) or a footnote definition ends at the viewport edge rather
+    /// than wrapping past it (#67).
+    #[test]
+    fn width_sized_blocks_fit_inside_their_containers() {
+        let table = "| alpha beta gamma | delta epsilon zeta eta |\n\
+                     |---|---|\n\
+                     | one two three four | five six seven eight nine |\n";
+        // Ends in prose: a footnote's trailing ` ↩` lands on its last row.
+        let body = format!("{table}\n---\n\n```\ncode\n```\n\nend\n");
+        let quote = |depth: usize| {
+            let bar = "> ".repeat(depth);
+            body.lines()
+                .map(|l| format!("{bar}{l}").trim_end().to_string() + "\n")
+                .collect::<String>()
+        };
+        let footnote = format!(
+            "x[^n]\n\n[^n]: lead\n\n{}",
+            body.lines()
+                .map(|l| format!("    {l}").trim_end().to_string() + "\n")
+                .collect::<String>()
+        );
+        for src in [quote(1), quote(2), footnote] {
+            let lines = renderer().with_viewport_width(30).render(&parse(&src));
+            for line in &lines {
+                assert!(
+                    line.width() <= 30,
+                    "overflowing line in {src:?}: {:?}",
+                    line_text(line)
+                );
+            }
+            let texts: Vec<String> = lines.iter().map(line_text).collect();
+            assert!(
+                texts.iter().any(|t| t.ends_with('┐') && str_cells(t) == 30),
+                "the table should still use the full width available: {texts:#?}"
             );
         }
     }

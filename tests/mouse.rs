@@ -1701,6 +1701,61 @@ fn column_border_drag_widens_table_and_leaves_neighbour_auto() {
     );
 }
 
+/// A table behind a container prefix (a footnote definition's six-cell `  n.  ` leader) may grow
+/// only to the viewport edge, not to `viewport_width` cells of its own (#67).
+#[test]
+fn column_border_drag_caps_an_offset_table_at_the_viewport_edge() {
+    let src = "x[^n]\n\n[^n]: lead\n\n    | abc | defghi |\n    | --- | --- |\n    | bar | baz |\n";
+    let table_start = src.find("    | abc").unwrap();
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // In the table, so the press resizes rather than only focusing it.
+    st.cursor.offset = table_start + 6;
+
+    // Outer left `│` at x = 6; col 0 at x = 7..12, col 1 at x = 13..21.
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: table_start,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![7..12, 13..21],
+        row_ranges: vec![9..10],
+        row_handle_col: None,
+        top_border_row: None,
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(21, 9), &mut target, &snapshots, VP, VW);
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag {
+            col: VW as u16 + 20,
+            row: 9,
+        },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    st.commit_pending_column_widths();
+    // 80 cells less the 6-cell leader, the 7 cells of borders and padding, and col 0's 3.
+    let after = st.contents();
+    assert!(
+        after.contains("<!-- tui-columns: [_, 64] -->"),
+        "expected the last column capped at 64, got: {after:?}"
+    );
+}
+
 /// The right outer border is a resize target too — dragging it widens the
 /// last column (not the first), pinning it in the persisted comment.
 #[test]

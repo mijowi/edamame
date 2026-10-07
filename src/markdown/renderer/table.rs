@@ -158,7 +158,7 @@ impl<'t> Renderer<'t> {
             &cell_max_widths,
             &cell_min_widths,
             col_count,
-            self.viewport_width,
+            self.width(),
             user_widths,
         );
 

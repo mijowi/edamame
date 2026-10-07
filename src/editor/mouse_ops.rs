@@ -67,6 +67,10 @@ pub enum DragTarget {
         start_widths: Vec<usize>,
         start_user_widths: Vec<Option<usize>>,
         anchor_x: u16,
+        /// The table's outer left `│`, in document-area cells: nonzero behind a container's
+        /// prefix (a footnote definition's leader).  The drag may grow the table only to the
+        /// viewport edge, so its budget is the viewport less this.
+        table_left: u16,
     },
     /// Column-header drag from `col_idx`; `hover_col_idx` is the current drop target.
     TableColumnHeader {
@@ -395,6 +399,10 @@ fn dispatch_table_click(
                         start_widths,
                         start_user_widths,
                         anchor_x: col,
+                        table_left: snap
+                            .col_ranges
+                            .first()
+                            .map_or(0, |r| r.start.saturating_sub(1)),
                     });
                     state.drag_in_progress = true;
                     return true;
@@ -704,6 +712,7 @@ pub fn apply(
                 start_widths,
                 start_user_widths,
                 anchor_x,
+                table_left,
             }) => {
                 let delta = col as i32 - *anchor_x as i32;
                 if let Some(new_user_widths) = resize_widths(
@@ -711,7 +720,7 @@ pub fn apply(
                     start_user_widths,
                     *col_idx,
                     delta,
-                    viewport_width,
+                    viewport_width.saturating_sub(usize::from(*table_left)),
                 ) {
                     state.live_table_widths = Some((*table_byte_start, new_user_widths));
                     state.refresh_parsed();

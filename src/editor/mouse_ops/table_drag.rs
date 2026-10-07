@@ -92,14 +92,15 @@ fn apply_user_widths(natural: &[usize], user: &[Option<usize>]) -> Vec<usize> {
 /// `user_widths` vector.
 ///
 /// Unlike a spreadsheet drag, this pins ONLY the left column: the right one keeps whatever pin
-/// it had, so widening lets the table grow up to `viewport_width` instead of squeezing its
-/// neighbor.
+/// it had, so widening lets the table grow up to `max_width` instead of squeezing its neighbor.
+/// `max_width` is the cells from the table's left edge to the viewport edge: the viewport less
+/// any container prefix in front of the table.
 pub(super) fn resize_widths(
     start_widths: &[usize],
     start_user_widths: &[Option<usize>],
     col_idx: usize,
     delta: i32,
-    viewport_width: usize,
+    max_width: usize,
 ) -> Option<Vec<Option<usize>>> {
     let n = start_widths.len();
     if col_idx == 0 || col_idx > n {
@@ -116,7 +117,7 @@ pub(super) fn resize_widths(
         .sum();
 
     // Grow only up to the viewport edge, leaving room for the other columns and borders.
-    let max_left = viewport_width
+    let max_left = max_width
         .saturating_sub(border_budget + other_total)
         .max(MIN_COL_WIDTH);
     let target = (start_widths[left] as i32 + delta).max(MIN_COL_WIDTH as i32) as usize;
