@@ -735,22 +735,21 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     );
 }
 
-/// A multi-line setext heading renders its text on one row; with the cursor on the text's
-/// second line, that row reveals the cursor's line and carries the cursor.
-#[test]
-fn multi_line_setext_heading_reveals_the_cursors_line() {
+/// Paint `src` revealed in Rendered mode, the cursor at char `offset`, 20 cells wide: each
+/// row's text, and the column of the cell carrying the cursor's colors, with its row.
+fn paint_revealed(src: &str, offset: usize) -> (Vec<String>, Option<(u16, u16)>) {
     use edamame::document::Buffer;
     use edamame::editor::EditorState;
     use edamame::ui::{RenderedView, RenderedViewState};
 
     let theme = Box::leak(Box::new(Theme::default()));
-    let src = "Title\nmore\n=====\n\nBody\n";
     let mut state = EditorState::new(Buffer::from_str(src), theme);
     state.mode = Mode::Rendered;
-    state.cursor.offset = src.find("more").unwrap() + 1;
+    state.cursor.offset = offset;
+    state.update_cursor_block();
+    state.cursor_block_entered_at = None;
 
-    let backend = TestBackend::new(20, 5);
-    let mut terminal = Terminal::new(backend).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
     let mut view_state = RenderedViewState::default();
     terminal
         .draw(|frame| {
@@ -765,26 +764,69 @@ fn multi_line_setext_heading_reveals_the_cursors_line() {
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
         .unwrap();
-
     let buf = terminal.backend().buffer().clone();
-    let row_text = |y: u16| -> String {
-        (0..20u16)
-            .map(|x| {
-                buf.cell((x, y))
-                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-            })
-            .collect()
-    };
-    assert!(row_text(0).starts_with("more"), "row 0 = {:?}", row_text(0));
-    assert!(
-        row_text(1).starts_with("====="),
-        "row 1 = {:?}",
-        row_text(1)
-    );
-    let cursor_bg = theme.status_mode_rendered.bg;
-    let bg_at = |x: u16| buf.cell((x, 0)).map(|c| c.bg);
-    assert_eq!(bg_at(1), cursor_bg, "the cursor sits on the `o` of `more`");
-    assert_ne!(bg_at(0), cursor_bg);
+    let rows = (0..6u16)
+        .map(|y| {
+            (0..20u16)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    let cursor_bg = theme.status_mode_rendered.bg.unwrap();
+    let cursor = (0..6u16)
+        .flat_map(|y| (0..20u16).map(move |x| (x, y)))
+        .find(|&cell| buf.cell(cell).is_some_and(|c| c.bg == cursor_bg));
+    (rows, cursor)
+}
+
+/// A multi-line setext heading renders its text on one row.  With the cursor on any of its
+/// lines, the underline included, that row stacks every text line, and the rule reveals as the
+/// underline; the cursor shows on its own line.  It once showed only the cursor's line, or
+/// only the first, with the cursor on the underline.
+#[test]
+fn multi_line_setext_heading_reveals_every_text_line() {
+    let src = "Multi\nline\n---\n\nBody\n";
+    for (line, at) in [(0u16, "Multi"), (1, "line"), (2, "---")] {
+        let offset = src.find(at).unwrap() + 1;
+        let (rows, cursor) = paint_revealed(src, offset);
+        assert_eq!(
+            rows[..3],
+            ["Multi", "line", "---"],
+            "the cursor on line {line}"
+        );
+        assert_eq!(
+            cursor,
+            Some((1, line)),
+            "the cursor on line {line}: {rows:?}"
+        );
+    }
+}
+
+/// A link reference definition inside a quote renders no row: the line below it shares it.
+/// With the cursor on the definition, both lines show, so the cursor's line no longer paints
+/// over the one below.
+#[test]
+fn a_quotes_hidden_definition_reveals_with_the_line_below() {
+    let src = "> a\n>\n> [d]: /u\n> b\n\nafter\n";
+    let (rows, cursor) = paint_revealed(src, src.find("[d]").unwrap() + 1);
+    assert_eq!(rows[2], "> [d]: /u", "{rows:?}");
+    assert_eq!(rows[3], "> b", "{rows:?}");
+    assert_eq!(cursor, Some((3, 2)), "{rows:?}");
+}
+
+/// A hidden definition sharing a marker row (`- - a`'s outer bullet, whose line shows again on
+/// the row below) reveals over that row alone: stacking the marker's line too would show it
+/// twice, raw and then rendered.
+#[test]
+fn a_hidden_definition_over_a_marker_row_shows_no_line_twice() {
+    let src = "> [d]: /u\n> - - a\n\nafter\n";
+    let (rows, cursor) = paint_revealed(src, src.find("[d]").unwrap() + 1);
+    assert_eq!(rows[0], "> [d]: /u", "{rows:?}");
+    assert!(rows[1].ends_with("• a"), "{rows:?}");
+    assert!(!rows.iter().any(|r| r == "> - - a"), "{rows:?}");
+    assert_eq!(cursor, Some((3, 0)), "{rows:?}");
 }
 
 /// The quote's background wash reaches the viewport edge (the way a code

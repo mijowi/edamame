@@ -221,13 +221,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
         view_state.scroll = editor.scroll;
         let scroll = view_state.scroll;
-        // Reflow-reveal-aware start: `EffectiveRows` is the identity unless the cursor rests in a
-        // reflowed, revealed paragraph, in which case its one rendered flow line is
-        // replaced by its `M` raw source lines.  A viewport that opens *inside* that paragraph
-        // then starts on one of those raw lines (`start_raw`, block-relative), not the rendered
-        // line.
+        // Stack-aware start: `EffectiveRows` is the identity unless the cursor rests on a revealed
+        // stacked row (a reflowed paragraph, any row over several lines), in which case its one
+        // rendered line is replaced by its `M` raw source lines.  A viewport that opens *inside*
+        // that row then starts on one of those raw lines (`start_raw`, block-relative), not the
+        // rendered line.
         let effective = editor.effective_rows(area.width as usize);
-        let reflow_reveal_range = effective.block_rendered();
+        let stacked_range = effective.block_rendered();
         let (mut virtual_idx, mut first_sub_row, mut start_raw): (
             usize,
             usize,
@@ -235,7 +235,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         ) = match effective.line_at_visual_row(scroll) {
             crate::editor::effective_rows::RowHit::Rendered { line, sub } => (line, sub, None),
             crate::editor::effective_rows::RowHit::Raw { raw_line, sub } => (
-                reflow_reveal_range.as_ref().map(|r| r.start).unwrap_or(0),
+                stacked_range.as_ref().map(|r| r.start).unwrap_or(0),
                 0,
                 Some((raw_line, sub)),
             ),
@@ -331,19 +331,19 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 }
             });
             let stacked_here = reveal_raw
-                && reflow_reveal_range
+                && stacked_range
                     .as_ref()
                     .is_some_and(|r| r.contains(&virtual_idx));
             if stacked_here {
-                // A reflowed paragraph reveals as its stacked raw source lines: the rendered form
-                // was one wrapped flow, the raw form is `M` source lines, so paint them all in
-                // this one iteration (the flow is a single rendered line, so `virtual_idx` then
-                // advances straight past it).  Each is the whole source line, container prefix
-                // (`> `, `- `, indent) included, as every revealed row is.  `EffectiveRows`
-                // already made scroll, gutter, and mouse count these rows, and names the lines
-                // (block-relative: a nested paragraph's start past its block's first line).
-                // Only the first painted raw line honors `skip_rows`, for a viewport opening
-                // mid-paragraph.
+                // A stacked row (a reflowed paragraph, any row over several lines) reveals as its
+                // raw source lines: the rendered form was one wrapped row, the raw form is `M`
+                // source lines, so paint them all in this one iteration (the row is a single
+                // rendered line, so `virtual_idx` then advances straight past it).  Each is the
+                // whole source line, container prefix (`> `, `- `, indent) included, as every
+                // revealed row is.  `EffectiveRows` already made scroll, gutter, and mouse count
+                // these rows, and names the lines (block-relative: a nested row's start past its
+                // block's first line).  Only the first painted raw line honors `skip_rows`, for a
+                // viewport opening mid-row.
                 let stack = effective.raw_lines();
                 let (first_raw, first_sub) = start_raw.take().unwrap_or((stack.start, 0));
                 let block_start = block_range_for_cursor.as_ref().map(|r| r.start);
@@ -412,15 +412,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     ) as usize;
                 }
             } else if reveal_raw && is_setext && in_cursor_block {
-                // Every rendered row of the block reveals the raw line it shows, except that the
-                // cursor's row shows the cursor's line: a multi-line heading's text is one row
-                // over several lines.
+                // Every rendered row of the block reveals the raw line it shows: the rule its
+                // underline, a one-line text row its line.  A multi-line text row is stacked
+                // (above), with the cursor anywhere in the heading (`row_map::cursor_stack`).
                 let row = virtual_idx - cursor_block_lines.start;
-                let sub = if row == cursor_in_block {
-                    cursor_raw_line
-                } else {
-                    crate::document::row_map::line_for_row(&editor.parsed, cursor_block_idx, row)
-                };
+                let sub =
+                    crate::document::row_map::line_for_row(&editor.parsed, cursor_block_idx, row);
                 let raw_text = raw_lines.get(sub).copied().unwrap_or("");
                 let cursor_on_this = cursor_raw_line == sub;
                 let sel_cols = highlight_bytes.and_then(|sel| {

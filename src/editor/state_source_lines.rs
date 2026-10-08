@@ -367,11 +367,6 @@ mod tests {
                 &[Some(0), Some(1), Some(2), None, Some(3)][..],
             ),
             (
-                // A bare marker shares its paragraph's row: `• text`.
-                "-\n  text\n- b\n",
-                &[Some(1), Some(2)][..],
-            ),
-            (
                 "- a\n  soft\n- b\n",
                 // Rows: `• a`, `  soft`, `• b`.
                 &[Some(0), Some(1), Some(2)][..],
@@ -401,6 +396,37 @@ mod tests {
                     "{source:?}: the cursor on line {line} must land on row {row}"
                 );
             }
+        }
+    }
+
+    /// A bare marker shares its paragraph's row (`• text`), numbered for the text's line.  With
+    /// the cursor on the marker's line, which has no row of its own, the revealed row stacks both
+    /// lines, so the marker shows and each line keeps its number.
+    #[test]
+    fn a_bare_markers_line_reveals_with_the_row_it_shares() {
+        let source = "-\n  text\n- b\n";
+        let mut state = state_for(source, 80);
+        state.set_reflow(false);
+        for (line, expected, row) in [
+            (2, &[Some(1), Some(2)][..], 1),
+            (1, &[Some(1), Some(2)][..], 0),
+            (0, &[Some(0), Some(1), Some(2)][..], 0),
+        ] {
+            state.cursor.offset = state.buffer.line_to_char(line);
+            state.update_cursor_block();
+            // Past the reveal delay.
+            state.cursor_block_entered_at = None;
+            let labels = labels(&state, 80);
+            assert_eq!(
+                labels[..expected.len()],
+                *expected,
+                "the cursor on line {line}"
+            );
+            assert_eq!(
+                state.cursor_visual_row(80),
+                row,
+                "the cursor on line {line}"
+            );
         }
     }
 

@@ -141,22 +141,25 @@ pub(crate) struct ImageReveal {
     pub(crate) preview_rows: usize,
 }
 
-/// A reflowed paragraph's flow row under the cursor ([`EditorState::cursor_stacked_row`]).
+/// The row under the cursor that reveals as stacked source lines (a reflowed paragraph's flow,
+/// any row over several lines; [`EditorState::cursor_stacked_row`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StackedRow {
-    /// The paragraph's block (a source-map index).
+    /// The row's block (a source-map index).
     pub(crate) block: usize,
-    /// The flow row, counted from the block's first rendered row.
+    /// The row, counted from the block's first rendered row.
     pub(crate) row: usize,
     /// The block-relative source lines the row stacks when revealed.
     pub(crate) lines: std::ops::Range<u32>,
 }
 
 impl StackedRow {
-    /// The paragraph this row belongs to, as `(block, first block-relative line)`: what
-    /// [`EditorState::cursor_stacked_unit`] remembers across cursor moves.
-    pub(crate) fn unit(&self) -> (usize, u32) {
-        (self.block, self.lines.start)
+    /// The unit this row reveals as, `(block, row)`: what [`EditorState::cursor_stacked_unit`]
+    /// remembers across cursor moves.  Keyed on the row, not its lines, which can differ by the
+    /// cursor's line: a row a line with no row of its own shares stacks that line only while the
+    /// cursor is on it ([`row_map::cursor_stack`](crate::document::row_map::cursor_stack)).
+    pub(crate) fn unit(&self) -> (usize, usize) {
+        (self.block, self.row)
     }
 }
 
@@ -199,13 +202,13 @@ pub struct EditorState {
     /// inside it, even as line moves re-arm [`Self::cursor_block_entered_at`].  So scrolling
     /// *through* one never reveals it (the delay re-arms per line like every other block), a
     /// dwell does, and moving within a revealed one never flashes it collapsed.  Reset on
-    /// crossing into another block or reflowed paragraph ([`Self::update_cursor_block`]); set by
+    /// crossing into another block or stacked row ([`Self::update_cursor_block`]); set by
     /// [`Self::latch_cursor_reveal`].
     pub cursor_reveal_latched: bool,
-    /// The reflowed paragraph the cursor rests in ([`StackedRow::unit`]), or `None` on any other
-    /// row.  Kept by [`Self::update_cursor_block`] so moving from one
-    /// item's paragraph into another's, inside one list, counts as entering a paragraph.
-    pub(crate) cursor_stacked_unit: Option<(usize, u32)>,
+    /// The stacked row the cursor rests on ([`StackedRow::unit`]), or `None` on any other row.
+    /// Kept by [`Self::update_cursor_block`] so moving from one item's paragraph into another's,
+    /// inside one list, counts as entering a new unit.
+    pub(crate) cursor_stacked_unit: Option<(usize, usize)>,
     /// When the last click-driven table row / column delete landed, guarding the `✕` handles
     /// against an accidental double-click.  Anchored to the delete rather than the multi-click
     /// chord, whose window restarts on every press and so would never expire under sustained
@@ -292,11 +295,10 @@ pub struct EditorState {
     /// revealed cursor block expands to its raw lines via `EffectiveRows`); Raw and Diff never
     /// reflow.  See `docs/dev/plans/paragraph-reflow.md`.
     pub(crate) reflow: bool,
-    /// Whether the cursor block was reflow-revealed last frame.  A change means the block's
-    /// height just toggled under a cursor that no keypress moved, which is when
-    /// [`Self::anchor_reflow_reveal`] re-checks cursor visibility.  Inert unless [`Self::reflow`]
-    /// is on.
-    prev_reflow_has_reveal: bool,
+    /// Whether a stacked row was revealed last frame.  A change means the block's height just
+    /// toggled under a cursor that no keypress moved, which is when
+    /// [`Self::anchor_stacked_reveal`] re-checks cursor visibility.
+    prev_stacked_has_reveal: bool,
     /// Memo for the reveal patch [`Self::effective_rows`] hands out.  Building it allocates the
     /// revealed block's source and measures each raw line's wrap; the viewport, scrollbar, cursor
     /// row, and gutter each query `effective_rows` per frame, so without this that work repeats
@@ -468,7 +470,7 @@ impl EditorState {
             // reconciles this with the Preview default before the first frame.
             parsed_reflow: false,
             reflow: true,
-            prev_reflow_has_reveal: false,
+            prev_stacked_has_reveal: false,
             effective_cache: std::cell::RefCell::new(Default::default()),
             stacked_row_memo: std::cell::RefCell::new(None),
             cursor_block_line_range: None,
@@ -811,18 +813,18 @@ impl EditorState {
     }
 
     /// The per-frame visual-row view with the raw-reveal patch applied.  Identity unless the
-    /// cursor rests in a *reflowed* paragraph that is currently revealed: only then does the
-    /// paragraph's raw form (its source lines) differ in height from its rendered (one wrapped
-    /// flow) form, so only then must scroll, gutter, and mouse arithmetic count the raw lines
-    /// instead.  The paragraph may be nested (a list item's, a quote's), and then its flow is one
-    /// row among its block's others.
+    /// cursor rests on a *stacked* row (a reflowed paragraph, any row over several lines) that is
+    /// currently revealed: only then does the row's raw form (its source lines) differ in height
+    /// from its rendered (one wrapped row) form, so only then must scroll, gutter, and mouse
+    /// arithmetic count the raw lines instead.  The row may be nested (a list item's, a quote's),
+    /// and then it is one row among its block's others.
     pub fn effective_rows(&self, width: usize) -> crate::editor::effective_rows::EffectiveRows<'_> {
         use crate::editor::effective_rows::EffectiveRows;
         let width = width.max(1);
-        // The cheap decision (no buffer copy): does the cursor rest in a revealed reflowed
-        // paragraph?  Its flow row's rendered index uniquely identifies it within a parse, so it —
-        // with the parse version and width — keys the memo; a move inside it stays a hit.
-        let reveal = self.reflow_reveal_target().map(|stacked| {
+        // The cheap decision (no buffer copy): does the cursor rest on a revealed stacked row?
+        // Its rendered index and stacked lines, with the parse version and width, key the memo
+        // (`EffectiveRowsKey`); a move inside a reflowed paragraph stays a hit.
+        let reveal = self.stacked_reveal_target().map(|stacked| {
             let rendered = self
                 .parsed
                 .source_map
@@ -834,7 +836,9 @@ impl EditorState {
         let key = (
             self.parsed_version,
             width,
-            reveal.as_ref().map(|&(_, rendered)| rendered),
+            reveal
+                .as_ref()
+                .map(|(stacked, rendered)| (*rendered, stacked.lines.start, stacked.lines.end)),
         );
         if let Some((base_total, patch)) = self.effective_cache.borrow().get(key) {
             return EffectiveRows::from_cached(&self.parsed, width, base_total, patch);
@@ -864,24 +868,21 @@ impl EditorState {
         built
     }
 
-    /// The revealed reflowed paragraph's flow row, if any ([`Self::cursor_stacked_row`], gated
-    /// on the reveal).  Only `RenderedView` reveals a row as raw; Preview paints pure rendered
-    /// lines, so a patch there would make the arithmetic count raw rows the paint never shows.
-    /// Cheap — no buffer copy, and the lookup memoized.
-    fn reflow_reveal_target(&self) -> Option<StackedRow> {
+    /// The revealed stacked row, if any ([`Self::cursor_stacked_row`], gated on the reveal).
+    /// Only `RenderedView` reveals a row as raw; Preview paints pure rendered lines, so a patch
+    /// there would make the arithmetic count raw rows the paint never shows.  Cheap — no buffer
+    /// copy, and the lookup memoized.
+    fn stacked_reveal_target(&self) -> Option<StackedRow> {
         if self.mode != Mode::Rendered || !self.cursor_block_revealed() {
             return None;
         }
         self.cursor_stacked_row()
     }
 
-    /// The cursor's row as a [`StackedRow`]; `None` unless it is a reflowed paragraph's flow
-    /// ([`row_map::stacked_lines`](crate::document::row_map::stacked_lines)).  Independent of
-    /// the mode and the reveal timer: the timer asks it to decide how to reveal.
+    /// The cursor's row as a [`StackedRow`]; `None` unless the reveal stacks it
+    /// ([`row_map::cursor_stack`](crate::document::row_map::cursor_stack)).  Independent of the
+    /// mode and the reveal timer: the timer asks it to decide how to reveal.
     pub(crate) fn cursor_stacked_row(&self) -> Option<StackedRow> {
-        if !self.parsed.reflow_paragraphs {
-            return None;
-        }
         let key = (self.parsed_version, self.cursor.offset);
         if let Some((k, hit)) = self.stacked_row_memo.borrow().as_ref() {
             if *k == key {
@@ -896,21 +897,15 @@ impl EditorState {
     /// [`Self::cursor_stacked_row`]'s lookup, unmemoized.
     fn find_cursor_stacked_row(&self) -> Option<StackedRow> {
         let (block, pos) = crate::ui::rendered_view::cursor_block_pos(self)?;
-        let row = crate::document::row_map::row_for_pos(&self.parsed, block, pos);
-        let lines = crate::document::row_map::stacked_lines(&self.parsed, block, row)?;
-        // A line rendering no row of its own (a link reference definition inside a container)
-        // shares the next line's row, but the stack wouldn't hold it: that cursor reveals its own
-        // line in place.
-        lines
-            .contains(&crate::markdown::ast::to_u32(pos.line))
-            .then_some(StackedRow { block, row, lines })
+        let (row, lines) = crate::document::row_map::cursor_stack(&self.parsed, block, pos)?;
+        Some(StackedRow { block, row, lines })
     }
 
-    /// Keep the view sensible across a reflow reveal/un-reveal.  When the cursor rests in a
-    /// reflowed paragraph, entering it (after `RAW_REVEAL_DELAY`) expands the block from one
-    /// wrapped flow row to its raw source lines, and leaving it collapses it back — a height
-    /// change driven by the frame timer, not a keypress.  Called once per frame from
-    /// `App::prepare_viewport`; inert unless `reflow` is on in Rendered mode.
+    /// Keep the view sensible across a stacked reveal/un-reveal.  When the cursor rests on a
+    /// stacked row (a reflowed paragraph, any row over several lines), entering it (after
+    /// `RAW_REVEAL_DELAY`) expands it from one row to its raw source lines, and leaving it
+    /// collapses it back — a height change driven by the frame timer, not a keypress.  Called
+    /// once per frame from `App::prepare_viewport`; inert outside Rendered mode.
     ///
     /// The expansion happens *below* the block's first row, which sits at the same visual row
     /// before and after (the rows above it are unchanged), so simply leaving `scroll` alone pins
@@ -918,18 +913,18 @@ impl EditorState {
     /// feel as an image/mermaid reveal.  On the toggle frame we therefore just re-run
     /// `ensure_cursor_visible`, which scrolls the *minimum* to keep the cursor on screen (usually
     /// nothing) rather than dragging the whole document to re-pin the cursor's exact row.
-    pub fn anchor_reflow_reveal(&mut self, width: usize, height: usize) {
-        if self.mode != Mode::Rendered || !self.reflow || width == 0 {
-            // Re-entering (mode switch, reflow-enable) should be treated as a fresh toggle, not a
+    pub fn anchor_stacked_reveal(&mut self, width: usize, height: usize) {
+        if self.mode != Mode::Rendered || width == 0 {
+            // Re-entering (mode switch) should be treated as a fresh toggle, not a
             // continuation, so the next eligible frame reconciles cursor visibility once.
-            self.prev_reflow_has_reveal = false;
+            self.prev_stacked_has_reveal = false;
             return;
         }
         let has_reveal = self.effective_rows(width).has_reveal();
-        if has_reveal != self.prev_reflow_has_reveal {
+        if has_reveal != self.prev_stacked_has_reveal {
             self.ensure_cursor_visible(height, width);
         }
-        self.prev_reflow_has_reveal = has_reveal;
+        self.prev_stacked_has_reveal = has_reveal;
     }
 
     /// Commit a pending column-width drag by writing the `<!-- tui-columns: [...] -->` comment
@@ -1452,7 +1447,7 @@ mod tests {
         state.cursor_block_entered_at = Some(std::time::Instant::now());
         assert!(!state.cursor_block_revealed());
         state.scroll = super::rendered_cursor_visual_row(&state, w);
-        state.anchor_reflow_reveal(w, h);
+        state.anchor_stacked_reveal(w, h);
         let scroll_before = state.scroll;
 
         // Frame 2: the reveal fires (block expands to its raw lines) — cursor hasn't moved.
@@ -1461,7 +1456,7 @@ mod tests {
             state.effective_rows(w).has_reveal(),
             "the block must now be reflow-revealed"
         );
-        state.anchor_reflow_reveal(w, h);
+        state.anchor_stacked_reveal(w, h);
         assert_eq!(
             state.scroll, scroll_before,
             "revealing a paragraph while the cursor stays visible must not move the document",
@@ -1487,7 +1482,7 @@ mod tests {
     }
 
     /// Switching into Rendered mode with the cursor already resting in a reflowed paragraph must
-    /// not yank the view: the first Rendered frame's `anchor_reflow_reveal` only re-checks cursor
+    /// not yank the view: the first Rendered frame's `anchor_stacked_reveal` only re-checks cursor
     /// visibility, so the scroll the mode switch established (cursor already visible) survives.
     #[test]
     fn switching_into_rendered_mode_leaves_the_scroll_alone() {
@@ -1509,7 +1504,7 @@ mod tests {
         // visible mid-document.
         for _ in 0..3 {
             state.sync_reflow_for_mode();
-            state.anchor_reflow_reveal(w, h);
+            state.anchor_stacked_reveal(w, h);
         }
         state.mode = Mode::Preview;
         state.ensure_cursor_visible(h, w);
@@ -1521,7 +1516,7 @@ mod tests {
 
         // The next frame's per-frame anchor must leave that scroll alone.
         state.sync_reflow_for_mode();
-        state.anchor_reflow_reveal(w, h);
+        state.anchor_stacked_reveal(w, h);
         assert_eq!(
             state.scroll, scroll_after_switch,
             "entering Rendered mode must not move the view",

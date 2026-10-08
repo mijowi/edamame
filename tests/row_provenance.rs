@@ -17,7 +17,7 @@
 #[path = "support/markdown_gen.rs"]
 mod markdown_gen;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::KeyModifiers;
 use proptest::prelude::*;
@@ -408,7 +408,55 @@ fn check_doc(doc: &ParsedDoc) -> Result<(), String> {
             }
         }
     }
+
+    // Every line of a block shows on some row, but for the kinds known to render none, which the
+    // cursor's reveal stacks with the row they share (`row_map::cursor_stack`).  A new row-less
+    // kind fails here rather than reveal over its neighbor.
+    let mut covered: std::collections::HashMap<usize, Vec<std::ops::Range<u32>>> =
+        std::collections::HashMap::new();
+    for (row, origin) in origins.iter().enumerate() {
+        if let (Some(range), Some(lines)) = (block_range(row), &origin.lines) {
+            covered.entry(range.start).or_default().push(lines.clone());
+        }
+    }
+    for (&start, rows) in &covered {
+        let Some(real) = doc.real_block_for_byte(start) else {
+            continue;
+        };
+        for line in 0..real.span().end {
+            if !rows.iter().any(|r| r.contains(&line)) && !renders_no_row(real, line, true) {
+                return Err(format!(
+                    "line {line} of the block at line {} shows on no row",
+                    line_of(start)
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+/// Whether block-relative `line` of `block` is one of the kinds known to render no row: a link
+/// reference definition inside a container (its `hidden` lines), a bare list marker (`-` with the
+/// item's text on the lines below), or the underline of a setext heading nested in a container,
+/// which draws no rule.  `top` is whether `block` is a top-level block.
+fn renders_no_row(block: &Block, line: u32, top: bool) -> bool {
+    if !block.span().contains(&line) {
+        return false;
+    }
+    match block {
+        Block::BlockQuote { blocks, hidden, .. }
+        | Block::FootnoteDefinition { blocks, hidden, .. } => {
+            hidden.contains(&line) || blocks.iter().any(|b| renders_no_row(b, line, false))
+        }
+        Block::List { items, .. } => items.iter().any(|i: &ListItem| {
+            let bare_marker =
+                line == i.span.start && i.blocks.first().is_some_and(|b| b.span().start > line);
+            bare_marker
+                || i.hidden.contains(&line)
+                || i.blocks.iter().any(|b| renders_no_row(b, line, false))
+        }),
+        leaf => !top && leaf.is_setext_heading() && line + 1 == leaf.span().end,
+    }
 }
 
 /// `slices`, each mapped by its own `InlineColMap` and joined by one space, render exactly the
@@ -585,6 +633,13 @@ const CORPUS: &[&str] = &[
     "[^n]: note one\n    two three\n\nref[^n]\n",
     // Frontmatter is the byte-0 block only: a `---` opening a quote below it is a rule.
     "---\nt: x\n---\n\n> ---\n> b\n\n---\n",
+    // Lines with no row of their own reveal stacked with the row they share, and a multi-line
+    // setext heading stacks its text with the cursor on any of its lines.
+    "Multi\nline\n---\n",
+    "> a\n>\n> [d]: /u\n> b\n",
+    "> [d]: /u\n> - - a\n",
+    "- a\n  b\n  ---\n",
+    "- a\n\n  ```\n  x\n  ```\n",
 ];
 
 #[test]
@@ -800,10 +855,12 @@ fn check_click_and_paint_from(
     let reveal = |st: &mut EditorState| {
         // A click starts a drag that its release would end; a drag holds the reveal off.
         st.drag_in_progress = false;
+        // Held off by a delay that starts in an hour, not now: the real 120 ms can run out
+        // mid-check on a loaded machine (the cases run on threads), revealing the row.
         st.cursor_block_entered_at = if revealed_at.is_some() {
             None
         } else {
-            Some(Instant::now())
+            Some(Instant::now() + Duration::from_secs(3600))
         };
     };
     let fresh = || {

@@ -31,12 +31,13 @@ impl EditorState {
             Some(start_line..end_line + 1)
         });
 
-        // Crossing into a different block, or into or out of a reflowed paragraph (which can be
-        // one of many in a list or quote), drops the "revealed as one unit" latch: the new block
-        // or paragraph must earn its own reveal (a dwell, or the immediate reflow-from-below case
+        // Crossing into a different block, or into or out of a stacked row (a reflowed paragraph
+        // can be one of many in a list or quote), drops the "revealed as one unit" latch: the new
+        // block or row must earn its own reveal (a dwell, or the immediate entry-from-below case
         // below).
         let previous_unit = self.cursor_stacked_unit;
-        self.cursor_stacked_unit = self.cursor_stacked_row().map(|stacked| stacked.unit());
+        let stacked = self.cursor_stacked_row();
+        self.cursor_stacked_unit = stacked.as_ref().map(|stacked| stacked.unit());
         let entering = previous_block_idx != self.cursor_block_idx
             || previous_unit != self.cursor_stacked_unit;
         if entering {
@@ -48,21 +49,21 @@ impl EditorState {
             self.cursor_line_idx = Some(current_line);
             // Re-arm the delay on every buffer-line change — the same beat every block gets — so
             // scrolling *through* a block never dwells long enough to reveal it.  (A diagram
-            // (mermaid / `$$` math) and a reflowed paragraph then stay revealed once a dwell
-            // latches them, via `cursor_reveal_latched`, so re-arming here doesn't flash them
-            // collapsed mid-block.)
+            // (mermaid / `$$` math) and a stacked row then stay revealed once a dwell latches
+            // them, via `cursor_reveal_latched`, so re-arming here doesn't flash them collapsed
+            // mid-block.)
             //
-            // The one exception is *entering* a reflowed paragraph on a line other than its first
-            // — an upward move or a click.  Its raw form is taller than its rendered form, so
-            // during the delay the collapsed single flow row can't show the cursor on its true
-            // line: it would sit on that top row and then drop when the paragraph expands.  Reveal
-            // such an entry at once (and latch it) so the cursor lands on the right line
-            // immediately.  A top-line entry (a downward move) keeps the delay — its line *is* the
-            // flow row, so nothing jumps and fast downward scrolling stays smooth.
-            let off_first_line = self.cursor_stacked_unit.is_some_and(|(_, first)| {
+            // The one exception is *entering* a stacked row on a line other than its first — an
+            // upward move or a click.  Its raw form is taller than its rendered form, so during
+            // the delay the collapsed row can't show the cursor on its true line: it would sit on
+            // that top row and then drop when the row expands.  Reveal such an entry at once (and
+            // latch it) so the cursor lands on the right line immediately.  A top-line entry (a
+            // downward move) keeps the delay — its line *is* the collapsed row, so nothing jumps
+            // and fast downward scrolling stays smooth.
+            let off_first_line = stacked.is_some_and(|stacked| {
                 self.cursor_block_line_range
                     .as_ref()
-                    .is_some_and(|r| current_line != r.start + first as usize)
+                    .is_some_and(|r| current_line != r.start + stacked.lines.start as usize)
             });
             if entering && off_first_line {
                 self.cursor_block_entered_at = None;
@@ -84,7 +85,7 @@ impl EditorState {
     /// Whether the cursor block should show raw source.  False during the `RAW_REVEAL_DELAY`
     /// window, during a mouse drag (the click anchor must not shift), and while a search or
     /// `:s` preview is active (blocks must not flip to raw under the highlights).  A latched
-    /// one-unit block (diagram — mermaid or `$$` math — or reflowed paragraph) stays revealed past
+    /// one-unit block (diagram — mermaid or `$$` math — or stacked row) stays revealed past
     /// a delay re-arm — see [`Self::cursor_reveal_latched`].
     pub fn cursor_block_revealed(&self) -> bool {
         if self.drag_in_progress {
@@ -106,8 +107,9 @@ impl EditorState {
     }
 
     /// Latch the reveal of a "reveal as one unit" block — a diagram (mermaid or `$$` math) or a
-    /// reflowed paragraph — once it has been revealed by a dwell, so it stays revealed while the
-    /// cursor remains inside even as line moves re-arm the delay.  Called once per frame from
+    /// stacked row (a reflowed paragraph, any row over several lines) — once it has been revealed
+    /// by a dwell, so it stays revealed while the cursor remains inside even as line moves re-arm
+    /// the delay.  Called once per frame from
     /// `App::prepare_viewport`.  Other blocks (tables, code) are left to the per-line delay, so
     /// they keep revealing row by row and hide again under a moving cursor.
     pub fn latch_cursor_reveal(&mut self) {
@@ -370,6 +372,36 @@ mod tests {
         );
         assert!(st.cursor_reveal_latched, "and latch it");
         assert_eq!(st.effective_rows(80).raw_lines(), 1..3);
+    }
+
+    /// A row a line with no row of its own shares (a quote's hidden link definition, the line
+    /// below it) stacks that line only while the cursor is on it.  Moving between the two keeps
+    /// the row revealed as one unit, its stack growing or shrinking by the hidden line, and the
+    /// reveal patch follows (it is memoized per stacked lines, not just per row).
+    #[test]
+    fn moving_between_a_hidden_line_and_the_row_it_shares_keeps_it_revealed() {
+        let src = "> a\n>\n> [d]: /u\n> b\n\nafter\n";
+        let mut st = EditorState::new(Buffer::from_str(src), theme());
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(80);
+        st.sync_reflow_for_mode();
+        st.cursor.offset = src.find("[d]").unwrap();
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None;
+        st.latch_cursor_reveal();
+        assert!(st.cursor_reveal_latched);
+        assert_eq!(st.effective_rows(80).raw_lines(), 2..4);
+
+        st.cursor.offset = src.find("> b").unwrap();
+        st.update_cursor_block();
+        assert!(st.cursor_reveal_latched, "the same row keeps its latch");
+        assert!(st.cursor_block_revealed());
+        assert_eq!(st.effective_rows(80).raw_lines(), 3..4);
+
+        st.cursor.offset = src.find("[d]").unwrap();
+        st.update_cursor_block();
+        assert!(st.cursor_block_revealed());
+        assert_eq!(st.effective_rows(80).raw_lines(), 2..4);
     }
 
     /// Leaving a nested reflowed paragraph for another row of its block (a sibling item's first

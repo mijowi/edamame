@@ -65,30 +65,30 @@ pub struct EffectiveRows<'a> {
     patch: Option<Rc<Patch>>,
 }
 
+/// [`EffectiveRowsCache`]'s key: `(parsed_version, width, reveal)`, the reveal being the
+/// revealed row's rendered start and the block-relative source lines it stacks (`start, end`).
+pub type EffectiveRowsKey = (u64, usize, Option<(usize, u32, u32)>);
+
 /// Per-`EditorState` memo for the reveal patch, so a frame's repeated `effective_rows` calls build
-/// it once.  Keyed by `(parsed_version, width, revealed-row rendered-start)` — the only inputs
-/// that change the patch; the revealed paragraph's raw form depends on the paragraph, not the
-/// cursor's position within it, so moves inside it stay a cache hit.  `None` reveal = identity.
+/// it once.  Keyed by [`EffectiveRowsKey`] — the only inputs that change the patch.  The lines
+/// are part of it: a reflowed paragraph stacks the same lines wherever the cursor is in it, so
+/// moves inside one stay a cache hit, but a row a line with no row of its own shares stacks that
+/// line only while the cursor is on it.  `None` reveal = identity.
 #[derive(Debug, Clone, Default)]
 pub struct EffectiveRowsCache {
-    key: Option<(u64, usize, Option<usize>)>,
+    key: Option<EffectiveRowsKey>,
     base_total: usize,
     patch: Option<Rc<Patch>>,
 }
 
 impl EffectiveRowsCache {
     /// The cached patch when the key matches, else `None` (caller rebuilds).
-    pub fn get(&self, key: (u64, usize, Option<usize>)) -> Option<(usize, Option<Rc<Patch>>)> {
+    pub fn get(&self, key: EffectiveRowsKey) -> Option<(usize, Option<Rc<Patch>>)> {
         (self.key == Some(key)).then(|| (self.base_total, self.patch.clone()))
     }
 
     /// Store a freshly built patch under `key`.
-    pub fn store(
-        &mut self,
-        key: (u64, usize, Option<usize>),
-        base_total: usize,
-        patch: Option<Rc<Patch>>,
-    ) {
+    pub fn store(&mut self, key: EffectiveRowsKey, base_total: usize, patch: Option<Rc<Patch>>) {
         self.key = Some(key);
         self.base_total = base_total;
         self.patch = patch;

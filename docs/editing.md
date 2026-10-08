@@ -39,9 +39,9 @@ edamame parses CommonMark plus [GitHub Flavored Markdown](https://github.github.
 
 Reflow applies to every paragraph, including the text of a list item, a blockquote or a footnote, which wraps under its bullet or bar. When the cursor enters a reflowed paragraph, it opens up to show your source lines exactly as written, `>` and `-` markers included, so you can edit them, and folds back up when you leave.
 
-With reflow off, every paragraph keeps your line breaks, one row per source line, including a break inside bold, italic or link text.
+With reflow off, every paragraph keeps your line breaks, one row per source line, including a break inside bold, italic or link text. A heading written over several lines (text underlined with `===` or `---`) still shows as one row, and opens up to all of its lines while the cursor is on any of them, underline included.
 
-Blank lines inside a blockquote (a line holding only `>`) show as empty quoted rows, exactly as many as you wrote. So do the blank lines between the paragraphs, code blocks and other blocks of one list item or footnote, and an item's later paragraphs line up under its text. A link reference definition (`[label]: /url`) shows nothing, inside a quote or out.
+Blank lines inside a blockquote (a line holding only `>`) show as empty quoted rows, exactly as many as you wrote. So do the blank lines between the paragraphs, code blocks and other blocks of one list item or footnote, and an item's later paragraphs line up under its text. A link reference definition (`[label]: /url`) shows nothing, inside a quote or out. With the cursor on one inside a quote or list item, it shows along with the line below it (or above it, at the end of the quote or item).
 
 **Frontmatter is shown as data, not prose.** A `---`-delimited YAML block (or a `+++`-delimited TOML one) at the top of a file renders verbatim — one row per source line, dimmed, with each key picked out from its value. It stays fully editable, and it is left out of an HTML export, since it describes the document rather than belonging to it.
 

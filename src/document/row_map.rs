@@ -112,29 +112,31 @@ pub fn revealed_diagram_line(parsed: &ParsedDoc, block: usize, row: usize) -> Op
 }
 
 /// The source lines row `row` of `block` expands to when it is the revealed cursor row: `Some`
-/// for a reflowed paragraph's flow row, at any depth, whose raw form is its source lines stacked
-/// (taller than the one wrapped row it renders as), `None` for every other row, which reveals in
-/// place.  The one gate the reveal patch (`EffectiveRows`), the view, the click and the reveal
-/// timer share.  A paragraph reflows when reflow is on and it has no hard break
-/// ([`paragraph_reflows`](crate::markdown::renderer::paragraph_reflows), the renderer's
-/// rule); its flow is then its only row, a `Flow` origin over the paragraph's lines.  That holds
-/// for a one-line paragraph too (each item of a list of one-liners), which stacks its one line.
+/// for an inline row over several lines, whose raw form is those lines stacked, `None` for
+/// every other row, which reveals in place.  Such a row is a reflowed paragraph's flow (taller
+/// raw than the one wrapped row it renders as), a multi-line setext heading's text, or a row
+/// holding a multi-line code span, reflow on or off.  A reflowed paragraph's flow stacks even
+/// over one line (each item of a list of one-liners): it reflows when reflow is on and it has
+/// no hard break ([`paragraph_reflows`](crate::markdown::renderer::paragraph_reflows), the
+/// renderer's rule), and is then its only row, a `Flow` origin over the paragraph's lines.
+/// [`cursor_stack`] builds the cursor's stack from it.
 pub fn stacked_lines(parsed: &ParsedDoc, block: usize, row: usize) -> Option<Range<u32>> {
-    if !parsed.reflow_paragraphs {
-        return None;
-    }
     let (origins, band) = own_origins(parsed, block);
     let origin = origins.get(row.checked_sub(band)?)?;
-    if !matches!(
-        origin.cols,
-        ColOrigin::Content {
-            kind: ContentKind::Flow,
-            ..
-        }
-    ) {
+    let ColOrigin::Content {
+        kind: kind @ (ContentKind::Inline | ContentKind::Flow),
+        ..
+    } = origin.cols
+    else {
+        return None;
+    };
+    let lines = origin.lines.clone()?;
+    if lines.len() > 1 {
+        return Some(lines);
+    }
+    if !parsed.reflow_paragraphs || kind != ContentKind::Flow {
         return None;
     }
-    let lines = origin.lines.clone()?;
     let range_start = parsed.source_map.original_range_for_block(block)?.start;
     let ast = parsed.real_block_for_byte(range_start)?;
     match leaf_at(ast, lines.start)? {
@@ -145,6 +147,53 @@ pub fn stacked_lines(parsed: &ParsedDoc, block: usize, row: usize) -> Option<Ran
         }
         _ => None,
     }
+}
+
+/// The row of `block` the cursor at `pos` reveals as stacked source lines, and those lines:
+/// the one gate the reveal patch (`EffectiveRows`), the view, the click and the reveal timer
+/// share.  Usually the cursor's row ([`row_for_pos`]) and its [`stacked_lines`].  Two cases add
+/// to that:
+///
+/// - The cursor's line renders no row of its own (a link reference definition inside a
+///   container, a bare list marker, a nested setext underline) and shares a neighbor's
+///   ([`row_for_line`]: the next row, or the last for a line past every row).  The stack is
+///   then that row's lines and the cursor's, so the row it shares still shows, whether or not
+///   it stacks by itself.  The union is contiguous, since any line between the two has no row
+///   either.  But a marker row whose line goes on to show on the rows below it (`- - a`) stacks
+///   the cursor's line alone: its own line would show twice, raw and rendered.
+/// - The cursor is on a setext underline with a rule row of its own: the heading's text row
+///   stacks, so every text line shows while the rule reveals as the underline.
+///
+/// `None` in a diagram, whose rows show its lines one for one, and for a shared table row,
+/// which reveals cell by cell.
+pub fn cursor_stack(parsed: &ParsedDoc, block: usize, pos: RawPos) -> Option<(usize, Range<u32>)> {
+    if parsed.is_diagram_reveal_block(block) {
+        return None;
+    }
+    let line = to_u32(pos.line);
+    let row = row_for_pos(parsed, block, pos);
+    let own = lines_of_row(parsed, block, row)?;
+    if !own.contains(&line) {
+        if table_row(parsed, block, row).is_some() {
+            return None;
+        }
+        if lines_of_row(parsed, block, row + 1).is_some_and(|next| next.contains(&own.start)) {
+            return Some((row, line..line + 1));
+        }
+        let lines = stacked_lines(parsed, block, row).unwrap_or(own);
+        return Some((row, lines.start.min(line)..lines.end.max(line + 1)));
+    }
+    if let Some(lines) = stacked_lines(parsed, block, row) {
+        return Some((row, lines));
+    }
+    // A setext underline's rule row: stack the heading's text above it.
+    let range_start = parsed.source_map.original_range_for_block(block)?.start;
+    let leaf = leaf_at(parsed.real_block_for_byte(range_start)?, line)?;
+    if !leaf.is_setext_heading() || line + 1 != leaf.span().end {
+        return None;
+    }
+    let text = row_for_line(parsed, block, leaf.span().start as usize);
+    stacked_lines(parsed, block, text).map(|lines| (text, lines))
 }
 
 // ── Columns ───────────────────────────────────────────────────────────────

@@ -91,7 +91,8 @@ impl InlineColMap {
             | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_SMART_PUNCTUATION;
+            | Options::ENABLE_SMART_PUNCTUATION
+            | Options::ENABLE_MATH;
 
         // A reference the document defines resolves to an empty destination: only its text
         // renders, so the destination never matters.
@@ -105,6 +106,10 @@ impl InlineColMap {
             match event {
                 Event::Text(text) => walk.push_text(raw_line, range, &text),
                 Event::Code(s) => walk.push_code(raw_line, &s, range),
+                // Math renders as its delimited source.  Parsed as math, not text, so it splits
+                // the text around it as the parser does: `y== $a$ ==x` holds no highlight.
+                Event::InlineMath(s) => walk.push_math(&s, "$", range),
+                Event::DisplayMath(s) => walk.push_math(&s, "$$", range),
                 Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
                 // The renderer shows inline HTML as its text, except a lone comment.
                 Event::InlineHtml(s)
@@ -314,6 +319,14 @@ impl CharMapWalk {
                 .is_some_and(|b| b == inner);
         let content_start = range.start + delim + usize::from(stripped);
         self.push_chars(inner, content_start);
+    }
+
+    /// A math span read from `range`, rendered as `delim`, its `source`, then `delim` again: the
+    /// delimiters onto the raw ones at the range's ends, the source onto the raw chars between.
+    fn push_math(&mut self, source: &str, delim: &str, range: std::ops::Range<usize>) {
+        self.push_chars(delim, range.start);
+        self.push_chars(source, range.start + delim.len());
+        self.push_chars(delim, range.end.saturating_sub(delim.len()));
     }
 
     fn push_break(&mut self, byte: usize) {
@@ -540,6 +553,17 @@ mod tests {
             &[14, 15, 16, 17, 18, 19]
         );
         assert_eq!(map.rendered_to_raw_vec()[16], 20);
+    }
+
+    /// Math splits the text around it, as in the parser, so a `==` on each side is literal, not
+    /// a highlight; the math itself renders as its delimited source, one char for one.
+    #[test]
+    fn math_splits_the_text_around_it() {
+        for text in ["y== $a$ ==x", "y== $$a$$ ==x"] {
+            let map = InlineColMap::build(text);
+            let identity: Vec<usize> = (0..=text.len()).collect();
+            assert_eq!(map.rendered_to_raw_vec(), identity, "{text:?}");
+        }
     }
 
     #[test]

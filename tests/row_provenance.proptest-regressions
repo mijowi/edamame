@@ -15,3 +15,4 @@ cc 41f393c46f27193c45d03fcda3ee0a9f568a6bf71d289cd262d5b69fd655dda1 # shrinks to
 cc ef1898837acbc11084c8e906c01bf26b3d01822f41e3c2ce8b3cf639f1e33cb7 # shrinks to src = ">- $$\n>  x^2\n>  $$\n\n[r]: /u\n"
 cc dcdcb9f899c777baacdfff96fe180a51d97fdb08d728d05b852ccb7e9c6ce17a # shrinks to src = ">1. a\n>\n>   a\n>2. - ```\n>     ```\n\n[r]: /u\n"
 cc fe66bdc966616971e8733b6c77beea38250c62333e3bf745ae0851f1e5ec07fa # shrinks to src = ">- 1. a ![x\n>     y](u) a *x\n>     y* a\n\n[r]: /u\n"
+cc 5f041fe5745b6565bc31195e6c3a4928a2330c0f9fd0a0fb3c2a5b1f0886716a # shrinks to src = "- - a ==x\n    y== $a$ ==x\n    y== a\n\n[r]: /u\n"
