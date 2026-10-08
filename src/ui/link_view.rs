@@ -16,6 +16,7 @@ use ratatui::text::Line;
 
 use crate::editor::link::LinkTarget;
 use crate::editor::EditorState;
+use crate::markdown::renderer::{paragraph_reflows, paragraph_row_inlines};
 use crate::markdown::{Block, Inline};
 
 /// One link-styled run the renderer emits, in document order.  The image-placeholder variant
@@ -131,7 +132,7 @@ fn extract_block_links(
 ) {
     // Collecting runs first skips the per-line geometry walk for the (common) link-free block.
     let mut link_runs: Vec<LinkRun> = Vec::new();
-    collect_link_runs_from_block(block, &mut link_runs);
+    collect_link_runs_from_block(block, state.parsed.reflow_paragraphs, &mut link_runs);
     if !link_runs
         .iter()
         .any(|run| matches!(run, LinkRun::Link { .. }))
@@ -224,8 +225,8 @@ fn underlined_char_ranges(line: &Line<'_>) -> Vec<(usize, usize)> {
 }
 
 /// Public wrapper around [`collect_link_runs_from_block`] for `mouse_ops::links`.
-pub fn collect_link_runs_from_block_public(block: &Block, out: &mut Vec<LinkRun>) {
-    collect_link_runs_from_block(block, out);
+pub fn collect_link_runs_from_block_public(block: &Block, reflow: bool, out: &mut Vec<LinkRun>) {
+    collect_link_runs_from_block(block, reflow, out);
 }
 
 /// Collect one [`LinkRun`] per link-styled run the renderer will emit for `block`, in document
@@ -234,20 +235,24 @@ pub fn collect_link_runs_from_block_public(block: &Block, out: &mut Vec<LinkRun>
 /// `Inline::Image` gets an entry because its placeholder is painted with the link fg and an
 /// underlined alt text, so consumers see a run there.  An image *inside* a link is not counted
 /// twice: the walk does not descend into a link's own text, and the renderer emits one run.
-fn collect_link_runs_from_block(block: &Block, out: &mut Vec<LinkRun>) {
+/// A link a paragraph's rows cut in two at a break (any paragraph that doesn't reflow, per
+/// `reflow`) is two runs on two rows, so it gets an entry per half.
+fn collect_link_runs_from_block(block: &Block, reflow: bool, out: &mut Vec<LinkRun>) {
     match block {
-        Block::Heading { inlines, .. } | Block::Paragraph { inlines, .. } => {
-            collect_link_runs_from_inlines(inlines, out);
+        Block::Heading { inlines, .. } => collect_link_runs_from_inlines(inlines, out),
+        Block::Paragraph { inlines, .. } => {
+            let join = paragraph_reflows(reflow, inlines);
+            collect_link_runs_from_inlines(&paragraph_row_inlines(inlines, join), out);
         }
         Block::BlockQuote { blocks, .. } | Block::FootnoteDefinition { blocks, .. } => {
             for inner in blocks {
-                collect_link_runs_from_block(inner, out);
+                collect_link_runs_from_block(inner, reflow, out);
             }
         }
         Block::List { items, .. } => {
             for item in items {
                 for inner in &item.blocks {
-                    collect_link_runs_from_block(inner, out);
+                    collect_link_runs_from_block(inner, reflow, out);
                 }
             }
         }
@@ -334,6 +339,34 @@ mod tests {
         assert_eq!(snaps.len(), 2);
         assert_eq!(snaps[0].url, "a.md");
         assert_eq!(snaps[1].url, "b.md");
+    }
+
+    /// A link a break cuts in two renders a run on each row, and each pairs with the link, so
+    /// the link after it still pairs with its own URL.  Reflowed, the link is one run again: the
+    /// break's space takes the link's style.
+    #[test]
+    fn a_link_split_across_rows_pairs_both_halves() {
+        let src = "[a\nb](x.md) [c](y.md)\n";
+        let area = Rect::new(0, 0, 80, 10);
+        // `(url, x, y, width)` per snapshot.
+        for (reflow, expected) in [
+            (
+                false,
+                &[("x.md", 0, 0, 1), ("x.md", 0, 1, 1), ("y.md", 2, 1, 1)][..],
+            ),
+            (true, &[("x.md", 0, 0, 3), ("y.md", 4, 0, 1)][..]),
+        ] {
+            let mut st = state(src);
+            st.mode = crate::editor::Mode::Rendered;
+            st.set_reflow(reflow);
+            st.sync_reflow_for_mode();
+            let snaps = build_snapshots(&st, area, 0);
+            let got: Vec<(&str, u16, u16, u16)> = snaps
+                .iter()
+                .map(|s| (s.url.as_str(), s.rect.x, s.rect.y, s.rect.width))
+                .collect();
+            assert_eq!(got, expected, "reflow {reflow}");
+        }
     }
 
     #[test]

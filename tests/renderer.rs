@@ -279,6 +279,54 @@ fn a_list_items_first_paragraph_renders_one_row_per_source_line() {
     );
 }
 
+/// A break inside emphasis or a link cuts it in two, so each source line keeps its
+/// row: with reflow off a soft one does, and a hard one always does, since a hard break keeps a
+/// paragraph from reflowing at any depth.  Both once rendered as a space on one row.
+#[test]
+fn a_break_inside_an_inline_splits_the_row() {
+    let rows = |md: &str, reflow: bool| -> Vec<String> {
+        let theme = Theme::default();
+        Renderer::new(&theme)
+            .with_viewport_width(80)
+            .with_reflow_paragraphs(reflow)
+            .render(&parse(md))
+            .iter()
+            .map(line_text)
+            .collect()
+    };
+    assert_eq!(rows("a *b\nc* d\n", false), ["a b", "c d"]);
+    assert_eq!(rows("a *b\nc* d\n", true), ["a b c d"]);
+    assert_eq!(rows("[x\ny](u) ~~p\nq~~\n", false), ["x", "y p", "q"]);
+    for reflow in [false, true] {
+        assert_eq!(rows("*a\\\nb*\n", reflow), ["a", "b"], "reflow {reflow}");
+        assert_eq!(
+            rows("- **a\\\n  b** c\n", reflow),
+            ["• a", "  b c"],
+            "reflow {reflow}"
+        );
+    }
+}
+
+/// Each half of a split emphasis keeps its style, and a split link styles both halves as the
+/// link, so the hit-test pairs each with it.
+#[test]
+fn a_split_inline_keeps_its_style_on_both_rows() {
+    let theme = Theme::default();
+    let lines = Renderer::new(&theme)
+        .with_viewport_width(80)
+        .render(&parse("*a\nb* [c\nd](u)\n"));
+    let styled = |row: usize, text: &str| {
+        lines[row]
+            .spans
+            .iter()
+            .find(|s| s.content == text)
+            .map(|s| s.style)
+            .unwrap_or_else(|| panic!("no {text:?} on row {row}: {:?}", lines[row]))
+    };
+    assert_eq!(styled(0, "a"), styled(1, "b"));
+    assert_eq!(styled(1, "c"), styled(2, "d"));
+}
+
 /// A blockquote renders one row per source line: a quoted blank row for each bare `>`, and none
 /// the source doesn't hold.  It once put a blank between every two children and dropped an
 /// empty quote, so every row below sat off from its source line.  A link reference definition

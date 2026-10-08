@@ -302,10 +302,44 @@ fn check_doc(doc: &ParsedDoc) -> Result<(), String> {
                 // Joined, an inline spanning a break (`*a⏎b*`) maps as the document parses it;
                 // line by line, a continuation that joining would turn into block syntax does.
                 // A flow must agree with the row one way or the other.
+                // A row a break cuts out of a paragraph (`a *b⏎c* d`, reflow off) maps only as
+                // part of the whole paragraph's text.
                 if let Err(line_by_line) = check_slices(&slices, &shown, labels) {
-                    if slices.len() == 1
-                        || check_slices(&[slices.join("\n")], &shown, labels).is_err()
-                    {
+                    let joined = slices.len() > 1
+                        && check_slices(&[slices.join("\n")], &shown, labels).is_ok();
+                    let part = match real.and_then(|b| leaf_at(b, span.start)) {
+                        Some(Block::Paragraph { src, .. }) => {
+                            let para: Vec<(u32, String)> = src
+                                .span()
+                                .map(|l| {
+                                    let text = lines.get(base + l as usize).copied().unwrap_or("");
+                                    // No column: an atomic inline's tail, past the prefix.
+                                    let col =
+                                        src.col((l - src.first) as usize).unwrap_or_else(|| {
+                                            text.chars()
+                                                .take_while(|c| matches!(c, '>' | ' ' | '\t'))
+                                                .count()
+                                                as u32
+                                        });
+                                    let slice: String = text.chars().skip(col as usize).collect();
+                                    // Only an unescaped `\` breaks: an odd run.
+                                    let run = slice.chars().rev().take_while(|&c| c == '\\');
+                                    let slice = match slice.strip_suffix('\\') {
+                                        Some(s)
+                                            if l + 1 < src.span().end && run.count() % 2 == 1 =>
+                                        {
+                                            s.to_owned()
+                                        }
+                                        _ => slice,
+                                    };
+                                    (l, slice)
+                                })
+                                .collect();
+                            check_paragraph_part(&para, span.clone(), &shown, labels).is_ok()
+                        }
+                        _ => false,
+                    };
+                    if !joined && !part {
                         return err(line_by_line);
                     }
                 }
@@ -412,6 +446,53 @@ fn check_slices(slices: &[String], shown: &[char], labels: &RefLabels) -> Result
     Ok(())
 }
 
+/// The paragraph whose `(line, slice)` pairs are `para`, mapped as one text joined by `\n`,
+/// renders on `lines` exactly the row's `shown` content: the rendered chars whose raw char lies
+/// in those lines' slices, short of the whitespace a break leaves at a slice's end, every letter
+/// or digit onto the same letter or digit.
+fn check_paragraph_part(
+    para: &[(u32, String)],
+    lines: std::ops::Range<u32>,
+    shown: &[char],
+    labels: &RefLabels,
+) -> Result<(), String> {
+    let text = para
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let map = InlineColMap::build_inline(&text, labels);
+    let raw: Vec<char> = text.chars().collect();
+    // Each of the row's lines as a raw char range, trailing whitespace off.
+    let mut ranges = Vec::new();
+    let mut at = 0usize;
+    for (l, slice) in para {
+        let len = slice.trim_end().chars().count();
+        if lines.contains(l) {
+            ranges.push(at..at + len);
+        }
+        at += slice.chars().count() + 1;
+    }
+    let part: Vec<usize> = map.rendered_to_raw_vec()[..map.rendered_len()]
+        .iter()
+        .copied()
+        .filter(|c| ranges.iter().any(|r| r.contains(c)))
+        .collect();
+    if part.len() != shown.len() {
+        return Err(format!(
+            "{text:?} renders {} chars on {lines:?}, the row shows {}",
+            part.len(),
+            shown.len()
+        ));
+    }
+    for (&at, &ch) in part.iter().zip(shown) {
+        if ch.is_alphanumeric() && raw.get(at) != Some(&ch) {
+            return Err(format!("rendered {ch:?} maps to raw {:?}", raw.get(at)));
+        }
+    }
+    Ok(())
+}
+
 /// `text`, mapped by one `InlineColMap`, renders the same letters and digits in the same order
 /// as the row's `shown` content, wherever its whitespace falls.
 fn check_alnum_sequence(text: &str, shown: &[char], labels: &RefLabels) -> Result<(), String> {
@@ -468,7 +549,7 @@ const CORPUS: &[&str] = &[
     "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
     "Title\n=====\n\nSub\n---\n\npara\n",
     "[^1]: a note\n    more\n\nref[^1]\n",
-    // A break nested in emphasis or a link: one row over both lines, not one row per line.
+    // A break nested in emphasis or a link: cut there, one row per line with reflow off.
     "*a\nb* c\nd\n",
     "- [x\n  y](u) *p\n  q **r\n  s***\n  d\n",
     "> **a\n> b** c\n> d\n",

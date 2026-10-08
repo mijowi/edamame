@@ -325,15 +325,16 @@ mod tests {
         );
     }
 
-    /// Emphasis wrapped across a line break renders both lines on one row; taking that row for
-    /// one line numbered every row below it with the line above its own.
+    /// Emphasis wrapped across a line break is cut in two at it, so each line keeps a row and
+    /// a number of its own.  (When it rendered both lines on one row, taking that row for one
+    /// line numbered every row below it with the line above its own.)
     #[test]
     fn emphasis_across_a_break_keeps_the_numbers_below_it() {
         // With reflow off, so the item keeps a row per source line.
         let mut state = state_for("- *a\n  b* c\n  d\n", 80);
         state.set_reflow(false);
-        // Rows: `• a b c` (lines 0–1), `d`.
-        assert_eq!(labels(&state, 80)[..2], [Some(0), Some(2)]);
+        // Rows: `• a`, `b c`, `d`.
+        assert_eq!(labels(&state, 80)[..3], [Some(0), Some(1), Some(2)]);
     }
 
     /// An item whose first block starts on its marker line renders the marker on a row of its

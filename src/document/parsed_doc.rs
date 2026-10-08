@@ -6,7 +6,7 @@ use ratatui::text::Line;
 
 use crate::config::Theme;
 use crate::diagram::DiagramSource;
-use crate::document::row_map::RowCache;
+use crate::document::row_map::{JoinedMap, RowCache};
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
@@ -101,6 +101,9 @@ pub struct ParsedDoc {
     /// column map), 1:1 with [`lines`](Self::lines), built by `row_map` from this parse's own
     /// text on first use.
     row_cache: Vec<OnceCell<RowCache>>,
+    /// Lazy joined column maps of the paragraphs whose rows `row_map` maps as parts of the
+    /// whole, keyed by `(block, paragraph's first line)`.  See [`with_joined_map`](Self::with_joined_map).
+    joined_maps: RefCell<HashMap<(usize, u32), JoinedMap>>,
     /// Whether this parse rendered prose paragraphs with reflow on (soft breaks → spaces,
     /// wrapped as one flow, at any depth).  Row and column questions read the flow from its
     /// `RowOrigin`; what still branches on it (through
@@ -435,6 +438,7 @@ impl ParsedDoc {
             visual_rows: RefCell::new(Vec::new()),
             source_lines: OnceCell::new(),
             row_cache: (0..row_count).map(|_| OnceCell::new()).collect(),
+            joined_maps: RefCell::default(),
             reflow_paragraphs,
             // Set by `EditorState::refresh_parsed` once the live reveal is known; a fresh parse
             // starts with no preview split.
@@ -582,6 +586,23 @@ impl ParsedDoc {
         }
         let cache = init()?;
         Some(cell.get_or_init(|| cache))
+    }
+
+    /// `read` of the joined map keyed `key`, built with `init` on first use.  See
+    /// [`joined_maps`](Self::joined_maps).
+    pub(crate) fn with_joined_map<R>(
+        &self,
+        key: (usize, u32),
+        init: impl FnOnce() -> JoinedMap,
+        read: impl FnOnce(&JoinedMap) -> R,
+    ) -> R {
+        if let Some(map) = self.joined_maps.borrow().get(&key) {
+            return read(map);
+        }
+        let map = init();
+        let out = read(&map);
+        self.joined_maps.borrow_mut().insert(key, map);
+        out
     }
 
     // ── Visual-row cache (rendered) ───────────────────────────────────────

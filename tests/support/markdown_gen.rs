@@ -1,6 +1,7 @@
 //! A proptest generator of nested Markdown documents: paragraphs (with lazy continuation lines,
 //! hard breaks, wide characters, inline math, reference links and footnote references, smart
-//! punctuation, entities and escapes, and emphasis, links or images broken across lines),
+//! punctuation, entities and escapes, and emphasis, strikethrough, links or images broken across
+//! lines, by a soft break or a hard one),
 //! headings (ATX ones with or without a closing sequence), fenced and indented code (mermaid
 //! included), display math, raw HTML and
 //! comments, rules, tables (some with cells long enough to wrap), footnote definitions,
@@ -117,7 +118,7 @@ fn code_line() -> impl Strategy<Value = String> {
 fn leaf() -> impl Strategy<Value = Gen> {
     prop_oneof![
         4 => (
-            prop::collection::vec((text_line(), 0u8..10), 1..4),
+            prop::collection::vec((text_line(), 0u8..13), 1..4),
             any::<bool>(),
         )
             .prop_map(|(lines, lazy)| Gen::Para {
@@ -152,8 +153,8 @@ fn marker() -> impl Strategy<Value = Marker> {
 }
 
 /// A paragraph's lines, where `pick` sometimes ends a line in a hard break, or opens emphasis,
-/// a link or an image at a line's end and closes it at the next line's start: a break nested
-/// inside an inline, which doesn't split the paragraph's row segments.
+/// strikethrough, a link or an image at a line's end and closes it at the next line's start: a
+/// break nested inside an inline, which the renderer cuts in two to give each line its row.
 fn wrap_across_breaks(lines: Vec<(String, u8)>) -> Vec<String> {
     let mut out: Vec<String> = lines.iter().map(|(l, _)| l.clone()).collect();
     for k in 0..out.len().saturating_sub(1) {
@@ -164,6 +165,12 @@ fn wrap_across_breaks(lines: Vec<(String, u8)>) -> Vec<String> {
             // The line after the break opens with the link's close.
             3 => ("[x", "](u)"),
             4 => ("![x", "y](u)"),
+            // A highlight never spans a break (the parser finds one inside a text run), so
+            // this `==` pair stays literal on both lines.
+            7 => ("==x", "y=="),
+            8 => ("~~x", "y~~"),
+            // A hard break inside the emphasis.
+            9 => ("*x\\", "y*"),
             5 => {
                 out[k].push('\\');
                 continue;

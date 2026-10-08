@@ -116,7 +116,7 @@ pub fn revealed_diagram_line(parsed: &ParsedDoc, block: usize, row: usize) -> Op
 /// (taller than the one wrapped row it renders as), `None` for every other row, which reveals in
 /// place.  The one gate the reveal patch (`EffectiveRows`), the view, the click and the reveal
 /// timer share.  A paragraph reflows when reflow is on and it has no hard break
-/// ([`paragraph_can_reflow`](crate::markdown::renderer::paragraph_can_reflow), the renderer's
+/// ([`paragraph_reflows`](crate::markdown::renderer::paragraph_reflows), the renderer's
 /// rule); its flow is then its only row, a `Flow` origin over the paragraph's lines.  That holds
 /// for a one-line paragraph too (each item of a list of one-liners), which stacks its one line.
 pub fn stacked_lines(parsed: &ParsedDoc, block: usize, row: usize) -> Option<Range<u32>> {
@@ -139,7 +139,7 @@ pub fn stacked_lines(parsed: &ParsedDoc, block: usize, row: usize) -> Option<Ran
     let ast = parsed.real_block_for_byte(range_start)?;
     match leaf_at(ast, lines.start)? {
         Block::Paragraph { inlines, .. }
-            if crate::markdown::renderer::paragraph_can_reflow(inlines) =>
+            if crate::markdown::renderer::paragraph_reflows(parsed.reflow_paragraphs, inlines) =>
         {
             Some(lines)
         }
@@ -206,6 +206,66 @@ impl RowCache {
             lead,
             positions: OnceCell::new(),
         })
+    }
+}
+
+/// Lines' slices joined by `\n` and mapped as one text: the raw position of each rendered char,
+/// and which of them are breaks.  A paragraph's is built once per parse and shared by its rows
+/// ([`ParsedDoc::with_joined_map`]), each of which takes its [`part`](Self::part): mapping the
+/// whole paragraph per row cost a 500-line paragraph 100 ms over a screenful.
+#[derive(Debug, Clone)]
+pub(crate) struct JoinedMap {
+    positions: Box<[RawPos]>,
+    /// Indices into `positions` of the rendered chars that stand for breaks, ascending.
+    breaks: Box<[usize]>,
+}
+
+impl JoinedMap {
+    /// The map over `slices`, as [`Row::slices`] cuts them.
+    fn new(slices: &[(usize, usize, &str)], labels: &crate::markdown::RefLabels) -> Self {
+        let joined: Vec<&str> = slices.iter().map(|&(_, _, s)| s).collect();
+        let map = InlineColMap::build_inline(&joined.join("\n"), labels);
+        // Joined char index → `(line, col)`: walk the slices, each one char longer for its `\n`.
+        let mut starts = Vec::with_capacity(slices.len());
+        let mut at = 0usize;
+        for &(_, _, s) in slices {
+            starts.push(at);
+            at += s.chars().count() + 1;
+        }
+        let pos = |c: usize| {
+            let i = starts.partition_point(|&s| s <= c).saturating_sub(1);
+            let (line, col, _) = slices[i];
+            RawPos {
+                line,
+                col: col + (c - starts[i]),
+            }
+        };
+        let forward = &map.rendered_to_raw_vec()[..map.rendered_len()];
+        Self {
+            positions: forward.iter().map(|&c| pos(c)).collect(),
+            breaks: (0..forward.len()).filter(|&k| map.is_break(k)).collect(),
+        }
+    }
+
+    /// The raw positions of the rendered chars on `lines`: those between the last break on a
+    /// line above them and the first break on their last line.  For a reflowed flow, `lines`
+    /// are every line mapped, and its breaks are inside it.
+    fn part(&self, lines: Range<u32>) -> Option<Vec<RawPos>> {
+        let (first, last) = (lines.start as usize, lines.end.saturating_sub(1) as usize);
+        // A break's line never falls below an earlier one's.
+        let before = |line: usize| {
+            self.breaks
+                .partition_point(|&k| self.positions[k].line < line)
+        };
+        let from = before(first)
+            .checked_sub(1)
+            .map_or(0, |i| self.breaks[i] + 1);
+        let to = self
+            .breaks
+            .get(before(last))
+            .copied()
+            .unwrap_or(self.positions.len());
+        self.positions.get(from..to).map(<[RawPos]>::to_vec)
     }
 }
 
@@ -329,13 +389,13 @@ impl<'a> Row<'a> {
     }
 
     /// An inline row's (or flow's) lines, each sliced past its content column and mapped by
-    /// its own [`InlineColMap`], one space for each break; failing that, the slices joined by
-    /// `\n` under one map, for an inline spanning a break (`*a⏎b*`).  Line by line first, since
-    /// joined, a continuation reading `===` or `- a` turns into block syntax it wasn't in the
-    /// document.  Accepted only when the map renders as many chars as the row shows (a
-    /// footnote definition's trailing ` ↩` back-link aside).  References resolve against the
-    /// document's definitions, and an ATX heading's closing sequence is left out, as the renderer
-    /// leaves them.
+    /// its own [`InlineColMap`], one space for each break; failing that, a joined map's part on
+    /// the row ([`JoinedMap::part`]), for an inline spanning a break
+    /// (`*a⏎b*`).  Line by line first, since joined, a continuation reading `===` or `- a` turns
+    /// into block syntax it wasn't in the document.  Accepted only when the map renders as many
+    /// chars as the row shows (a footnote definition's trailing ` ↩` back-link aside).
+    /// References resolve against the document's definitions, and an ATX heading's closing
+    /// sequence is left out, as the renderer leaves them.
     fn build_positions(&self) -> Option<Vec<RawPos>> {
         let ColOrigin::Content {
             raw_col,
@@ -347,43 +407,8 @@ impl<'a> Row<'a> {
         };
         let lines = self.origin.lines.clone()?;
         let leaf = self.ast().and_then(|b| leaf_at(b, lines.start));
-        let leaf_end = leaf.map_or(0, |l| l.span().end);
-        let atx =
-            leaf.is_some_and(|l| matches!(l, Block::Heading { .. }) && !l.is_setext_heading());
         let labels = self.parsed.ref_labels();
-        // `(line, first col, slice)` per line.
-        let slices: Vec<(usize, usize, &str)> = lines
-            .clone()
-            .map(|l| {
-                let line = self.line_text(l as usize);
-                let col = if l == lines.start {
-                    Some(raw_col)
-                } else {
-                    self.content_col(l)
-                };
-                // No column: the line continues an atomic inline begun above (a code span,
-                // math, inline HTML, an image's alt), past its container prefix.
-                let col = col.map_or_else(
-                    || {
-                        line.chars()
-                            .take_while(|c| matches!(c, '>' | ' ' | '\t'))
-                            .count()
-                    },
-                    |c| c as usize,
-                );
-                let byte = line.char_indices().nth(col).map_or(line.len(), |(b, _)| b);
-                let slice = &line[byte..];
-                // A trailing `\` breaks the line only where the leaf continues past it, and only
-                // unescaped: an odd run (`a\\\` is an escaped `\`, then the break).
-                let trailing = slice.chars().rev().take_while(|&c| c == '\\').count();
-                let slice = match slice.strip_suffix('\\') {
-                    Some(s) if l + 1 < leaf_end && trailing % 2 == 1 => s,
-                    _ => slice,
-                };
-                let slice = if atx { strip_atx_closing(slice) } else { slice };
-                (l as usize, col, slice)
-            })
-            .collect();
+        let slices = self.slices(lines.clone(), raw_col, leaf);
 
         let shown = self.content_len();
         let back_link = self.chars.ends_with(&[' ', '↩']);
@@ -416,35 +441,72 @@ impl<'a> Row<'a> {
             by_line.push(end);
             return Some(by_line);
         }
-        if slices.len() < 2 {
-            return None;
-        }
-        let joined: Vec<&str> = slices.iter().map(|&(_, _, s)| s).collect();
-        let map = InlineColMap::build_inline(&joined.join("\n"), labels);
-        if !fits(map.rendered_len()) {
-            return None;
-        }
-        // Joined char index → `(line, col)`: walk the slices, each one char longer for its `\n`.
-        let mut starts = Vec::with_capacity(slices.len());
-        let mut at = 0usize;
-        for &(_, _, s) in &slices {
-            starts.push(at);
-            at += s.chars().count() + 1;
-        }
-        let pos = |c: usize| {
-            let i = starts.partition_point(|&s| s <= c).saturating_sub(1);
-            let (line, col, _) = slices[i];
-            RawPos {
-                line,
-                col: col + (c - starts[i]),
+        // A paragraph's row is one of the segments its breaks cut it into, so an inline it
+        // shares with the row above or below (`a *b⏎c* d`) reads right only over every line.
+        // That map is the paragraph's, so every row of it shares one.
+        let mut joined = match leaf {
+            Some(Block::Paragraph { src, .. }) => {
+                let first_col = src.col(0)?;
+                self.parsed.with_joined_map(
+                    (self.block, src.first),
+                    || JoinedMap::new(&self.slices(src.span(), first_col, leaf), labels),
+                    |map| map.part(lines),
+                )?
             }
+            _ if slices.len() >= 2 => JoinedMap::new(&slices, labels).part(lines)?,
+            _ => return None,
         };
-        let mut joined_pos: Vec<RawPos> = map.rendered_to_raw_vec()[..map.rendered_len()]
-            .iter()
-            .map(|&c| pos(c))
-            .collect();
-        joined_pos.push(end);
-        Some(joined_pos)
+        if !fits(joined.len()) {
+            return None;
+        }
+        joined.push(end);
+        Some(joined)
+    }
+
+    /// `(line, first col, slice)` per line of `lines`: its text past its content column
+    /// (`first_col` on the first), less a hard break's trailing `\` and an ATX heading's
+    /// closing sequence.
+    fn slices(
+        &self,
+        lines: Range<u32>,
+        first_col: u32,
+        leaf: Option<&Block>,
+    ) -> Vec<(usize, usize, &'a str)> {
+        let leaf_end = leaf.map_or(0, |l| l.span().end);
+        let atx =
+            leaf.is_some_and(|l| matches!(l, Block::Heading { .. }) && !l.is_setext_heading());
+        let start = lines.start;
+        lines
+            .map(|l| {
+                let line = self.line_text(l as usize);
+                let col = if l == start {
+                    Some(first_col)
+                } else {
+                    self.content_col(l)
+                };
+                // No column: the line continues an atomic inline begun above (a code span,
+                // math, inline HTML, an image's alt), past its container prefix.
+                let col = col.map_or_else(
+                    || {
+                        line.chars()
+                            .take_while(|c| matches!(c, '>' | ' ' | '\t'))
+                            .count()
+                    },
+                    |c| c as usize,
+                );
+                let byte = line.char_indices().nth(col).map_or(line.len(), |(b, _)| b);
+                let slice = &line[byte..];
+                // A trailing `\` breaks the line only where the leaf continues past it, and only
+                // unescaped: an odd run (`a\\\` is an escaped `\`, then the break).
+                let trailing = slice.chars().rev().take_while(|&c| c == '\\').count();
+                let slice = match slice.strip_suffix('\\') {
+                    Some(s) if l + 1 < leaf_end && trailing % 2 == 1 => s,
+                    _ => slice,
+                };
+                let slice = if atx { strip_atx_closing(slice) } else { slice };
+                (l as usize, col, slice)
+            })
+            .collect()
     }
 
     /// The row's first source line, or the nearest owned line above it.
@@ -1179,6 +1241,34 @@ mod tests {
             Some(4),
             "a marker shows on the next char"
         );
+    }
+
+    /// A row a break cuts out of a paragraph maps as part of the whole paragraph: its own line
+    /// alone reads `c* d` with a literal `*`.
+    #[test]
+    fn a_row_cut_from_an_inline_maps_through_its_paragraph() {
+        let d = doc("a *b\nc* d\n");
+        let b = block_at(&d, 0);
+        assert_eq!(lines_of_row(&d, b, 0), Some(0..1));
+        assert_eq!(lines_of_row(&d, b, 1), Some(1..2));
+        // Rendered `a b`, then `c d`.
+        assert_eq!(
+            rendered_to_raw_col(&d, b, 0, 2),
+            pos(0, 3),
+            "`b` past the `*`"
+        );
+        assert_eq!(
+            raw_to_rendered_col(&d, b, 0, pos(0, 4)),
+            Some(3),
+            "the row's end"
+        );
+        assert_eq!(rendered_to_raw_col(&d, b, 1, 0), pos(1, 0));
+        assert_eq!(
+            rendered_to_raw_col(&d, b, 1, 2),
+            pos(1, 3),
+            "`d` past the `*`"
+        );
+        assert_eq!(raw_to_rendered_col(&d, b, 1, pos(1, 1)), Some(1), "the `*`");
     }
 
     /// Where no map renders exactly what the row shows, columns can't be placed exactly, and

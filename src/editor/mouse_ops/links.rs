@@ -166,7 +166,11 @@ pub(super) fn link_at_rendered_pos(
         .unwrap_or_default();
     let mut runs_in_block: Vec<LinkRun> = Vec::new();
     for block in &crate::markdown::parse(&block_src) {
-        crate::ui::link_view::collect_link_runs_from_block_public(block, &mut runs_in_block);
+        crate::ui::link_view::collect_link_runs_from_block_public(
+            block,
+            state.parsed.reflow_paragraphs,
+            &mut runs_in_block,
+        );
     }
     match runs_in_block.into_iter().nth(preceding + run_in_line)? {
         LinkRun::Link { url, title } => Some((url, title)),

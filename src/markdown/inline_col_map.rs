@@ -67,6 +67,10 @@ pub fn strip_atx_closing(content: &str) -> &str {
 #[derive(Debug, Clone)]
 pub struct InlineColMap {
     rendered_to_raw: Vec<usize>,
+    /// The raw char of each soft or hard break, ascending: where the rendered char that stands
+    /// for it maps.  No text char maps there (a break's raw run, `\n`, `\` or trailing spaces,
+    /// is never text), so these tell the breaks apart in the forward map.
+    breaks: Vec<usize>,
     raw_to_rendered: Vec<usize>,
     rendered_len: usize,
     raw_len: usize,
@@ -116,9 +120,10 @@ impl InlineColMap {
             }
         }
 
+        let breaks = walk.breaks.clone();
         let mut rendered_to_raw = walk.finish();
         collapse_footnote_refs(raw_line, labels, &mut rendered_to_raw);
-        Self::from_forward(rendered_to_raw, raw_len)
+        Self::from_forward(rendered_to_raw, breaks, raw_len)
     }
 
     /// A map over `text` read as inline content *inside* a paragraph: a line's text past its
@@ -136,12 +141,13 @@ impl InlineColMap {
             .filter(|&&raw| raw >= pin)
             .map(|&raw| raw - pin)
             .collect();
-        Self::from_forward(forward, pinned.raw_len.saturating_sub(pin))
+        let breaks = pinned.breaks.iter().map(|&raw| raw - pin).collect();
+        Self::from_forward(forward, breaks, pinned.raw_len.saturating_sub(pin))
     }
 
     /// The map from its forward half: `rendered_to_raw[k]` is rendered char `k`'s raw char, and
     /// its last entry is the end sentinel `raw_len`.
-    fn from_forward(rendered_to_raw: Vec<usize>, raw_len: usize) -> Self {
+    fn from_forward(rendered_to_raw: Vec<usize>, breaks: Vec<usize>, raw_len: usize) -> Self {
         let rendered_len = rendered_to_raw.len().saturating_sub(1);
 
         // Inverse map: raw char idx -> rendered char idx.
@@ -164,6 +170,7 @@ impl InlineColMap {
 
         Self {
             rendered_to_raw,
+            breaks,
             raw_to_rendered,
             rendered_len,
             raw_len,
@@ -210,6 +217,13 @@ impl InlineColMap {
     pub fn rendered_to_raw_vec(&self) -> &[usize] {
         &self.rendered_to_raw
     }
+
+    /// Whether rendered char `rendered_char` stands for a soft or hard break.
+    pub fn is_break(&self, rendered_char: usize) -> bool {
+        self.rendered_to_raw
+            .get(rendered_char)
+            .is_some_and(|raw| self.breaks.binary_search(raw).is_ok())
+    }
 }
 
 // ── Walker ──────────────────────────────────────────────────────────────────
@@ -218,6 +232,8 @@ struct CharMapWalk {
     byte_to_char: Vec<usize>,
     total_chars: usize,
     map: Vec<usize>,
+    /// The raw char of each break pushed.
+    breaks: Vec<usize>,
 }
 
 impl CharMapWalk {
@@ -233,6 +249,7 @@ impl CharMapWalk {
             byte_to_char,
             total_chars: char_idx,
             map: Vec::new(),
+            breaks: Vec::new(),
         }
     }
 
@@ -300,7 +317,9 @@ impl CharMapWalk {
     }
 
     fn push_break(&mut self, byte: usize) {
-        self.map.push(self.lookup(byte));
+        let raw = self.lookup(byte);
+        self.map.push(raw);
+        self.breaks.push(raw);
     }
 
     fn finish(mut self) -> Vec<usize> {

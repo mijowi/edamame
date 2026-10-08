@@ -4,7 +4,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::markdown::ast::{to_u32, Block, ListItem};
-use crate::markdown::renderer::{paragraph_rows, push_gap_rows, render_children, Renderer};
+use crate::markdown::renderer::{
+    paragraph_reflows, paragraph_row_inlines, paragraph_rows, push_gap_rows, render_children,
+    Renderer,
+};
 use crate::markdown::row_origin::{RowOrigin, RowSink};
 use crate::markdown::table_layout::str_cells;
 
@@ -126,9 +129,11 @@ impl<'t> Renderer<'t> {
                             let continuation = " ".repeat(prefix_cells);
                             // Reflowed as one flow, or one row per source line, like the
                             // item's later paragraphs (see `render_paragraph`).
-                            let join = self.paragraph_reflows(inlines);
+                            let join = paragraph_reflows(self.reflow_paragraphs, inlines);
+                            let inlines = paragraph_row_inlines(inlines, join);
                             let mut rows =
-                                paragraph_rows(inlines, src, join, to_u32(prefix_cells)).peekable();
+                                paragraph_rows(&inlines, src, join, to_u32(prefix_cells))
+                                    .peekable();
                             let mut first = true;
                             while let Some((segment, origin)) = rows.next() {
                                 let rendered = self.render_inlines(segment, checked_text_style);

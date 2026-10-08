@@ -38,7 +38,8 @@ pub enum ColOrigin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentKind {
-    /// Inline Markdown: map through `InlineColMap` over the raw text past `raw_col`.
+    /// Inline Markdown: map through `InlineColMap` over the raw text past `raw_col`, or, for a
+    /// row a break cut out of an inline (`a *b⏎c* d` with reflow off), over its whole paragraph.
     Inline,
     /// Characters shown verbatim (code body, frontmatter, raw HTML): identity past the prefix.
     Verbatim,

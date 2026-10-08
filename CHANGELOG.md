@@ -10,26 +10,18 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Changed
 
-- Paragraphs inside list items, blockquotes and footnotes now reflow to the width of your terminal, like top-level paragraphs already did. Moving the cursor into one shows its source lines as written, ready to edit. With reflow off, every paragraph keeps your line breaks, one row per source line. Before, a list item's first paragraph was joined onto one row while its later paragraphs kept their breaks.
-- Blank `>` lines in a blockquote show as empty quoted rows, exactly as many as you wrote. Before, the quote put one blank row between its parts whether or not the source had one.
+- Paragraphs inside list items, blockquotes and footnotes now reflow to the window width like top-level paragraphs. With reflow off, every paragraph keeps your line breaks.
+- Blank `>` lines in a blockquote now show as empty quoted rows, as many as you wrote.
 
 ### Fixed
 
-- Clicks, the cursor, and line numbers no longer land on the wrong line in lists and blockquotes that contain code blocks, nested lists, or blank lines, and a list item holding a code block no longer gains or loses a blank row before the next item.
-- A list item starting with inline math, inline HTML, or a footnote reference no longer loses that text.
-- A setext heading (text underlined with `===` or `---`) spanning several lines now shows the cursor on every line while you edit it, and an H2 one keeps its rule.
-- A `[ ]` or `[x]` at the start of a list item's setext heading now shows as the heading's text instead of disappearing.
-- A footnote whose label holds wide characters (such as CJK) now lines up its continuation lines under its text.
-- A table inside a list item or blockquote now edits a cell at a time like any other table: a click lands in the cell you clicked, the cell you're in shows its raw text while the grid stays drawn, a selection highlights just the text it covers, and a drag that starts in a cell stays inside it. Before, the whole row turned back into pipes, and clicks landed a few characters off.
-- Clicking a table's border or a line between its rows puts the cursor in the cell beside the click, instead of on a pipe or in the spaces around a cell's text.
-- Search matches, selections, and the yank highlight in a table cell now show on text after bold, italic, code, or a link in the same cell, and on the right row when the cell wraps. Before, they were missing or misplaced there.
-- In a table, the cursor shows on the character it's on while you search or drag, and for a moment before the cell switches to its raw text. Before, it sat past that character, by one column on a cell's first character and further after bold, italic, code or a link.
-- The yank highlight in vim mode now covers the text you yanked on a line you're editing, in a heading, and inside a Mermaid diagram or math block you're editing, and lines below a paragraph you're editing no longer highlight a row off.
-- The cursor at the end of a line exactly as wide as the window, in Raw mode or on a line you're editing, now shows on the line's last character. Before, it disappeared.
-- A list item's second and later paragraphs now line up under its text (after the marker and any checkbox) instead of at a fixed four-column indent, and the blank lines between a list item's or a footnote's paragraphs and code blocks now show as blank rows. Before, they disappeared and the paragraphs ran together. A loose list nested in another list or a footnote also keeps the blank lines between its items now.
-- The blank line after a blockquote no longer takes on the quote's background while the cursor is on it.
-- Pasting an image on the blank line after an indented code block or an HTML block now works. Before, edamame refused, as though the cursor were inside the block.
-- In a file that starts with frontmatter, a `---` line further down (a rule at the start of a blockquote, say) no longer turns the text after it into frontmatter, which showed it as dim key/value data and left it out of HTML exports.
+- Fixed several layout bugs in lists, blockquotes and footnotes: misplaced clicks, cursor and line numbers; missing or extra blank rows; misaligned indentation of later paragraphs; and text disappearing from the start of some list items.
+- Tables inside list items and blockquotes now edit one cell at a time like any other table.
+- Fixed misplaced clicks, cursor, search matches and selection highlights in table cells containing formatting or wrapped text.
+- Fixed the cursor and vim yank highlight going missing or landing on the wrong spot in several places, including multi-line setext headings, lines exactly as wide as the window, and Mermaid or math blocks being edited.
+- Line breaks inside bold, italic or link text are now respected, and clicking a link that spans a line break opens the right URL.
+- A `---` further down a file that starts with frontmatter is no longer mistaken for more frontmatter.
+- Pasting an image on the blank line after an indented code block or HTML block now works.
 
 ## [0.1.5] - 2026-10-05
 

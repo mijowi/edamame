@@ -2,6 +2,7 @@ pub mod list;
 pub mod table;
 pub mod util;
 
+use std::borrow::Cow;
 use std::cell::Cell;
 
 use ratatui::buffer::Buffer;
@@ -706,10 +707,11 @@ impl<'t> Renderer<'t> {
         out: &mut RowSink,
         indent_prefix: &str,
     ) {
-        let reflow = self.paragraph_reflows(inlines);
+        let reflow = paragraph_reflows(self.reflow_paragraphs, inlines);
         let prefix = indent_prefix.to_string();
+        let inlines = paragraph_row_inlines(inlines, reflow);
         let mut rows =
-            paragraph_rows(inlines, src, reflow, to_u32(str_cells(indent_prefix))).peekable();
+            paragraph_rows(&inlines, src, reflow, to_u32(str_cells(indent_prefix))).peekable();
         while let Some((segment, origin)) = rows.next() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             if !prefix.is_empty() {
@@ -726,16 +728,6 @@ impl<'t> Renderer<'t> {
                 out.push(Line::from(spans), origin);
             }
         }
-    }
-
-    /// Whether a paragraph of `inlines` renders as one reflowed flow, at any depth: reflow is on
-    /// and the paragraph has no hard break.  A hard break would make the flow several logical
-    /// lines, each spanning several source lines, which the stacked reveal (one row expanding to
-    /// its source lines) can't express, so such a paragraph keeps one row per source line, as
-    /// with reflow off.  [`row_map::stacked_lines`](crate::document::row_map::stacked_lines)
-    /// asks the same question of the AST.
-    pub(crate) fn paragraph_reflows(&self, inlines: &[Inline]) -> bool {
-        self.reflow_paragraphs && paragraph_can_reflow(inlines)
     }
 
     // ── Code block ────────────────────────────────────────────────
@@ -1155,11 +1147,13 @@ impl<'t> Renderer<'t> {
                 )]
             }
 
-            Inline::SoftBreak => vec![Span::raw(" ")],
+            // In its container's style, as a space typed there would be: a reflowed link's
+            // break would otherwise cut it into two runs for one link.
+            Inline::SoftBreak => vec![Span::styled(" ", base)],
 
             Inline::HardBreak => {
                 // A space here; `render_paragraph` handles the line split.
-                vec![Span::raw(" ")]
+                vec![Span::styled(" ", base)]
             }
         }
     }
@@ -1167,9 +1161,10 @@ impl<'t> Renderer<'t> {
 
 /// A paragraph's rows: its inline segments — split at every top-level soft or hard
 /// break, unless `join` keeps them one flow — each with the origin of the lines it shows behind
-/// `prefix_cells` of prefix.  The caller renders each segment with one `render_inlines` call,
-/// so adjacent footnote references still fuse.  Never empty; lazy, so a paragraph allocates
-/// nothing here.
+/// `prefix_cells` of prefix.  `inlines` come from [`paragraph_row_inlines`], so every break is
+/// top-level and each segment starts on a line of its own.  The caller renders each segment
+/// with one `render_inlines` call, so adjacent footnote references still fuse.  Never empty;
+/// lazy, so a paragraph allocates nothing here.
 pub(super) fn paragraph_rows<'a>(
     inlines: &'a [Inline],
     src: &'a SrcLines,
@@ -1178,8 +1173,7 @@ pub(super) fn paragraph_rows<'a>(
 ) -> impl Iterator<Item = (&'a [Inline], RowOrigin)> + 'a {
     // A segment begins on a line with a content column — the first line, and every line after a
     // break — and runs through the lines after it that have none (the tail of a multi-line code
-    // span).  A break nested in emphasis or a link doesn't split the segment, but its line still
-    // has a column of its own, so the segment spans that many more.
+    // span).
     let len = src.len();
     let next_start = move |from: usize| (from..len).find(|&k| src.col(k).is_some());
     let mut line = 0usize;
@@ -1199,11 +1193,7 @@ pub(super) fn paragraph_rows<'a>(
                 line = len;
                 return (segment, RowOrigin::chrome(src.span().end.checked_sub(1)));
             };
-            let mut end = k + 1;
-            for _ in 0..nested_breaks(segment) {
-                end = next_start(end).map_or(len, |s| s + 1);
-            }
-            end = next_start(end).unwrap_or(len);
+            let end = next_start(k + 1).unwrap_or(len);
             line = end;
             let kind = if end - k > 1 {
                 ContentKind::Flow
@@ -1252,27 +1242,110 @@ pub(super) fn render_children(
     }
 }
 
-/// Whether a paragraph of `inlines` reflows when reflow is on: it has no hard break.  See
-/// [`Renderer::paragraph_reflows`].
-pub(crate) fn paragraph_can_reflow(inlines: &[Inline]) -> bool {
-    !inlines.iter().any(|i| matches!(i, Inline::HardBreak))
+/// Whether a paragraph of `inlines` renders as one reflowed flow, at any depth: `reflow` is on
+/// and the paragraph has no hard break, at any depth (`*a\⏎b*` breaks inside the emphasis).  A
+/// hard break would make the flow several logical lines, each spanning several source lines,
+/// which the stacked reveal (one row expanding to its source lines) can't express, so such a
+/// paragraph keeps one row per source line, as with reflow off.  The renderer, the link
+/// hit-test (`ui::link_view`) and
+/// [`row_map::stacked_lines`](crate::document::row_map::stacked_lines) all ask it.
+pub(crate) fn paragraph_reflows(reflow: bool, inlines: &[Inline]) -> bool {
+    reflow && !holds(inlines, |i| matches!(i, Inline::HardBreak))
 }
 
-/// Soft and hard breaks inside `inlines`' emphasis, links and highlights: line breaks that don't
-/// split a paragraph segment.
-fn nested_breaks(inlines: &[Inline]) -> usize {
+/// The inlines a paragraph's rows are cut from: as parsed when `join` keeps them one flow, else
+/// with every emphasis, link and highlight a break falls inside cut in two at it
+/// ([`split_at_breaks`]), so each source line's text is a top-level segment of its own.
+pub(crate) fn paragraph_row_inlines(inlines: &[Inline], join: bool) -> Cow<'_, [Inline]> {
+    if join {
+        Cow::Borrowed(inlines)
+    } else {
+        split_at_breaks(inlines)
+    }
+}
+
+/// `inlines` with every soft or hard break lifted to the top level: a container a break falls
+/// inside becomes two of the same kind around it (`Italic([a, ⏎, b])` → `Italic([a])`, `⏎`,
+/// `Italic([b])`), a link keeping its URL and title on both halves; a half left with nothing in
+/// it is dropped.  Borrowed when no container holds a break, as in most paragraphs.
+pub(crate) fn split_at_breaks(inlines: &[Inline]) -> Cow<'_, [Inline]> {
+    if !inlines
+        .iter()
+        .any(|i| children(i).is_some_and(|c| holds(c, is_break)))
+    {
+        return Cow::Borrowed(inlines);
+    }
+    let mut out = Vec::with_capacity(inlines.len() + 2);
+    for inline in inlines {
+        push_split(inline, &mut out);
+    }
+    Cow::Owned(out)
+}
+
+/// Push `inline` onto `out`, cut at every break inside it (see [`split_at_breaks`]).
+fn push_split(inline: &Inline, out: &mut Vec<Inline>) {
+    let Some(inner) = children(inline).filter(|c| holds(c, is_break)) else {
+        out.push(inline.clone());
+        return;
+    };
+    let mut flat = Vec::with_capacity(inner.len() + 2);
+    for child in inner {
+        push_split(child, &mut flat);
+    }
+    let mut half = Vec::new();
+    for child in flat {
+        if is_break(&child) {
+            if !half.is_empty() {
+                out.push(with_children(inline, std::mem::take(&mut half)));
+            }
+            out.push(child);
+        } else {
+            half.push(child);
+        }
+    }
+    if !half.is_empty() {
+        out.push(with_children(inline, half));
+    }
+}
+
+fn is_break(inline: &Inline) -> bool {
+    matches!(inline, Inline::SoftBreak | Inline::HardBreak)
+}
+
+/// Whether any of `inlines`, or anything inside one, satisfies `pred`.
+fn holds(inlines: &[Inline], pred: impl Fn(&Inline) -> bool + Copy) -> bool {
     inlines
         .iter()
-        .map(|i| match i {
-            Inline::SoftBreak | Inline::HardBreak => 1,
-            Inline::Bold(inner)
-            | Inline::Italic(inner)
-            | Inline::Strikethrough(inner)
-            | Inline::Highlight(inner)
-            | Inline::Link { text: inner, .. } => nested_breaks(inner),
-            _ => 0,
-        })
-        .sum()
+        .any(|i| pred(i) || children(i).is_some_and(|c| holds(c, pred)))
+}
+
+/// The inlines inside an emphasis, link or highlight; `None` for a leaf.
+fn children(inline: &Inline) -> Option<&[Inline]> {
+    match inline {
+        Inline::Bold(inner)
+        | Inline::Italic(inner)
+        | Inline::Strikethrough(inner)
+        | Inline::Highlight(inner)
+        | Inline::Link { text: inner, .. } => Some(inner),
+        _ => None,
+    }
+}
+
+/// A container of `like`'s kind (and URL, for a link) holding `inner`.  Covers every inline
+/// [`children`] answers for, and only those.
+fn with_children(like: &Inline, inner: Vec<Inline>) -> Inline {
+    match like {
+        Inline::Bold(_) => Inline::Bold(inner),
+        Inline::Italic(_) => Inline::Italic(inner),
+        Inline::Strikethrough(_) => Inline::Strikethrough(inner),
+        Inline::Highlight(_) => Inline::Highlight(inner),
+        Inline::Link { url, title, .. } => Inline::Link {
+            text: inner,
+            url: url.clone(),
+            title: title.clone(),
+        },
+        leaf => unreachable!("`children` has no container {leaf:?}"),
+    }
 }
 
 /// Where a code block's body rows take their raw columns from.
