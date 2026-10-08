@@ -26,6 +26,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 - In a table, the cursor shows on the character it's on while you search or drag, and for a moment before the cell switches to its raw text. Before, it sat past that character, by one column on a cell's first character and further after bold, italic, code or a link.
 - The yank highlight in vim mode now covers the text you yanked on a line you're editing, in a heading, and inside a Mermaid diagram or math block you're editing, and lines below a paragraph you're editing no longer highlight a row off.
 - The cursor at the end of a line exactly as wide as the window, in Raw mode or on a line you're editing, now shows on the line's last character. Before, it disappeared.
+- The blank line after a blockquote no longer takes on the quote's background while the cursor is on it.
+- Pasting an image on the blank line after an indented code block or an HTML block now works. Before, edamame refused, as though the cursor were inside the block.
 - In a file that starts with frontmatter, a `---` line further down (a rule at the start of a blockquote, say) no longer turns the text after it into frontmatter, which showed it as dim key/value data and left it out of HTML exports.
 
 ## [0.1.5] - 2026-10-05

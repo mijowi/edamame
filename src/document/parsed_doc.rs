@@ -500,13 +500,15 @@ impl ParsedDoc {
         self.per_block_own.get(block_idx).copied().unwrap_or(0)
     }
 
-    /// The post-processed [`Block`] whose *real* range contains `byte`; `None` on a blank
-    /// line.  Searches `real_ranges`, not the source map's space — the two diverge by one
-    /// per preceding blank line, so a source-map index must never index `blocks`.
+    /// The post-processed [`Block`] whose content contains `byte`, through its last line's `\n`;
+    /// `None` on a blank line, including one pulldown-cmark's range absorbs (`> q⏎⏎` is the
+    /// quote's), exactly as `build` splits those into virtual blocks.  Searches `real_ranges`,
+    /// not the source map's space — the two diverge by one per preceding blank line, so a
+    /// source-map index must never index `blocks`.
     pub fn real_block_for_byte(&self, byte: usize) -> Option<&Block> {
         let idx = self.real_ranges.partition_point(|r| r.end <= byte);
         let range = self.real_ranges.get(idx)?;
-        if byte >= range.start && byte < range.end {
+        if byte >= range.start && byte <= content_end_of_block(&self.source, range) {
             self.blocks.get(idx)
         } else {
             None
@@ -852,6 +854,34 @@ mod tests {
         assert!(!heading_range.is_empty());
         let para_range = doc.source_map.rendered_lines_for_byte(src.len() - 3);
         assert!(!para_range.is_empty());
+    }
+
+    /// A blank line the block above's range absorbs is a blank line, not that block: the quote's
+    /// range `> q⏎> r⏎⏎` ends past the blank, but only its own lines (and the last one's `\n`)
+    /// answer the quote.
+    #[test]
+    fn real_block_for_byte_is_none_on_a_blank_line_a_range_absorbs() {
+        let src = "para\n\n> q\n> r\n\nafter\n";
+        let doc = ParsedDoc::build(src, theme(), false, 24);
+        let quote_start = src.find('>').unwrap();
+        let quote_last_newline = src.find("r\n").unwrap() + 1;
+        let blank_after_quote = quote_last_newline + 1;
+        assert!(matches!(
+            doc.real_block_for_byte(quote_start),
+            Some(Block::BlockQuote { .. })
+        ));
+        assert!(matches!(
+            doc.real_block_for_byte(quote_last_newline),
+            Some(Block::BlockQuote { .. })
+        ));
+        assert!(doc.real_block_for_byte(blank_after_quote).is_none());
+        assert!(doc
+            .real_block_for_byte(src.find("\n\n").unwrap() + 1)
+            .is_none());
+        assert!(matches!(
+            doc.real_block_for_byte(src.find("after").unwrap()),
+            Some(Block::Paragraph { .. })
+        ));
     }
 
     #[test]

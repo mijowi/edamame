@@ -841,6 +841,56 @@ fn blockquote_wash_fills_the_row_and_survives_the_raw_reveal() {
     }
 }
 
+/// The blank line after a quote is not in the quote, though pulldown-cmark's range for the quote
+/// absorbs it: with the cursor there, the revealed blank row takes the normal background, not
+/// the quote's wash.
+#[test]
+fn a_blank_line_after_a_quote_reveals_without_its_wash() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "> quoted\n\nafter\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor on the blank line (row 1), which is revealed with no reveal delay pending.
+    state.cursor.offset = src.find("\n\n").unwrap() + 1;
+
+    let backend = TestBackend::new(20, 4);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let wash = theme.blockquote_text.bg;
+    assert_eq!(
+        buf.cell((5, 0)).unwrap().style().bg,
+        wash,
+        "the quote row keeps its wash"
+    );
+    // Col 0 carries the block cursor.
+    for x in 1..20u16 {
+        assert_ne!(
+            buf.cell((x, 1)).unwrap().style().bg,
+            wash,
+            "the blank row after the quote must not take its wash at col {x}"
+        );
+    }
+}
+
 #[test]
 fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     use edamame::document::{Buffer, Selection};

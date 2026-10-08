@@ -145,12 +145,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
 
-        let cursor_block_ast = editor
-            .parsed
-            .real_ranges
-            .iter()
-            .position(|r| r.start <= cursor_byte && cursor_byte < r.end)
-            .and_then(|i| editor.parsed.blocks.get(i));
+        // `None` on a blank line, including one the block above's range absorbs, so a blank
+        // after a quote doesn't take its wash.
+        let cursor_block_ast = editor.parsed.real_block_for_byte(cursor_byte);
         let is_setext = cursor_block_ast.is_some_and(crate::markdown::Block::is_setext_heading);
         // Diagram blocks (mermaid fences and `$$...$$` math) are synthetic `Block::ImageBlock`s;
         // with the cursor inside, every reserved row shows the corresponding raw line, like a

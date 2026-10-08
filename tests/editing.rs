@@ -1652,6 +1652,30 @@ fn can_insert_image_reference_in_preview_judges_the_synced_spot_without_moving()
 }
 
 #[test]
+fn can_insert_image_reference_on_the_blank_line_after_a_block_that_absorbs_it() {
+    // pulldown-cmark's range for an indented code block or an HTML block runs past the blank
+    // line after it.  The blank is still a blank line, where an image becomes its own paragraph;
+    // inside the block itself the insert stays refused.
+    for (src, inside) in [
+        ("    code\n\nprose\n", "code"),
+        ("<div>x</div>\n\nprose\n", "x"),
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.cursor.offset = src.find("\n\n").unwrap() + 1;
+        assert!(
+            edit_ops::can_insert_image_reference(&mut st, 24),
+            "on the blank line in {src:?}"
+        );
+        st.cursor.offset = src.find(inside).unwrap();
+        assert!(
+            !edit_ops::can_insert_image_reference(&mut st, 24),
+            "inside the block in {src:?}"
+        );
+    }
+}
+
+#[test]
 fn insert_image_reference_in_a_table_nested_in_a_quote_escapes_pipes() {
     // The block lookup sees the quote, not the table inside it, so every container escapes `|`.
     let src = "> | a |\n> |---|\n> | c |\n";
