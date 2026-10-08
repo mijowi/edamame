@@ -918,12 +918,17 @@ fn check_click_and_paint_from(
 /// [`check_click_and_paint`] over the corpus, wide and wrapping.
 #[test]
 fn clicking_where_the_cursor_shows_keeps_it_there() {
-    for src in CORPUS {
-        for width in [40, 12] {
-            check_click_and_paint(src, width)
-                .unwrap_or_else(|e| panic!("width {width}: {e}\nin {src:?}"));
+    // A paint and two clicks per cell: the cases are independent, so they run on threads.
+    std::thread::scope(|scope| {
+        for src in CORPUS {
+            for width in [40, 12] {
+                scope.spawn(move || {
+                    check_click_and_paint(src, width)
+                        .unwrap_or_else(|e| panic!("width {width}: {e}\nin {src:?}"));
+                });
+            }
         }
-    }
+    });
 }
 
 /// Corpus entries [`clicking_around_a_revealed_row_keeps_the_cursor_where_it_shows`] skips at
@@ -943,28 +948,36 @@ const KNOWN_REVEALED_MISSES: &[&str] = &[
 /// each of its lines and every other row reveals in place.
 #[test]
 fn clicking_around_a_revealed_row_keeps_the_cursor_where_it_shows() {
-    for src in CORPUS {
-        let mut line_start = 0;
-        for line in src.split_inclusive('\n') {
-            let content = line.trim_end();
-            if !content.trim().is_empty() {
-                let mid = content
-                    .char_indices()
-                    .nth(content.chars().count() / 2)
-                    .unwrap()
-                    .0;
-                let at = line_start + mid;
-                for width in [40, 12] {
-                    if width == 12 && KNOWN_REVEALED_MISSES.contains(src) {
-                        continue;
-                    }
-                    check_click_and_paint_from(src, width, Some(at)).unwrap_or_else(|e| {
-                        panic!("width {width}, cursor at {at}: {e}\nin {src:?}")
-                    });
-                }
-            }
-            line_start += line.len();
+    // Each document is independent and costs a paint and two clicks per cell per cursor line,
+    // so the corpus is spread over threads.
+    std::thread::scope(|scope| {
+        for src in CORPUS {
+            scope.spawn(|| check_revealed_on_every_line(src));
         }
+    });
+}
+
+/// [`check_click_and_paint_from`] on `src`, the cursor mid-line on each non-blank line in turn.
+fn check_revealed_on_every_line(src: &str) {
+    let mut line_start = 0;
+    for line in src.split_inclusive('\n') {
+        let content = line.trim_end();
+        if !content.trim().is_empty() {
+            let mid = content
+                .char_indices()
+                .nth(content.chars().count() / 2)
+                .unwrap()
+                .0;
+            let at = line_start + mid;
+            for width in [40, 12] {
+                if width == 12 && KNOWN_REVEALED_MISSES.contains(&src) {
+                    continue;
+                }
+                check_click_and_paint_from(src, width, Some(at))
+                    .unwrap_or_else(|e| panic!("width {width}, cursor at {at}: {e}\nin {src:?}"));
+            }
+        }
+        line_start += line.len();
     }
 }
 
@@ -975,7 +988,7 @@ fn clicking_around_a_revealed_row_keeps_the_cursor_where_it_shows() {
 /// each depth.
 #[test]
 fn clicking_a_revealed_nested_flow_keeps_the_cursor_where_it_shows() {
-    for (src, needles) in [
+    let cases: &[(&str, &[&str])] = &[
         (
             "> first para\n>\n> alpha bravo\n> charlie *delta\n> echo* foxtrot\n>\n> last\n",
             &["charlie", "alpha"][..],
@@ -1002,26 +1015,33 @@ fn clicking_a_revealed_nested_flow_keeps_the_cursor_where_it_shows() {
         ),
         ("> alpha\nlazy line\n\nafter\n", &["lazy"]),
         ("- alpha\nlazy line\n", &["lazy"]),
-    ] {
-        for needle in needles {
-            let at = src.find(needle).unwrap();
-            for width in [40, 12] {
-                // The cursor's paragraph must actually stack, or this tests nothing new.
-                let mut st = EditorState::new(Buffer::from_str(src), theme());
-                st.mode = Mode::Rendered;
-                st.set_viewport_width(width);
-                st.cursor.offset = st.buffer.rope().byte_to_char(at);
-                st.update_cursor_block();
-                st.cursor_block_entered_at = None;
-                assert!(
-                    st.effective_rows(width).has_reveal(),
-                    "{needle:?} must reveal stacked in {src:?}"
-                );
-                check_click_and_paint_from(src, width as u16, Some(at))
-                    .unwrap_or_else(|e| panic!("width {width}, at {needle:?}: {e}\nin {src:?}"));
+    ];
+    // The cases are independent and each clicks every painted cell, so they run on threads.
+    std::thread::scope(|scope| {
+        for &(src, needles) in cases {
+            for &needle in needles {
+                for width in [40, 12] {
+                    scope.spawn(move || {
+                        let at = src.find(needle).unwrap();
+                        // The cursor's paragraph must actually stack, or this tests nothing new.
+                        let mut st = EditorState::new(Buffer::from_str(src), theme());
+                        st.mode = Mode::Rendered;
+                        st.set_viewport_width(width);
+                        st.cursor.offset = st.buffer.rope().byte_to_char(at);
+                        st.update_cursor_block();
+                        st.cursor_block_entered_at = None;
+                        assert!(
+                            st.effective_rows(width).has_reveal(),
+                            "{needle:?} must reveal stacked in {src:?}"
+                        );
+                        check_click_and_paint_from(src, width as u16, Some(at)).unwrap_or_else(
+                            |e| panic!("width {width}, at {needle:?}: {e}\nin {src:?}"),
+                        );
+                    });
+                }
             }
         }
-    }
+    });
 }
 
 /// A revealed footnote paragraph, first or later, stacks like any nested one: every click, wide
@@ -1030,23 +1050,28 @@ fn clicking_a_revealed_nested_flow_keeps_the_cursor_where_it_shows() {
 #[test]
 fn clicking_a_revealed_footnote_flow_keeps_the_cursor_where_it_shows() {
     let src = "ref[^n]\n\n[^n]: note one\n    two three\n\n    second para\n    more words\n";
-    for needle in ["note", "three", "second", "words"] {
-        let at = src.find(needle).unwrap();
-        for width in [40, 12] {
-            let mut st = EditorState::new(Buffer::from_str(src), theme());
-            st.mode = Mode::Rendered;
-            st.set_viewport_width(width);
-            st.cursor.offset = st.buffer.rope().byte_to_char(at);
-            st.update_cursor_block();
-            st.cursor_block_entered_at = None;
-            assert!(
-                st.effective_rows(width).has_reveal(),
-                "{needle:?} must reveal stacked"
-            );
-            check_click_and_paint_from(src, width as u16, Some(at))
-                .unwrap_or_else(|e| panic!("width {width}, at {needle:?}: {e}"));
+    // The cases are independent and each clicks every painted cell, so they run on threads.
+    std::thread::scope(|scope| {
+        for needle in ["note", "three", "second", "words"] {
+            for width in [40, 12] {
+                scope.spawn(move || {
+                    let at = src.find(needle).unwrap();
+                    let mut st = EditorState::new(Buffer::from_str(src), theme());
+                    st.mode = Mode::Rendered;
+                    st.set_viewport_width(width);
+                    st.cursor.offset = st.buffer.rope().byte_to_char(at);
+                    st.update_cursor_block();
+                    st.cursor_block_entered_at = None;
+                    assert!(
+                        st.effective_rows(width).has_reveal(),
+                        "{needle:?} must reveal stacked"
+                    );
+                    check_click_and_paint_from(src, width as u16, Some(at))
+                        .unwrap_or_else(|e| panic!("width {width}, at {needle:?}: {e}"));
+                });
+            }
         }
-    }
+    });
 }
 
 proptest! {

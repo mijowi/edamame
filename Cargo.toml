@@ -300,8 +300,11 @@ harness = false
 incremental = false
 debug = "line-tables-only"
 
+# Dependencies are optimized: rebuilt only when they change, while the slow paths the tests drive
+# (ropey, pulldown-cmark, ratatui, syntect) run several times faster than at opt-level 0.
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
 
 # The profile that 'dist' will build with
 [profile.dist]
