@@ -206,6 +206,94 @@ fn cross_line_click_still_sets_drag_in_progress() {
     );
 }
 
+/// The cursor's line revealed at once, as after a dwell.
+fn revealed_on_first_line(src: &str) -> EditorState {
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    assert!(st.cursor_block_revealed());
+    st
+}
+
+#[test]
+fn a_drag_from_the_cursors_line_turns_the_reveal_off_until_mouse_up() {
+    let mut st = revealed_on_first_line("first paragraph here\n\nsecond paragraph here\n");
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(10, 0), &mut anchor, &[], VP, VW);
+    assert!(
+        st.cursor_block_revealed(),
+        "the press alone keeps the reveal"
+    );
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 3, row: 2 },
+        &mut anchor,
+        &[],
+        VP,
+        VW,
+    );
+    assert!(st.drag_in_progress);
+    assert!(
+        !st.cursor_block_revealed(),
+        "a drag onto another line must not reveal it"
+    );
+
+    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
+    assert!(
+        !st.cursor_block_revealed(),
+        "the reveal waits out the delay after mouse-up",
+    );
+    st.cursor_block_entered_at = Some(Instant::now() - edamame::editor::RAW_REVEAL_DELAY);
+    assert!(st.cursor_block_revealed());
+}
+
+#[test]
+fn a_drag_along_the_cursors_line_collapses_it_until_the_delay_after_mouse_up() {
+    let mut st = revealed_on_first_line("first paragraph here\n\nsecond paragraph here\n");
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(2, 0), &mut anchor, &[], VP, VW);
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 12, row: 0 },
+        &mut anchor,
+        &[],
+        VP,
+        VW,
+    );
+    assert_eq!(st.cursor_line_idx, Some(0));
+    assert!(!st.cursor_block_revealed());
+
+    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
+    assert!(
+        !st.cursor_block_revealed(),
+        "a drag that never left its line still re-arms the delay",
+    );
+}
+
+#[test]
+fn a_drag_that_does_not_move_the_cursor_keeps_the_reveal() {
+    let mut st = revealed_on_first_line("first paragraph here\n\nsecond paragraph here\n");
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(10, 0), &mut anchor, &[], VP, VW);
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 10, row: 0 },
+        &mut anchor,
+        &[],
+        VP,
+        VW,
+    );
+    assert!(!st.drag_in_progress);
+    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
+    assert!(
+        st.cursor_block_revealed(),
+        "a press-release on the cursor's line keeps it"
+    );
+}
+
 #[test]
 fn same_line_click_inside_table_still_sets_drag_in_progress() {
     // Tables have cell-based reveal — a click on a different cell of
@@ -3070,6 +3158,43 @@ fn same_mermaid_block_click_does_not_set_drag_in_progress() {
     assert!(
         st.cursor_block_revealed(),
         "intra-mermaid click must keep raw reveal active",
+    );
+}
+
+#[test]
+fn a_drag_within_a_revealed_mermaid_block_keeps_it_revealed() {
+    // The press exemption above, carried through the drag: hiding the reveal would put the image
+    // back over the source being selected.
+    let src = "```mermaid\nflowchart TD\nA-->B\nB-->C\n```\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("flowchart").unwrap();
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    st.latch_cursor_reveal();
+    assert!(st.cursor_block_revealed() && st.cursor_reveal_latched);
+
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(0, 2), &mut anchor, &[], VP, VW);
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 3, row: 3 },
+        &mut anchor,
+        &[],
+        VP,
+        VW,
+    );
+    assert!(st.selection.is_some_and(|s| s.anchor != s.active));
+    assert!(!st.drag_in_progress);
+    assert!(
+        st.cursor_block_revealed() && st.cursor_reveal_latched,
+        "a drag inside the diagram must not flash its image back in",
+    );
+
+    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
+    assert!(
+        st.cursor_block_revealed(),
+        "the latch holds the reveal past mouse-up"
     );
 }
 

@@ -23,6 +23,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Editing a line that shows on a row together with others, such as a heading written over several lines, a link definition inside a quote, or a bare `-` list marker, now shows all of those lines instead of hiding some or drawing over the next.
 - A `---` further down a file that starts with frontmatter is no longer mistaken for more frontmatter.
 - Pasting an image on the blank line after an indented code block or HTML block now works.
+- Dragging to select no longer switches lines between rendered and Markdown source mid-drag.
 
 ## [0.1.5] - 2026-10-05
 

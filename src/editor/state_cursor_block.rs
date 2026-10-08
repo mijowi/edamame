@@ -75,6 +75,16 @@ impl EditorState {
         self.cursor_blink.reset();
     }
 
+    /// [`Self::update_cursor_block`] as if the cursor had just entered its block and line: the
+    /// latch drops and the reveal delay restarts (or, off a stacked row's first line, reveals at
+    /// once).  A text drag calls it on every move, so after mouse-up the reveal waits out
+    /// [`RAW_REVEAL_DELAY`] from the drag's last move even when the drag never left its line.
+    pub fn rearm_cursor_reveal(&mut self) {
+        self.cursor_block_idx = None;
+        self.cursor_line_idx = None;
+        self.update_cursor_block();
+    }
+
     /// Whether the cursor should be painted this frame.
     pub fn cursor_visible(&self) -> bool {
         self.terminal_focused

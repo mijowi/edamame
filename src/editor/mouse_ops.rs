@@ -568,9 +568,9 @@ pub fn apply(
 
                 // Setting `drag_in_progress` makes `cursor_block_revealed()` false until
                 // mouse-up, so a click on the cursor's own line would flash raw → rendered →
-                // raw.  Skip the flag there — except in tables, whose cell-based reveal needs
-                // the suppression to track which cell was clicked — and within a mermaid block,
-                // which reveals as a unit and would flash its image back in.
+                // raw.  Skip the flag there (the `Drag` arm sets it once the cursor moves) —
+                // except in tables, whose cell-based reveal needs the suppression to track which
+                // cell was clicked — and within one diagram block ([`in_one_diagram_block`]).
                 let new_line = state.buffer.char_to_line(new_offset);
                 let same_logical_line = state.cursor_line_idx == Some(new_line);
                 // Asked of the cursor row's origin, so a table nested in a list or a quote counts.
@@ -580,15 +580,8 @@ pub fn apply(
                     );
                     row_map::table_row(&state.parsed, idx, row).is_some()
                 });
-                // Diagram blocks (mermaid fences, `$$...$$` math) reveal as a single unit, so a
-                // click on another line inside the same block must not drop drag suppression and
-                // flash the image back in for the click-to-mouseup window.
-                let new_block_idx = state
-                    .parsed
-                    .source_map
-                    .block_for_byte(state.buffer.rope().char_to_byte(new_offset));
-                let same_diagram_block = new_block_idx == state.cursor_block_idx
-                    && new_block_idx.is_some_and(|idx| state.parsed.is_diagram_reveal_block(idx));
+                let same_diagram_block =
+                    in_one_diagram_block(state, state.cursor.offset, new_offset);
                 let suppress_drag_flag =
                     (same_logical_line && !cursor_row_is_table) || same_diagram_block;
 
@@ -682,10 +675,20 @@ pub fn apply(
                     if let Some((lo, hi)) = cell {
                         active = active.clamp(lo, hi);
                     }
+                    // The reveal stays off from the first move until mouse-up, whichever line the
+                    // press was on: revealing as the drag goes would shift text under the pointer.
+                    // A drag within one diagram is exempt, as its press is.
+                    let hide_reveal = active != state.cursor.offset
+                        && !in_one_diagram_block(state, anchor, active);
                     state.cursor.offset = active;
                     state.cursor.preferred_col = state.current_visual_col(viewport_width);
                     state.selection = Some(Selection { anchor, active });
-                    state.update_cursor_block();
+                    if hide_reveal {
+                        state.drag_in_progress = true;
+                        state.rearm_cursor_reveal();
+                    } else {
+                        state.update_cursor_block();
+                    }
                     state.ensure_cursor_visible(viewport_height, viewport_width);
                 }
             }
@@ -786,6 +789,20 @@ pub fn apply(
             scroll_by_mouse(state, delta, viewport_width);
         }
     }
+}
+
+/// Whether char offsets `a` and `b` lie in the same diagram block (mermaid fence, `$$...$$`
+/// math).  A diagram reveals as a single unit, so a press or drag that stays inside one must not
+/// set `drag_in_progress`: that would flash the image back in over the source being selected.
+fn in_one_diagram_block(state: &EditorState, a: usize, b: usize) -> bool {
+    let block = |offset: usize| {
+        state
+            .parsed
+            .source_map
+            .block_for_byte(state.buffer.rope().char_to_byte(offset))
+    };
+    let a_block = block(a);
+    a_block == block(b) && a_block.is_some_and(|idx| state.parsed.is_diagram_reveal_block(idx))
 }
 
 /// Index of the image block whose reserved rendered lines contain doc-relative `row` (scroll

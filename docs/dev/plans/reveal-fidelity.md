@@ -1,6 +1,6 @@
 # Reveal fidelity — follow-ups from the row-provenance smoke test
 
-Status: **IN PROGRESS** — steps 1, B, C and A done (2026-10-08); 8 remains. Fixes found by testing `tests/fixtures/row_provenance.md` after [`row-provenance.md`](row-provenance.md) landed. Table editing inside a quote is out of scope: it's tracked by #74.
+Status: **DONE** (2026-10-08). Fixes found by testing `tests/fixtures/row_provenance.md` after [`row-provenance.md`](row-provenance.md) landed. Table editing inside a quote is out of scope: it's tracked by #74.
 
 ## Problem
 
@@ -62,12 +62,18 @@ Deviations:
   - The `==x⏎y==` generator case from C exposed an older bug. `InlineColMap` parsed without `ENABLE_MATH`, so `y== $a$ ==x` read as one text run holding a highlight, where the parser splits it at the math. Math now maps as its delimited source (`math_splits_the_text_around_it`).
   - The click round trip held the reveal off with a running 120 ms delay, which the threaded runs from `644c5c0` could outlast mid-check. The delay is now started an hour out.
 
-### 8. A drag never changes the reveal mid-drag (S)
+### 8. A drag never changes the reveal mid-drag (S) — done
 
 - Rule: once the pointer moves, the reveal is off until mouse-up, whichever line the press was on. A press on the cursor's line still leaves `drag_in_progress` unset, so a plain click doesn't flash. The first `Drag` event that moves the cursor sets it.
 - Trade-off: a drag that starts on a revealed row collapses that row once, at the start, before the pointer has gone far. Revealing as the drag goes would move text under a stationary pointer on every row, and stacked paragraphs would change height. Keyboard selection (vim `v`, Shift+arrows) keeps its live reveal, which is where seeing the Markdown being selected is reliable.
 - After mouse-up, the cursor's line reveals after the usual `RAW_REVEAL_DELAY`; check that this already holds.
 - Tests (`tests/mouse.rs`): a press on the cursor's line followed by a drag onto another line leaves `cursor_block_revealed()` false; a press-release on the cursor's line keeps it true.
+
+Done as planned: the `Drag` arm sets `drag_in_progress` on the first event that moves the cursor (`mouse_ops::apply`). Tests: `a_drag_from_the_cursors_line_turns_the_reveal_off_until_mouse_up`, `a_drag_along_the_cursors_line_collapses_it_until_the_delay_after_mouse_up`, `a_drag_that_does_not_move_the_cursor_keeps_the_reveal` (`tests/mouse.rs`).
+
+Deviation:
+- **The post-mouse-up delay didn't hold.** The delay re-arms only on a buffer-line change, so a drag that stayed on its line, or moved within a latched stacked row, revealed the instant the button came up. Each moving `Drag` now re-arms the reveal as a fresh entry (`EditorState::rearm_cursor_reveal`: the latch drops and the delay restarts, or a stacked row entered off its first line reveals at once, as on any entry), so the line reveals `RAW_REVEAL_DELAY` after the drag's last move. Re-arming at mouse-up instead would also have delayed a plain click's reveal of a different table cell, or of a stacked row entered off its first line, which reveal on release today.
+- **A drag inside a diagram keeps its reveal.** The press already left the flag unset within the cursor's mermaid or `$$` block; setting it on the first move put the image back over the source being selected. A drag whose anchor and cursor share one diagram block now neither sets the flag nor re-arms (`in_one_diagram_block`, shared by the press and the drag; test `a_drag_within_a_revealed_mermaid_block_keeps_it_revealed`).
 
 ## Docs
 
