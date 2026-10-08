@@ -19,6 +19,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
@@ -614,7 +615,7 @@ fn row_value_width(row: &RowDef, config: &Config, theme_names: &[String]) -> usi
         Some(Control::Toggle) => controls::toggle_width(),
         Some(Control::Pill(labels)) => controls::pill_width(labels),
         Some(Control::Button(label)) => controls::button_width(label),
-        None => (row.kind.read)(config, theme_names).chars().count(),
+        None => (row.kind.read)(config, theme_names).width(),
     }
 }
 

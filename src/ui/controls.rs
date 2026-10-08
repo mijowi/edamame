@@ -22,6 +22,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::{ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::cursor::scrolled_field_spans;
@@ -220,7 +221,7 @@ pub fn button_style(focused: bool, theme: &Theme) -> Style {
 
 /// Width of a `[ label ]` chip; must match [`super::button_row::Button`]'s width math.
 pub fn button_width(label: &str) -> usize {
-    label.chars().count() + 4
+    label.width() + 4
 }
 
 /// Spans for an inline button chip in a row's value column; same style as a footer button.
@@ -338,7 +339,7 @@ pub fn apply_images_cascade(
 
 /// Pill width over `labels`: widest label + 4 framing cells, so rows never jitter as it cycles.
 pub fn pill_width(labels: &[&str]) -> usize {
-    max_label_chars(labels) + 4
+    max_label_cells(labels) + 4
 }
 
 /// Spans for the pill's current value.  The arrows are always present: they advertise cycling.
@@ -349,7 +350,7 @@ pub fn pill_spans(
     disabled: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let slot = max_label_chars(labels);
+    let slot = max_label_cells(labels);
     let label = labels.get(current_index).copied().unwrap_or("");
     let text = format!("‹ {} ›", center(label, slot));
     let style = if disabled {
@@ -415,13 +416,15 @@ pub fn toggle_spans(on: bool, _focused: bool, disabled: bool, theme: &Theme) -> 
 
 // ── Internals ───────────────────────────────────────────────────────────────
 
-fn max_label_chars(labels: &[&str]) -> usize {
-    labels.iter().map(|l| l.chars().count()).max().unwrap_or(0)
+/// The widest label in cells: pill labels can be user file names (the export modal's
+/// stylesheets), so a char count would size the slot short of a wide one.
+fn max_label_cells(labels: &[&str]) -> usize {
+    labels.iter().map(|l| l.width()).max().unwrap_or(0)
 }
 
-/// Center `label` in a `width`-char slot, biasing extra padding to the right.
+/// Center `label` in a `width`-cell slot, biasing extra padding to the right.
 fn center(label: &str, width: usize) -> String {
-    let n = label.chars().count();
+    let n = label.width();
     if n >= width {
         return label.to_owned();
     }
@@ -459,6 +462,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A wide label (a user stylesheet's file name) is measured in cells: the pill keeps one
+    /// width, the wide one's, as it cycles.  It once counted chars, sizing the slot 7 short.
+    #[test]
+    fn pill_width_counts_cells_for_wide_labels() {
+        let labels: &[&str] = &["default.css", "日本語スタイル.css"];
+        assert_eq!(pill_width(labels), 22);
+        for idx in 0..labels.len() {
+            let spans = pill_spans(labels, idx, false, false, theme());
+            assert_eq!(
+                UnicodeWidthStr::width(spans_text(&spans).as_str()),
+                22,
+                "value {idx}"
+            );
+        }
+        assert_eq!(button_width("日本語"), 10);
     }
 
     #[test]

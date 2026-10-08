@@ -10,6 +10,7 @@
 use crate::editor::footnote_edit;
 use crate::editor::link::LinkTarget;
 use crate::editor::EditorState;
+use crate::ui::line_render;
 
 use super::coord::rendered_line_at_row;
 
@@ -44,21 +45,34 @@ pub fn footnote_at_offset(source: &str, byte: usize) -> Option<LinkTarget> {
 }
 
 /// The [`LinkTarget::FootnoteBack`] target when a rendered `(col, row)` lands on a definition's
-/// trailing `↩` glyph.  The hit zone is exactly `" ↩"`; a click past the glyph places the
-/// cursor at line end instead.
+/// trailing `↩` glyph.  The hit zone is exactly `" ↩"` as painted: the glyph's cell on the
+/// definition's last wrapped row, and the space before it when the wrap left that on the same
+/// row.  A click past the glyph places the cursor at line end instead.  Located by where the
+/// glyph paints, not by the line's char count, which matches its cell only on an unwrapped row
+/// of single-cell chars (issue #60).
 pub(super) fn back_link_glyph_at_click(
     state: &EditorState,
     col: u16,
     row: u16,
 ) -> Option<LinkTarget> {
-    let (line, _) = rendered_line_at_row(state, row as usize)?;
-    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    let glyph_col = total.checked_sub(1)?;
-    let col = col as usize;
-    if col != glyph_col && col != glyph_col.saturating_sub(1) {
+    let (line, sub_row) = rendered_line_at_row(state, row as usize)?;
+    if line.spans.iter().flat_map(|s| s.content.chars()).last() != Some(BACK_LINK_GLYPH) {
         return None;
     }
-    if line.spans.iter().flat_map(|s| s.content.chars()).last() != Some(BACK_LINK_GLYPH) {
+    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let width = state.viewport_width;
+    let (glyph_row, glyph) = line_render::char_cells_at(&line, width, total - 1)?;
+    if glyph_row != sub_row {
+        return None;
+    }
+    let zone_start = match total
+        .checked_sub(2)
+        .and_then(|i| line_render::char_cells_at(&line, width, i))
+    {
+        Some((space_row, space)) if space_row == glyph_row => space.start,
+        _ => glyph.start,
+    };
+    if !(zone_start..glyph.end).contains(&(col as usize)) {
         return None;
     }
     let (line_idx, _) = state.rendered_line_at_visual_row(

@@ -254,7 +254,12 @@ pub fn insert_row(info: &TableInfo, row_idx: usize, below: bool) -> (EditDelta, 
     // The alignment row must stay at index 1, so an earlier target inserts just after it.
     let target_idx = target_idx.max(2).min(info.rows.len());
 
-    let new_row = empty_row_text(info.col_count);
+    // The row above (the alignment row at the earliest) supplies the container indent.
+    let new_row = format!(
+        "{}{}",
+        info.rows[target_idx - 1].prefix(),
+        empty_row_text(info.col_count)
+    );
     let offset = if target_idx < info.rows.len() {
         info.rows[target_idx].start
     } else {
@@ -340,6 +345,7 @@ pub fn insert_column(info: &TableInfo, col_idx: usize, right: bool) -> EditDelta
 
     for row in &info.rows {
         let new_cells = insert_blank_cell(&row.cells, target_col, row.kind);
+        inserted.push_str(row.prefix());
         inserted.push_str(&rebuild_row(&new_cells));
         if row.raw_ends_with_newline_or_next_exists(info) {
             inserted.push('\n');
@@ -370,6 +376,7 @@ pub fn delete_column(info: &TableInfo, col_idx: usize) -> Option<EditDelta> {
         if col_idx < new_cells.len() {
             new_cells.remove(col_idx);
         }
+        inserted.push_str(row.prefix());
         inserted.push_str(&rebuild_row(&new_cells));
         if row.raw_ends_with_newline_or_next_exists(info) {
             inserted.push('\n');
@@ -404,6 +411,7 @@ pub fn swap_columns(info: &TableInfo, a: usize, b: usize) -> Option<EditDelta> {
         if lo < new_cells.len() && hi < new_cells.len() {
             new_cells.swap(lo, hi);
         }
+        inserted.push_str(row.prefix());
         inserted.push_str(&rebuild_row(&new_cells));
         if row.raw_ends_with_newline_or_next_exists(info) {
             inserted.push('\n');
@@ -422,7 +430,12 @@ pub fn swap_columns(info: &TableInfo, a: usize, b: usize) -> Option<EditDelta> {
 /// Insert or replace the `<!-- tui-columns: [..] -->` comment row immediately after the table,
 /// as one `EditDelta` so the resize and the comment update undo together.
 pub fn write_column_widths(source: &str, info: &TableInfo, widths: &[Option<usize>]) -> EditDelta {
-    let mut comment = table_layout::format_column_widths_comment(widths);
+    // Indented like the table, so a table inside a list item keeps its comment in the item.
+    let mut comment = format!(
+        "{}{}",
+        info.rows.first().map_or("", TableRow::prefix),
+        table_layout::format_column_widths_comment(widths)
+    );
     comment.push('\n');
 
     if let Some(existing) = find_existing_widths_comment(source, info.end) {
@@ -477,6 +490,13 @@ fn advance_past_one_newline(source: &str, pos: usize) -> usize {
 // ─── Row text helpers ────────────────────────────────────────────────────────
 
 impl TableRow {
+    /// The text before the row's first `|`: a list item's indent.  [`find_table_at`] accepts a
+    /// row only when it starts with whitespace and `|`, so this is never more than whitespace.
+    /// Every writer re-emits it, or an edit would move the row out of its list item (issue #75).
+    fn prefix(&self) -> &str {
+        &self.raw[..self.raw.find('|').unwrap_or(0)]
+    }
+
     fn raw_ends_with_newline(&self) -> bool {
         self.end > self.start + self.raw.len()
     }
@@ -774,6 +794,8 @@ fn alignment_row_text(col_count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markdown::parser::parse;
+    use crate::markdown::{inlines_to_plain, Block, Inline};
 
     fn src_offset_of(src: &str, needle: &str) -> usize {
         src.find(needle).expect("needle not found")
@@ -1167,5 +1189,130 @@ mod tests {
             "alignment row missing dashes, got {:?}",
             delta.inserted
         );
+    }
+
+    // ── Tables inside a list item (issue #75) ────────────────────────────────
+
+    /// A two-row table inside an item, one and two list levels deep.
+    const NESTED: [&str; 2] = [
+        "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n  | 3 | 4 |\n",
+        "- outer\n\n  - inner\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n    | 3 | 4 |\n",
+    ];
+
+    /// `src` with `delta` (byte offsets) applied.
+    fn apply(src: &str, delta: &EditDelta) -> String {
+        let end = delta.offset + delta.removed.len();
+        assert_eq!(&src[delta.offset..end], delta.removed);
+        format!("{}{}{}", &src[..delta.offset], delta.inserted, &src[end..])
+    }
+
+    /// The cells of the one table in `src`, header first.  It must sit in an item's blocks, with
+    /// the list the document's only block: the edit kept the table inside its list item.
+    fn nested_table_cells(src: &str) -> Vec<Vec<String>> {
+        fn find(blocks: &[Block]) -> Option<&Block> {
+            blocks.iter().find_map(|b| match b {
+                Block::List { items, .. } => items.iter().find_map(|it| find(&it.blocks)),
+                Block::Table { .. } => Some(b),
+                _ => None,
+            })
+        }
+        let blocks = parse(src);
+        assert!(
+            matches!(blocks.as_slice(), [Block::List { .. }]),
+            "everything stays in the list:\n{src}"
+        );
+        let Some(Block::Table { headers, rows, .. }) = find(&blocks) else {
+            panic!("no table inside the item:\n{src}");
+        };
+        let plain = |cells: &Vec<Vec<Inline>>| {
+            cells
+                .iter()
+                .map(|c| inlines_to_plain(c).trim().to_owned())
+                .collect::<Vec<_>>()
+        };
+        std::iter::once(plain(headers))
+            .chain(rows.iter().map(plain))
+            .collect()
+    }
+
+    fn nested_info(src: &str) -> TableInfo {
+        find_table_at(src, src.find("| 1").unwrap()).expect("table")
+    }
+
+    fn cells(rows: &[&[&str]]) -> Vec<Vec<String>> {
+        rows.iter()
+            .map(|r| r.iter().map(|c| (*c).to_owned()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn row_edits_keep_a_nested_table_in_its_item() {
+        for src in NESTED {
+            let info = nested_info(src);
+            let (delta, _) = insert_row(&info, 2, true);
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["a", "b"], &["1", "2"], &["", ""], &["3", "4"]])
+            );
+            let (delta, _) = insert_row(&info, 3, true);
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["a", "b"], &["1", "2"], &["3", "4"], &["", ""]])
+            );
+            let delta = delete_row(&info, 2).unwrap();
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["a", "b"], &["3", "4"]])
+            );
+            let delta = swap_rows(&info, 2, 3).unwrap();
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["a", "b"], &["3", "4"], &["1", "2"]])
+            );
+        }
+    }
+
+    #[test]
+    fn column_edits_keep_a_nested_table_in_its_item() {
+        for src in NESTED {
+            let info = nested_info(src);
+            let delta = insert_column(&info, 0, true);
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["a", "", "b"], &["1", "", "2"], &["3", "", "4"]])
+            );
+            let delta = delete_column(&info, 0).unwrap();
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["b"], &["2"], &["4"]])
+            );
+            let delta = swap_columns(&info, 0, 1).unwrap();
+            assert_eq!(
+                nested_table_cells(&apply(src, &delta)),
+                cells(&[&["b", "a"], &["2", "1"], &["4", "3"]])
+            );
+        }
+    }
+
+    /// The widths comment is written at the table's indent, so it stays in the item and the next
+    /// write finds and replaces it.
+    #[test]
+    fn a_nested_tables_widths_comment_stays_in_its_item() {
+        for src in NESTED {
+            let info = nested_info(src);
+            let once = apply(src, &write_column_widths(src, &info, &[Some(5), None]));
+            let indent = info.rows[0].prefix();
+            assert!(
+                once.ends_with(&format!("{indent}<!-- tui-columns: [5, _] -->\n")),
+                "{once:?}"
+            );
+            assert!(
+                matches!(parse(&once).as_slice(), [Block::List { .. }]),
+                "{once}"
+            );
+            let info = nested_info(&once);
+            let twice = apply(&once, &write_column_widths(&once, &info, &[Some(7), None]));
+            assert_eq!(twice, once.replace("[5, _]", "[7, _]"));
+        }
     }
 }

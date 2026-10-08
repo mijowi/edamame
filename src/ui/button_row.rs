@@ -9,6 +9,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::Theme;
 use crate::ui::scroll_container::modal_inner_width;
@@ -25,7 +26,7 @@ impl<'a> Button<'a> {
     }
 
     fn width(&self) -> u16 {
-        self.label.chars().count() as u16 + 4
+        self.label.width() as u16 + 4
     }
 
     fn rendered(&self) -> String {

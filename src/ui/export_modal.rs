@@ -22,6 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::Theme;
 use crate::document::{
@@ -897,7 +898,7 @@ impl<'a> ExportView<'a> {
         let format_w = state
             .formats
             .iter()
-            .map(|f| LIST_INDENT.len() + MARKER_SELECTED.chars().count() + f.label.chars().count())
+            .map(|f| LIST_INDENT.len() + MARKER_SELECTED.width() + f.label.width())
             .max()
             .unwrap_or(0);
         let content_width = row_w.max(note_w).max(format_w) as u16;
@@ -1109,7 +1110,7 @@ impl<'a> ExportView<'a> {
         let spans = if focused {
             // Pad the fill so marker + label read as one affordance.
             let text = format!("{LIST_INDENT}{marker}{label}");
-            let pad = (area.width as usize).saturating_sub(text.chars().count());
+            let pad = (area.width as usize).saturating_sub(text.width());
             vec![Span::styled(
                 format!("{text}{}", " ".repeat(pad)),
                 controls::focused_style(self.theme),

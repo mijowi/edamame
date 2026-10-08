@@ -9,6 +9,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::Theme;
 use crate::document::{
@@ -330,7 +331,7 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                 .list
                 .items()
                 .iter()
-                .map(|t| t.chars().count())
+                .map(|t| t.width())
                 .max()
                 .unwrap_or(0) as u16
                 + 2; // marker

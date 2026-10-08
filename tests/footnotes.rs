@@ -353,3 +353,75 @@ fn mouse_click_on_plain_text_stages_nothing() {
     mouse_ops::apply(&mut st, action, &mut drag, &[], VP, VW);
     assert_eq!(st.pending_link_follow, None);
 }
+
+// ── Back-link hit zone where chars aren't cells (issue #60) ──────────────────
+
+/// The columns of visual `row` where a plain Rendered-mode click on `src`, `width` cells wide,
+/// follows the back-link, and those where the pointer shows a hand, each from a fresh state.
+fn back_link_cols(src: &str, width: u16, row: u16) -> (Vec<u16>, Vec<u16>) {
+    let fresh = || {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(usize::from(width));
+        st.cursor.offset = 0;
+        st
+    };
+    let mut follows = Vec::new();
+    let mut hovers = Vec::new();
+    for col in 0..width {
+        if mouse_ops::hit_test_clickable_non_link(&fresh(), col, row, usize::from(width), &[]) {
+            hovers.push(col);
+        }
+        let mut st = fresh();
+        let action = MouseAction::Click {
+            col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        mouse_ops::apply(&mut st, action, &mut None, &[], VP, usize::from(width));
+        if st.pending_link_follow == Some(LinkTarget::FootnoteBack("1".into())) {
+            follows.push(col);
+        }
+    }
+    (follows, hovers)
+}
+
+/// `  1.  日本語の注釈です。 ↩` is 17 chars but 26 cells: the hit zone is the space and glyph at
+/// cells 24–25, not the char count's 15–16 in the middle of the text.
+#[test]
+fn the_back_link_after_wide_text_is_where_it_paints() {
+    let src = "First line.\n\nBody[^1] more.\n\n[^1]: 日本語の注釈です。\n";
+    let (follows, hovers) = back_link_cols(src, 80, 4);
+    // Cells 0–5 are the leader, which maps onto the raw `[^1]: ` and follows on its own.
+    let past_leader = |cols: Vec<u16>| cols.into_iter().filter(|&c| c >= 6).collect::<Vec<_>>();
+    assert_eq!(past_leader(follows), [24, 25]);
+    assert_eq!(past_leader(hovers), [24, 25]);
+}
+
+/// A reflowed definition wraps, and its `↩` paints on the last row, behind the hanging indent.
+/// It once never hit there: the click's column was compared with the length of the whole line.
+#[test]
+fn the_back_link_on_a_wrapped_definitions_last_row_is_clickable() {
+    let src =
+        "First line.\n\nBody[^1] more.\n\n[^1]: alpha bravo charlie delta echo foxtrot golf\n";
+    // Rows 4–6: `  1.  alpha bravo` / `     charlie delta echo` / `     foxtrot golf ↩`.
+    assert_eq!(back_link_cols(src, 24, 5), (vec![], vec![]));
+    assert_eq!(back_link_cols(src, 24, 6), (vec![17, 18], vec![17, 18]));
+}
+
+/// The hover hit test measures a row in cells: a footnote marker after wide text, past the
+/// row's char count, still shows the pointer.
+#[test]
+fn a_footnote_marker_after_wide_text_hovers() {
+    let mut st = state("日本語日本語日本語日本語[^1] tail\n\n[^1]: n\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = st.buffer.rope().len_chars();
+    // `[1]` paints at cells 24–26, after twelve two-cell glyphs.
+    for col in 24..=26 {
+        assert!(
+            mouse_ops::hit_test_clickable_non_link(&st, col, 0, VW, &[]),
+            "col {col}"
+        );
+    }
+    assert!(!mouse_ops::hit_test_clickable_non_link(&st, 28, 0, VW, &[]));
+}

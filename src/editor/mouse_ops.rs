@@ -22,6 +22,7 @@ use crate::editor::list_edit;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::input::MouseAction;
+use crate::ui::line_render;
 use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
 
 use self::checkbox::toggle_checkbox_at;
@@ -138,14 +139,14 @@ pub fn hit_test_clickable_non_link(
 
     let c = col as usize;
     let r = row as usize;
-    let Some((line, visual_col)) = rendered_line_at_row(state, r) else {
+    let Some((line, sub_row)) = rendered_line_at_row(state, r) else {
         return false;
     };
-    let total_width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    if c >= total_width {
+    // Past the cells this wrapped row paints, in cells: a char count would stop short of a
+    // footnote marker after wide text (issue #60).
+    if c >= line_render::sub_row_end_cell(&line, state.viewport_width, sub_row) {
         return false;
     }
-    let _ = visual_col;
 
     // The `↩` back-link glyph is appended chrome with no raw byte, so it needs a
     // rendered-line hit-test; markers and leaders are found by the source scan below.

@@ -10,6 +10,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::{AppearanceMode, Theme};
 use crate::ui::content_width::max_row_width;
@@ -212,9 +213,7 @@ fn toggle_row_width() -> u16 {
 }
 
 fn theme_picker_content_width(themes: &[String]) -> u16 {
-    max_row_width(themes, |name| {
-        2 + name.chars().count() + 1 + CURRENT_SUFFIX_W
-    })
+    max_row_width(themes, |name| 2 + name.width() + 1 + CURRENT_SUFFIX_W)
 }
 
 #[cfg(test)]

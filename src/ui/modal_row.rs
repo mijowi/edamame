@@ -45,7 +45,10 @@ pub fn format_modal_row(
 
     match layout {
         RowLayout::FixedPad(pad) => {
-            let label_padded = format!("{marker}{:<pad$}", label, pad = pad);
+            // Padded in cells: `{:<pad$}` counts chars, so a wide label would push its value out
+            // of the column.
+            let fill = " ".repeat(pad.saturating_sub(label.width()));
+            let label_padded = format!("{marker}{label}{fill}");
             Line::from(vec![
                 Span::styled(label_padded, label_style),
                 Span::styled(value.to_owned(), value_style),
@@ -53,8 +56,8 @@ pub fn format_modal_row(
         }
         RowLayout::RightAlign(width) => {
             let label_full = format!("{marker}{label}");
-            let label_w = label_full.chars().count();
-            let value_w = value.chars().count();
+            let label_w = label_full.width();
+            let value_w = value.width();
             let total = label_w + value_w + 1;
             let pad = (width as usize).saturating_sub(total).max(1);
             let pad_str = " ".repeat(pad);
@@ -144,6 +147,32 @@ mod tests {
         );
         assert_eq!(line_text(&line).chars().count(), 19);
         assert!(line_text(&line).ends_with("Ctrl+S"));
+    }
+
+    /// Both layouts measure in cells, so a wide label (a user theme's name) keeps its value in
+    /// the column: the theme picker's `current` label once fell off the row's end.
+    #[test]
+    fn wide_labels_are_measured_in_cells() {
+        let line = format_modal_row(
+            "日本語のテーマ",
+            "current",
+            false,
+            false,
+            theme(),
+            RowLayout::RightAlign(30),
+        );
+        assert_eq!(line_text(&line).width(), 29);
+        assert!(line_text(&line).ends_with(" current"));
+
+        let line = format_modal_row(
+            "日本語",
+            "v",
+            false,
+            false,
+            theme(),
+            RowLayout::FixedPad(10),
+        );
+        assert_eq!(line_text(&line), "  日本語    v");
     }
 
     #[test]

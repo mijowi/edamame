@@ -674,6 +674,78 @@ pub fn visual_rows_for_line(line: &Line<'_>, width: usize) -> usize {
     visual_rows_of_chars(&chars, width, indent).len().max(1)
 }
 
+/// A styled `Line`'s wrapped rows at one width, laid out as [`render_line`] paints them: the
+/// geometry behind [`char_cells_at`] and [`sub_row_end_cell`].
+struct PaintedRows {
+    chars: Vec<char>,
+    /// `(start, end, next_start)` per row, as [`visual_rows_of_chars`] returns them.
+    rows: Vec<(usize, usize, usize)>,
+    /// The effective hanging indent continuation rows start at.
+    indent: usize,
+}
+
+impl PaintedRows {
+    fn new(line: &Line<'_>, width: usize) -> Self {
+        let styled: Vec<(char, Style)> = line
+            .spans
+            .iter()
+            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+            .collect();
+        let indent = compute_hanging_indent(line);
+        let rows = visual_rows_of_chars(&styled, width, indent);
+        Self {
+            chars: styled.into_iter().map(|(c, _)| c).collect(),
+            rows,
+            indent: if indent + 1 >= width { 0 } else { indent },
+        }
+    }
+
+    /// The cell where char `char_idx` starts on row `sub_row`, which must hold it.
+    fn cell_of(&self, sub_row: usize, char_idx: usize) -> usize {
+        let row_indent = if sub_row == 0 { 0 } else { self.indent };
+        row_indent
+            + self.chars[self.rows[sub_row].0..char_idx]
+                .iter()
+                .map(|&c| char_cells(c))
+                .sum::<usize>()
+    }
+}
+
+/// Where char `char_idx` of `line` paints at `width`: its sub-row and the cells it covers there
+/// (two for a wide glyph), as [`render_line`] lays it out.  `None` past the last char, and for a
+/// char a wrap absorbed (the space a break swallows owns no cell).  Hit-tests on rendered chrome
+/// with no source byte behind it (a footnote's `↩`) go through this, never through a char count:
+/// a char index is a screen cell only on an unwrapped row of single-cell chars.
+pub fn char_cells_at(
+    line: &Line<'_>,
+    width: usize,
+    char_idx: usize,
+) -> Option<(usize, std::ops::Range<usize>)> {
+    if width == 0 {
+        return None;
+    }
+    let painted = PaintedRows::new(line, width);
+    let sub_row = painted
+        .rows
+        .iter()
+        .position(|&(start, end, _)| (start..end).contains(&char_idx))?;
+    let x = painted.cell_of(sub_row, char_idx);
+    Some((sub_row, x..x + char_cells(painted.chars[char_idx])))
+}
+
+/// The cell just past the last char `line` paints on wrapped row `sub_row` at `width`, its
+/// hanging indent included; 0 for a row the line doesn't have.
+pub fn sub_row_end_cell(line: &Line<'_>, width: usize, sub_row: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let painted = PaintedRows::new(line, width);
+    painted
+        .rows
+        .get(sub_row)
+        .map_or(0, |&(_, end, _)| painted.cell_of(sub_row, end))
+}
+
 /// Patch `style` onto the screen cells of `line`'s chars in `cols` (char columns), walking the
 /// line's wrapped rows as [`render_line`] lays them out at `area.width`.  `y_first` is the
 /// absolute row of the first painted sub-row, `skip_rows` the sub-rows scrolled off above it,

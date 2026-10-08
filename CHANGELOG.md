@@ -25,6 +25,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Pasting an image on the blank line after an indented code block or HTML block now works.
 - Dragging to select no longer switches lines between rendered and Markdown source mid-drag.
 - Arrow keys, Backspace and Delete in text fields and the vim command line now move over or delete a whole emoji or accented letter, not part of one.
+- Adding, deleting or moving a column, or adding a row, in a table inside a list item no longer moves the table out of the item.
+- The `↩` after a footnote is now clickable when the footnote wraps or contains CJK text, and dialogs size theme and stylesheet names written in CJK correctly.
 
 ## [0.1.5] - 2026-10-05
 
