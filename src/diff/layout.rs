@@ -23,8 +23,8 @@ use ratatui::text::Line;
 use ropey::Rope;
 
 use crate::document::visual_cache::VisualRowCache;
+use crate::document::wrap::visual_rows_for_line;
 use crate::document::ParsedDoc;
-use crate::ui::line_render::visual_rows_for_line;
 
 use super::hunk::Decision;
 use super::state::DiffState;

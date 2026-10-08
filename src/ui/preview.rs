@@ -96,7 +96,7 @@ impl<'a> StatefulWidget for PreviewView<'a> {
 fn line_at_visual_row(lines: &[Line<'static>], visual_row: usize, width: usize) -> (usize, usize) {
     let mut acc = 0usize;
     for (idx, line) in lines.iter().enumerate() {
-        let rows = super::line_render::visual_rows_for_line(line, width).max(1);
+        let rows = crate::document::wrap::visual_rows_for_line(line, width).max(1);
         if visual_row < acc + rows {
             return (idx, visual_row - acc);
         }

@@ -2,9 +2,9 @@ pub mod post_pass;
 mod stream;
 
 pub use post_pass::{
-    attach_trailing_tui_columns_comments, promote_diagram_code_blocks,
-    promote_display_math_paragraphs, promote_html_comments, promote_image_paragraphs,
-    reconstruct_broken_display_math, split_display_math_paragraphs,
+    attach_nested_tui_columns_comments, attach_trailing_tui_columns_comments,
+    promote_diagram_code_blocks, promote_display_math_paragraphs, promote_html_comments,
+    promote_image_paragraphs, reconstruct_broken_display_math, split_display_math_paragraphs,
 };
 
 use std::ops::Range;
@@ -32,6 +32,7 @@ pub fn parse(text: &str) -> Vec<Block> {
     // `<!-- tui-columns -->` outside any table survive as a hidden comment.
     promote_html_comments(&mut blocks);
     attach_trailing_tui_columns_comments(&mut blocks);
+    attach_nested_tui_columns_comments(&mut blocks);
     promote_image_paragraphs(&mut blocks, None);
     blocks
 }
@@ -1104,6 +1105,38 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A comment inside a container is promoted like a top-level one, and a widths comment
+    /// right after a nested table gives that table its widths.  The comment block stays (it
+    /// holds its line in the container), but renders nothing.
+    #[test]
+    fn nested_comments_are_promoted_and_tui_columns_attach() {
+        let src =
+            "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n  <!-- tui-columns: [5, _] -->\n\n\
+                   > quote\n>\n> <!-- note -->\n";
+        let blocks = parse(src);
+        let [Block::List { items, .. }, Block::BlockQuote { blocks: quoted, .. }] =
+            blocks.as_slice()
+        else {
+            panic!("got {blocks:?}");
+        };
+        assert!(
+            matches!(
+                items[0].blocks.as_slice(),
+                [
+                    Block::Paragraph { .. },
+                    Block::Table { user_widths: Some(w), .. },
+                    Block::HtmlComment(..),
+                ] if w == &[Some(5), None]
+            ),
+            "got {:?}",
+            items[0].blocks
+        );
+        assert!(
+            matches!(quoted.last(), Some(Block::HtmlComment(..))),
+            "got {quoted:?}"
+        );
     }
 
     // ── Loose-list spacing ───────────────────────────────────────

@@ -17,12 +17,12 @@ pub use selection::visual_selection_to_rendered_text;
 
 use std::time::Duration;
 
+use crate::document::wrap;
 use crate::document::{row_map, Selection, VisualSelection};
 use crate::editor::list_edit;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::input::MouseAction;
-use crate::ui::line_render;
 use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
 
 use self::checkbox::toggle_checkbox_at;
@@ -144,7 +144,7 @@ pub fn hit_test_clickable_non_link(
     };
     // Past the cells this wrapped row paints, in cells: a char count would stop short of a
     // footnote marker after wide text (issue #60).
-    if c >= line_render::sub_row_end_cell(&line, state.viewport_width, sub_row) {
+    if c >= wrap::sub_row_end_cell(&line, state.viewport_width, sub_row) {
         return false;
     }
 

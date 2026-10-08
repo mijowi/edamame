@@ -89,7 +89,7 @@ impl EditorState {
         let text = line_text_trimmed(&self.buffer, line);
         let indent = hanging_indent_for_mode(&text, self.mode);
         let rows = wrap_rows_for_text(&text, col_width, indent);
-        let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, col);
 
         if sub_idx > 0 {
             let target_idx = sub_idx - 1;
@@ -128,7 +128,7 @@ impl EditorState {
         let text = line_text_trimmed(&self.buffer, line);
         let indent = hanging_indent_for_mode(&text, self.mode);
         let rows = wrap_rows_for_text(&text, col_width, indent);
-        let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, col);
 
         if sub_idx + 1 < rows.len() {
             let target_idx = sub_idx + 1;
@@ -166,7 +166,7 @@ impl EditorState {
         let text = line_text_trimmed(&self.buffer, line);
         let indent = hanging_indent_for_mode(&text, self.mode);
         let rows = wrap_rows_for_text(&text, col_width, indent);
-        let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, col);
         let row = rows[sub_idx];
         let row_indent = if sub_idx == 0 { 0 } else { indent };
         cell_col_within_row(&text, row, col, row_indent)
@@ -180,7 +180,7 @@ fn hanging_indent_for_mode(text: &str, mode: Mode) -> usize {
     if mode == Mode::Raw {
         0
     } else {
-        crate::ui::line_render::compute_hanging_indent_str(text)
+        crate::document::wrap::compute_hanging_indent_str(text)
     }
 }
 
@@ -190,13 +190,13 @@ fn wrap_rows_for_text(text: &str, col_width: usize, indent: usize) -> Vec<(usize
         .chars()
         .map(|c| (c, ratatui::style::Style::default()))
         .collect();
-    crate::ui::line_render::visual_rows_of_chars(&chars, col_width, indent)
+    crate::document::wrap::visual_rows_of_chars(&chars, col_width, indent)
 }
 
 /// Inverse of the wrap layout: the absolute char column on the logical line where a cursor
 /// aiming at screen cell `target_cell` lands on visual row `row`.  A cell inside a wide
 /// glyph snaps past it; a target in the hanging-indent area snaps to the row's first content
-/// char; non-last rows clamp via `line_render::last_col_in_row` (measured against `end`,
+/// char; non-last rows clamp via `wrap::last_col_in_row` (measured against `end`,
 /// never `next_start`, which would land on a break-absorbed space that paints on the next row).
 fn raw_col_for_visual_cells(
     text: &str,
@@ -206,9 +206,9 @@ fn raw_col_for_visual_cells(
     indent: usize,
 ) -> usize {
     let (start, end, _) = row;
-    let max_char_in_row = crate::ui::line_render::last_col_in_row(row, is_last_row);
+    let max_char_in_row = crate::document::wrap::last_col_in_row(row, is_last_row);
     let row_chars = text.chars().skip(start).take(end - start);
-    let in_row_idx = crate::ui::line_render::char_idx_at_cell_col(row_chars, target_cell, indent);
+    let in_row_idx = crate::document::wrap::char_idx_at_cell_col(row_chars, target_cell, indent);
     let absolute = start + in_row_idx;
     absolute.min(max_char_in_row)
 }
@@ -224,5 +224,5 @@ fn cell_col_within_row(
     let (start, _, _) = row;
     let take = char_col.saturating_sub(start);
     let row_chars = text.chars().skip(start).take(take);
-    crate::ui::line_render::cell_col_at_char_idx(row_chars, take, indent)
+    crate::document::wrap::cell_col_at_char_idx(row_chars, take, indent)
 }

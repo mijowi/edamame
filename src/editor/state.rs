@@ -1271,8 +1271,8 @@ pub(super) fn raw_cursor_visual_row(state: &EditorState, width: usize) -> usize 
     let (cursor_line, cursor_col) = state.cursor.line_col(&state.buffer);
     let rows = state.visual_rows_before_raw_line(cursor_line, width);
     let cursor_text = line_text_trimmed(&state.buffer, cursor_line);
-    let cursor_rows = crate::ui::line_render::visual_rows_of_str(&cursor_text, width);
-    let (sub, _) = crate::ui::line_render::sub_line_of_col(&cursor_rows, cursor_col);
+    let cursor_rows = crate::document::wrap::visual_rows_of_str(&cursor_text, width);
+    let (sub, _) = crate::document::wrap::sub_line_of_col(&cursor_rows, cursor_col);
     rows + sub
 }
 
@@ -1311,11 +1311,11 @@ fn cursor_sub_line_in_rendered(state: &EditorState, width: usize) -> usize {
     let (cursor_buf_line, cursor_col) = state.cursor.line_col(&state.buffer);
     let line_text = line_text_trimmed(&state.buffer, cursor_buf_line);
     let rows = if cursor_row_shows_raw(state) {
-        crate::ui::line_render::revealed_rows_of_str(&line_text, width).0
+        crate::document::wrap::revealed_rows_of_str(&line_text, width).0
     } else {
-        crate::ui::line_render::visual_rows_of_str(&line_text, width)
+        crate::document::wrap::visual_rows_of_str(&line_text, width)
     };
-    let (sub, _) = crate::ui::line_render::sub_line_of_col(&rows, cursor_col);
+    let (sub, _) = crate::document::wrap::sub_line_of_col(&rows, cursor_col);
     sub
 }
 
@@ -1561,7 +1561,7 @@ mod tests {
 
         state.move_down_visual(20);
 
-        let rows = crate::ui::line_render::visual_rows_of_str(text, 20);
+        let rows = crate::document::wrap::visual_rows_of_str(text, 20);
         assert!(rows.len() >= 2, "expected wrap into at least 2 rows");
         let (row1_start, _, _) = rows[1];
         assert_eq!(state.cursor.offset, row1_start + 3);
@@ -1580,7 +1580,7 @@ mod tests {
 
         state.move_up_visual(20);
 
-        let rows = crate::ui::line_render::visual_rows_of_str(long, 20);
+        let rows = crate::document::wrap::visual_rows_of_str(long, 20);
         let last = *rows.last().unwrap();
         let expected_raw_col = last.0 + 3;
         assert_eq!(
@@ -1599,7 +1599,7 @@ mod tests {
         let mut state = EditorState::new(Buffer::from_str(&text), theme());
         let width = 40;
 
-        let rows = crate::ui::line_render::visual_rows_of_str(&text, width);
+        let rows = crate::document::wrap::visual_rows_of_str(&text, width);
         assert!(rows.len() >= 2);
         let (row0_s, row0_e, _) = rows[0];
         let row0_width = row0_e - row0_s;
@@ -1612,7 +1612,7 @@ mod tests {
 
         state.move_up_visual(width);
 
-        let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, state.cursor.offset);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, state.cursor.offset);
         assert_eq!(
             sub_idx, 0,
             "cursor at offset {} should be visually on row 0, not row {}",
@@ -1637,7 +1637,7 @@ mod tests {
         let text = "abcdefghij klmnopqrst uvwxyzabcd";
         let width = 10;
         let mut state = EditorState::new(Buffer::from_str(text), theme());
-        let rows = crate::ui::line_render::visual_rows_of_str(text, width);
+        let rows = crate::document::wrap::visual_rows_of_str(text, width);
         assert_eq!(rows[1], (11, 21, 22), "fixture stopped absorbing its space");
 
         // End of the last row, so `preferred_col` is a full row width.
@@ -1645,7 +1645,7 @@ mod tests {
         state.cursor.preferred_col = state.current_visual_col(width);
 
         state.move_up_visual(width);
-        let (sub, _) = crate::ui::line_render::sub_line_of_col(&rows, state.cursor.offset);
+        let (sub, _) = crate::document::wrap::sub_line_of_col(&rows, state.cursor.offset);
         assert_eq!(
             sub, 1,
             "Up from row 2 should render on row 1, not row {sub} (offset {})",
@@ -1676,7 +1676,7 @@ mod tests {
             .chars()
             .map(|c| (c, ratatui::style::Style::default()))
             .collect();
-        let rows = crate::ui::line_render::visual_rows_of_chars(&chars, width, 2);
+        let rows = crate::document::wrap::visual_rows_of_chars(&chars, width, 2);
         assert!(rows.len() >= 2, "list item must wrap");
         let (row1_start, row1_end, _) = rows[1];
         // Screen cell 5 on row 1 → content cell 3.
@@ -1701,7 +1701,7 @@ mod tests {
         let viewport_w: usize = 20;
 
         // Char offset for "screen cell 4 on row 2".
-        let rows = crate::ui::line_render::visual_rows_of_str(text, viewport_w);
+        let rows = crate::document::wrap::visual_rows_of_str(text, viewport_w);
         assert!(rows.len() >= 3);
         let (row2_start, row2_end, _) = rows[2];
         let target_offset = row2_start + 4.min(row2_end - row2_start);
@@ -1728,7 +1728,7 @@ mod tests {
 
         state.move_down_visual(20);
 
-        let rows = crate::ui::line_render::visual_rows_of_chars(
+        let rows = crate::document::wrap::visual_rows_of_chars(
             &text
                 .chars()
                 .map(|c| (c, ratatui::style::Style::default()))
@@ -1753,7 +1753,7 @@ mod tests {
 
         state.move_down_visual(20);
 
-        let rows = crate::ui::line_render::visual_rows_of_str(text, 20);
+        let rows = crate::document::wrap::visual_rows_of_str(text, 20);
         assert!(rows.len() >= 2);
         let (row1_start, _, _) = rows[1];
         assert_eq!(state.cursor.offset, row1_start + 5);
@@ -1766,7 +1766,7 @@ mod tests {
         let text = "- hello world foo bar baz quux wibble";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = crate::editor::Mode::Raw;
-        let rows = crate::ui::line_render::visual_rows_of_str(text, 20);
+        let rows = crate::document::wrap::visual_rows_of_str(text, 20);
         assert!(rows.len() >= 2);
         let (row1_start, row1_end, _) = rows[1];
         state.cursor.offset = row1_start + 3.min(row1_end - row1_start);

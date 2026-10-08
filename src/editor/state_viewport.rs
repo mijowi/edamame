@@ -178,7 +178,7 @@ impl EditorState {
         } else {
             let inner = VisualRowCache::build(self.buffer.line_count(), width, |i| {
                 let text = line_text_trimmed(&self.buffer, i);
-                crate::ui::line_render::visual_rows_of_str(&text, width).len()
+                crate::document::wrap::visual_rows_of_str(&text, width).len()
             });
             entries.insert(
                 0,
@@ -212,7 +212,7 @@ impl EditorState {
                     return self.buffer.len_chars();
                 }
                 let text = line_text_trimmed(&self.buffer, line);
-                let rows = crate::ui::line_render::visual_rows_of_str(&text, width.max(1));
+                let rows = crate::document::wrap::visual_rows_of_str(&text, width.max(1));
                 let raw_col = rows.get(sub).map(|r| r.0).unwrap_or(0);
                 self.buffer.line_to_char(line) + raw_col
             }

@@ -36,7 +36,7 @@ pub const MIN_COL_WIDTH: usize = 3;
 
 /// Terminal cells `ch` occupies — the unit every width decision in this module and the table
 /// renderer is expressed in.  Control characters contribute none, matching `unicode-width`'s
-/// `None`.  Must agree with `ui::line_render::char_cells`, the painter's copy.
+/// `None`.  Must agree with `document::wrap::char_cells`, the painter's copy.
 pub fn char_cells(ch: char) -> usize {
     unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
 }

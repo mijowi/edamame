@@ -1206,9 +1206,9 @@ mod tests {
         format!("{}{}{}", &src[..delta.offset], delta.inserted, &src[end..])
     }
 
-    /// The cells of the one table in `src`, header first.  It must sit in an item's blocks, with
-    /// the list the document's only block: the edit kept the table inside its list item.
-    fn nested_table_cells(src: &str) -> Vec<Vec<String>> {
+    /// The one table in `src`'s blocks.  It must sit in an item's blocks, with the list the
+    /// document's only block: the edit kept the table inside its list item.
+    fn nested_table(src: &str) -> Block {
         fn find(blocks: &[Block]) -> Option<&Block> {
             blocks.iter().find_map(|b| match b {
                 Block::List { items, .. } => items.iter().find_map(|it| find(&it.blocks)),
@@ -1221,8 +1221,15 @@ mod tests {
             matches!(blocks.as_slice(), [Block::List { .. }]),
             "everything stays in the list:\n{src}"
         );
-        let Some(Block::Table { headers, rows, .. }) = find(&blocks) else {
-            panic!("no table inside the item:\n{src}");
+        find(&blocks)
+            .unwrap_or_else(|| panic!("no table inside the item:\n{src}"))
+            .clone()
+    }
+
+    /// The cells of [`nested_table`], header first.
+    fn nested_table_cells(src: &str) -> Vec<Vec<String>> {
+        let Block::Table { headers, rows, .. } = nested_table(src) else {
+            unreachable!();
         };
         let plain = |cells: &Vec<Vec<Inline>>| {
             cells
@@ -1230,7 +1237,7 @@ mod tests {
                 .map(|c| inlines_to_plain(c).trim().to_owned())
                 .collect::<Vec<_>>()
         };
-        std::iter::once(plain(headers))
+        std::iter::once(plain(&headers))
             .chain(rows.iter().map(plain))
             .collect()
     }
@@ -1294,8 +1301,8 @@ mod tests {
         }
     }
 
-    /// The widths comment is written at the table's indent, so it stays in the item and the next
-    /// write finds and replaces it.
+    /// The widths comment is written at the table's indent, so it stays in the item, gives the
+    /// table its widths, and the next write finds and replaces it.
     #[test]
     fn a_nested_tables_widths_comment_stays_in_its_item() {
         for src in NESTED {
@@ -1307,7 +1314,10 @@ mod tests {
                 "{once:?}"
             );
             assert!(
-                matches!(parse(&once).as_slice(), [Block::List { .. }]),
+                matches!(
+                    nested_table(&once),
+                    Block::Table { user_widths: Some(w), .. } if w == [Some(5), None]
+                ),
                 "{once}"
             );
             let info = nested_info(&once);

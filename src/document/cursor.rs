@@ -1,6 +1,6 @@
 use crate::document::graphemes::{next_grapheme_offset, prev_grapheme_offset};
+use crate::document::wrap::{cell_col_at_char_idx, char_cells};
 use crate::document::Buffer;
-use crate::ui::line_render::{cell_col_at_char_idx, char_cells};
 
 /// Cursor position: a char offset into the rope plus the column vertical movement aims for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,7 +150,7 @@ fn char_at(buf: &Buffer, offset: usize) -> char {
 }
 
 /// Absolute char offset on `line_idx` at screen cell column `target_cell`, with the same landing
-/// rules as `line_render::char_idx_at_cell_col` (wide-char snap-past, past-content clamp).
+/// rules as `wrap::char_idx_at_cell_col` (wide-char snap-past, past-content clamp).
 fn char_offset_at_cell_col(buf: &Buffer, line_idx: usize, target_cell: usize) -> usize {
     let line_start = buf.line_to_char(line_idx);
     let line_end = if line_idx + 1 < buf.line_count() {

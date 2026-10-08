@@ -455,6 +455,8 @@ fn renders_no_row(block: &Block, line: u32, top: bool) -> bool {
                 || i.hidden.contains(&line)
                 || i.blocks.iter().any(|b| renders_no_row(b, line, false))
         }),
+        // A comment inside a container keeps its block (and line) but renders nothing.
+        Block::HtmlComment(..) => !top,
         leaf => !top && leaf.is_setext_heading() && line + 1 == leaf.span().end,
     }
 }

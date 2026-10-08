@@ -7,6 +7,7 @@ pub mod row_map;
 pub mod selection;
 pub mod source_map;
 pub mod visual_cache;
+pub mod wrap;
 
 pub use buffer::{Buffer, LineEnding};
 pub use cursor::Cursor;

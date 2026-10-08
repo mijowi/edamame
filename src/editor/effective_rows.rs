@@ -20,8 +20,8 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use crate::document::wrap::revealed_row_count;
 use crate::document::ParsedDoc;
-use crate::ui::line_render::revealed_row_count;
 
 /// What a visual row resolves to under the reveal patch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,8 +274,8 @@ mod tests {
     use super::*;
 
     use crate::config::Theme;
+    use crate::document::wrap::visual_rows_for_line;
     use crate::document::ParsedDoc;
-    use crate::ui::line_render::visual_rows_for_line;
     use ratatui::text::Line;
 
     fn theme() -> &'static Theme {

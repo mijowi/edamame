@@ -4002,7 +4002,7 @@ fn click_at_the_right_edge_of_an_absorbing_row_stays_on_that_row() {
     // yields in-row index 5 — exactly the absorbed space.
     let text = "一二三四五 klmnopqrst uvwxyzabcd";
     let width = 10;
-    let rows = edamame::ui::line_render::visual_rows_of_str(text, width);
+    let rows = edamame::document::wrap::visual_rows_of_str(text, width);
     assert_eq!(rows[0], (0, 5, 6), "fixture stopped absorbing its space");
 
     let mut st = state(text);
@@ -4010,7 +4010,7 @@ fn click_at_the_right_edge_of_an_absorbing_row_stays_on_that_row() {
     let mut anchor: Option<mouse_ops::DragTarget> = None;
     mouse_ops::apply(&mut st, click(9, 0), &mut anchor, &[], VP, width);
 
-    let (sub, _) = edamame::ui::line_render::sub_line_of_col(&rows, st.cursor.offset);
+    let (sub, _) = edamame::document::wrap::sub_line_of_col(&rows, st.cursor.offset);
     assert_eq!(
         sub, 0,
         "click on row 0 placed the cursor on row {sub} (offset {})",
@@ -4027,7 +4027,7 @@ fn click_at_the_right_edge_of_an_absorbing_row_stays_on_that_row() {
 fn preview_click_past_the_end_of_a_wrapped_row_stays_on_that_row() {
     let text = "alpha bravo charlie delta";
     let width = 12;
-    let rows = edamame::ui::line_render::visual_rows_of_str(text, width);
+    let rows = edamame::document::wrap::visual_rows_of_str(text, width);
     assert_eq!(
         rows[1],
         (12, 20, 20),
@@ -4047,7 +4047,7 @@ fn preview_click_past_the_end_of_a_wrapped_row_stays_on_that_row() {
     );
     let (line_idx, char_col) = vs.anchor;
     assert_eq!(line_idx, 0);
-    let (sub, _) = edamame::ui::line_render::sub_line_of_col(&rows, char_col);
+    let (sub, _) = edamame::document::wrap::sub_line_of_col(&rows, char_col);
     assert_eq!(
         sub, 1,
         "click on row 1 placed the caret on row {sub} (char col {char_col})",

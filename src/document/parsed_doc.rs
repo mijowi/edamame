@@ -10,10 +10,10 @@ use crate::document::row_map::{JoinedMap, RowCache};
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
-    inlines_to_plain, parse_document, promote_diagram_code_blocks, promote_display_math_paragraphs,
-    promote_html_comments, promote_image_paragraphs, reconstruct_broken_display_math,
-    split_display_math_paragraphs, Block, ImageRowOverride, RefLabels, RenderCache, Renderer,
-    RowOrigin,
+    attach_nested_tui_columns_comments, inlines_to_plain, parse_document,
+    promote_diagram_code_blocks, promote_display_math_paragraphs, promote_html_comments,
+    promote_image_paragraphs, reconstruct_broken_display_math, split_display_math_paragraphs,
+    Block, ImageRowOverride, RefLabels, RenderCache, Renderer, RowOrigin,
 };
 
 /// Metadata for one `Block::ImageBlock`, for the image loader and placeholder.
@@ -201,6 +201,7 @@ impl ParsedDoc {
         // are preserved, so `real_ranges` stays 1:1.
         promote_html_comments(&mut blocks);
         merge_trailing_tui_columns_comments(&mut blocks, &mut real_ranges);
+        attach_nested_tui_columns_comments(&mut blocks);
         // Image-only paragraphs become `Block::ImageBlock` so the renderer reserves
         // multi-row space for the graphics overlay.  In place, so alignment stays 1:1.
         promote_image_paragraphs(&mut blocks, Some(&mut real_ranges));
@@ -680,7 +681,7 @@ impl ParsedDoc {
             return;
         }
         let cache = VisualRowCache::build(self.lines.len(), width, |i| {
-            crate::ui::line_render::visual_rows_for_line(&self.lines[i], width)
+            crate::document::wrap::visual_rows_for_line(&self.lines[i], width)
         });
         let mut entries = self.visual_rows.borrow_mut();
         entries.insert(0, cache);
@@ -1425,7 +1426,7 @@ mod tests {
 
     // ── Visual-row cache ────────────────────────────────────────────────
 
-    /// The cache must agree with `line_render::visual_rows_for_line` on every line.
+    /// The cache must agree with `wrap::visual_rows_for_line` on every line.
     #[test]
     fn visual_rows_cache_matches_line_render() {
         let long = "x".repeat(120);
@@ -1433,7 +1434,7 @@ mod tests {
         let doc = ParsedDoc::build(&src, theme(), true, 24);
         let width = 40;
         for (i, line) in doc.lines.iter().enumerate() {
-            let canonical = crate::ui::line_render::visual_rows_for_line(line, width).max(1);
+            let canonical = crate::document::wrap::visual_rows_for_line(line, width).max(1);
             assert_eq!(
                 doc.visual_rows_for_line_at(i, width),
                 canonical,
@@ -1466,7 +1467,7 @@ mod tests {
         let expect = |w: usize| -> Vec<usize> {
             doc.lines
                 .iter()
-                .map(|l| crate::ui::line_render::visual_rows_for_line(l, w).max(1))
+                .map(|l| crate::document::wrap::visual_rows_for_line(l, w).max(1))
                 .collect()
         };
         let at_40 = expect(40);
@@ -1551,6 +1552,33 @@ mod tests {
             "comment should have been absorbed: {:?}",
             doc.blocks
         );
+    }
+
+    /// A widths comment after a table in a list item reaches the editor pipeline too: the
+    /// table takes the widths, and the comment renders nothing.
+    #[test]
+    fn nested_tui_columns_comment_attaches_and_stays_hidden() {
+        let src =
+            "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n  <!-- tui-columns: [5, _] -->\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        let Some(Block::List { items, .. }) = doc.blocks.first() else {
+            panic!("got {:?}", doc.blocks);
+        };
+        assert!(
+            items[0].blocks.iter().any(|b| matches!(
+                b,
+                Block::Table { user_widths: Some(w), .. } if w == &[Some(5), None]
+            )),
+            "got {:?}",
+            items[0].blocks
+        );
+        for line in &doc.lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains("<!--"),
+                "comment leaked into rendered output: {text:?}"
+            );
+        }
     }
 
     /// A blank line's rendered range must be that line, not the preceding block's last.

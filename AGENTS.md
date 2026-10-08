@@ -187,6 +187,11 @@ src/
                     #   recorded RowOrigins; the reveal gates (`reveals`; `stacked_lines`,
                     #   a reflowed paragraph's flow row that reveals as its stacked source
                     #   lines); the table row a row belongs to, borders snapped (`table_row`)
+    wrap.rs         # wrap geometry, no painting: where a Line or raw line breaks into
+                    #   rows (visual_rows_of_chars / _of_str / _for_line), the hanging
+                    #   indent and its effective_indent clamp, cell ↔ char mapping,
+                    #   PaintedRows; revealed_rows_of_str / revealed_row_count: the one
+                    #   wrap measure for raw source on a revealed row
 
   editor.rs / editor/   # EditorState, Mode, RAW_REVEAL_DELAY
     edit_ops.rs     # Action → EditorState mutations
@@ -264,10 +269,9 @@ src/
                         #   draw_frame, ModalKind, MAX_PAD_H
     diff_view.rs        # DiffView + DiffViewState (stacked review)
     editor_view.rs      # dispatches to the three sub-views
-    line_render.rs      # render_line / render_line_with_cursor: word-aware wrap,
-                        #   trailing-cell fill; shared by Preview and Rendered.
-                        #   revealed_rows_of_str / revealed_row_count: the one wrap
-                        #   measure for raw source on a revealed row
+    line_render.rs      # render_line / render_line_with_cursor: paints
+                        #   `document::wrap`'s rows with the trailing-cell fill;
+                        #   patch_char_cols (highlights); shared by Preview and Rendered
     preview.rs, raw_view.rs, rendered_view.rs (+ rendered_view/{paint, cell_overlay,
                         #   raw_text}.rs)         # the three editor sub-views
     export_theme_modal.rs, insert_table_modal.rs, save_copy_modal.rs  # text inputs

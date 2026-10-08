@@ -1,10 +1,10 @@
 use ratatui::text::Line;
 
+use crate::document::wrap;
 use crate::document::{row_map, CellBand};
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::markdown::table_layout;
-use crate::ui::line_render;
 
 /// The rendered `Line` under document-area `row` (scroll- and wrap-aware) and the sub-row
 /// within it.
@@ -20,7 +20,7 @@ pub(super) fn rendered_line_at_row(
         state.rendered_line_at_visual_row(state.scroll.saturating_add(row), state.viewport_width);
     let mut y = 0usize;
     while let Some(line) = lines.get(line_idx) {
-        let rows_used = line_render::visual_rows_for_line(line, state.viewport_width).max(1);
+        let rows_used = wrap::visual_rows_for_line(line, state.viewport_width).max(1);
         let visible_rows = rows_used.saturating_sub(first_sub_row).max(1);
         if y < visible_rows {
             return Some((line.clone(), first_sub_row));
@@ -68,7 +68,7 @@ fn raw_click_to_offset(
             .line(target_line)
             .map(|s| s.trim_end_matches('\n').to_owned())
             .unwrap_or_default();
-        let rows = line_render::visual_rows_of_str(&text, width);
+        let rows = wrap::visual_rows_of_str(&text, width);
         let used = rows.len().max(1).saturating_sub(first_sub_row).max(1);
         if row < y + used {
             let sub_row = first_sub_row + row - y;
@@ -95,9 +95,9 @@ fn char_in_row_at_cell(
     is_last_row: bool,
 ) -> usize {
     let (start, end, _) = row;
-    let max_char_in_row = line_render::last_col_in_row(row, is_last_row);
+    let max_char_in_row = wrap::last_col_in_row(row, is_last_row);
     let row_chars = text.chars().skip(start).take(end - start);
-    let in_row = line_render::char_idx_at_cell_col(row_chars, target_cell, indent);
+    let in_row = wrap::char_idx_at_cell_col(row_chars, target_cell, indent);
     (start + in_row).min(max_char_in_row)
 }
 
@@ -118,9 +118,9 @@ fn rendered_click_to_offset(
 
 /// Preview-mode click translator: the `(rendered_line_idx, char_col)` that seeds a
 /// `VisualSelection`.  `char_col` is the cumulative position within the flat rendered line,
-/// using the same wrap layout as [`line_render::patch_char_cols`], so drags across wrapped
-/// sub-rows highlight the right range.  `col` is a screen cell: a click on the right half of
-/// a wide glyph lands after it, as [`line_render::char_idx_at_cell_col`] snaps.
+/// using the same wrap layout as [`patch_char_cols`](crate::ui::line_render::patch_char_cols),
+/// so drags across wrapped sub-rows highlight the right range.  `col` is a screen cell: a click on the right half of
+/// a wide glyph lands after it, as [`wrap::char_idx_at_cell_col`] snaps.
 pub(super) fn rendered_click_to_line_col(
     state: &EditorState,
     col: usize,
@@ -153,20 +153,20 @@ fn rendered_click_to_line_col_with_layout(
     if chars.is_empty() {
         return Some((idx, 0, None));
     }
-    let indent = line_render::compute_hanging_indent(line);
-    let rows = line_render::visual_rows_of_chars(&chars, viewport_width.max(1), indent);
+    let width = viewport_width.max(1);
+    let indent = wrap::effective_indent(wrap::compute_hanging_indent(line), width);
+    let rows = wrap::visual_rows_of_chars(&chars, width, indent);
     let sub = sub_row.min(rows.len().saturating_sub(1));
     let row = rows
         .get(sub)
         .copied()
         .unwrap_or((0, chars.len(), chars.len()));
     let (row_start, _, _) = row;
-    let max_in_row = line_render::last_col_in_row(row, sub + 1 == rows.len());
+    let max_in_row = wrap::last_col_in_row(row, sub + 1 == rows.len());
     // Continuation rows carry `indent` cells of left padding (as `patch_char_cols`).
     let row_indent = if sub == 0 { 0 } else { indent };
     let chars: Vec<char> = chars.into_iter().map(|(c, _)| c).collect();
-    let local_col =
-        line_render::char_idx_at_cell_col(chars[row_start..].iter().copied(), col, row_indent);
+    let local_col = wrap::char_idx_at_cell_col(chars[row_start..].iter().copied(), col, row_indent);
     let char_col = (row_start + local_col).min(max_in_row);
     let layout = LineLayout {
         rows,
@@ -197,7 +197,7 @@ pub(super) fn rendered_click_to_line_col_on_text(
     let ch = *layout.chars.get(char_col)?;
     // A real hit is one whose clamped column covers the clicked cell.
     let cell = cell_col_for_char_col(&layout, char_col)?;
-    (cell..cell + line_render::char_cells(ch).max(1))
+    (cell..cell + wrap::char_cells(ch).max(1))
         .contains(&col)
         .then_some((idx, char_col))
 }
@@ -206,7 +206,7 @@ pub(super) fn rendered_click_to_line_col_on_text(
 /// inverse mapping (which runs on every mouse-move) doesn't rebuild it.
 pub(super) struct LineLayout {
     /// `(row_start, row_end, next_start)` per visual row, as
-    /// [`line_render::visual_rows_of_chars`] produces them.
+    /// [`wrap::visual_rows_of_chars`] produces them.
     rows: Vec<(usize, usize, usize)>,
     /// Hanging indent applied to every row past the first.
     indent: usize,
@@ -217,11 +217,11 @@ pub(super) struct LineLayout {
 /// Screen cell column at which `char_col` is painted, including a continuation row's hanging
 /// indent — the inverse of [`rendered_click_to_line_col`].
 fn cell_col_for_char_col(layout: &LineLayout, char_col: usize) -> Option<usize> {
-    let (sub, _) = line_render::sub_line_of_col(&layout.rows, char_col);
+    let (sub, _) = wrap::sub_line_of_col(&layout.rows, char_col);
     let (row_start, _, _) = layout.rows.get(sub).copied()?;
     let row_indent = if sub == 0 { 0 } else { layout.indent };
     let row_chars = layout.chars.get(row_start..)?.iter().copied();
-    Some(line_render::cell_col_at_char_idx(
+    Some(wrap::cell_col_at_char_idx(
         row_chars,
         char_col.saturating_sub(row_start),
         row_indent,
@@ -434,15 +434,15 @@ fn table_click_to_offset(
 /// The char of `line_text` under cell `col` on wrap row `sub` of the line, laid out as the
 /// reveal painter lays out raw source.
 fn raw_click_col(line_text: &str, sub: usize, col: usize, viewport_width: usize) -> usize {
-    let (rows, indent) = line_render::revealed_rows_of_str(line_text, viewport_width);
+    let (rows, indent) = wrap::revealed_rows_of_str(line_text, viewport_width);
     let sub = sub.min(rows.len().saturating_sub(1));
     let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
     let (start, end, _) = row;
     let is_last_row = sub + 1 == rows.len();
-    let max_in_row = line_render::last_col_in_row(row, is_last_row);
+    let max_in_row = wrap::last_col_in_row(row, is_last_row);
     let row_indent = if sub == 0 { 0 } else { indent };
     let row_chars = line_text.chars().skip(start).take(end - start);
-    let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
+    let in_row = wrap::char_idx_at_cell_col(row_chars, col, row_indent);
     (start + in_row).min(max_in_row)
 }
 
@@ -548,7 +548,7 @@ fn revealed_raw_row_count(
         let raw_line = row_line
             .and_then(|l| block_text.split('\n').nth(l))
             .unwrap_or("");
-        return Some(line_render::revealed_row_count(raw_line, viewport_width));
+        return Some(wrap::revealed_row_count(raw_line, viewport_width));
     }
 
     // A revealed reflowed paragraph is one rendered line that reveals to its *stacked* raw lines,
@@ -581,7 +581,7 @@ fn revealed_raw_row_count(
     if !row_map::reveals(&state.parsed, reveal.block_idx, cursor_row_in_block) {
         return None;
     }
-    Some(line_render::revealed_row_count(raw_line, viewport_width))
+    Some(wrap::revealed_row_count(raw_line, viewport_width))
 }
 
 /// Whether `rendered_line_idx` is the revealed cursor row of block `block_idx`, which paints
@@ -621,7 +621,7 @@ fn raw_line_byte_range(block_text: &str, raw_line_idx: usize) -> (usize, usize) 
 }
 
 /// Which char of the *rendered* line the click at cell `col` on wrap row `sub_row_within_line`
-/// landed on.  The one shared walk over `line_render`'s wrap geometry for every row `row_map`
+/// landed on.  The one shared walk over [`wrap`]'s geometry for every row `row_map`
 /// maps.
 fn click_to_rendered_char_idx(
     rendered_line: &Line<'_>,
@@ -630,21 +630,21 @@ fn click_to_rendered_char_idx(
     sub_row_within_line: usize,
     viewport_width: usize,
 ) -> usize {
-    let indent = line_render::compute_hanging_indent(rendered_line);
     let viewport = viewport_width.max(1);
-    let rows = line_render::visual_rows_of_chars(rendered_chars, viewport, indent);
+    let indent = wrap::effective_indent(wrap::compute_hanging_indent(rendered_line), viewport);
+    let rows = wrap::visual_rows_of_chars(rendered_chars, viewport, indent);
     let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
     let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
     let (start, end, _) = row;
     let row_indent = if sub == 0 { 0 } else { indent };
     let is_last_row = sub + 1 == rows.len();
-    let max_in_row = line_render::last_col_in_row(row, is_last_row);
+    let max_in_row = wrap::last_col_in_row(row, is_last_row);
     let row_chars = rendered_chars
         .iter()
         .skip(start)
         .take(end - start)
         .map(|(c, _)| *c);
-    let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
+    let in_row = wrap::char_idx_at_cell_col(row_chars, col, row_indent);
     (start + in_row).min(max_in_row)
 }
 
@@ -726,7 +726,7 @@ fn table_click_to_raw_col(
     } else {
         // The click is a screen cell; a wide glyph before it spans two.
         let content_col =
-            line_render::char_idx_at_cell_col(chunk_text.chars(), rend_offset_in_cell - 1, 0);
+            wrap::char_idx_at_cell_col(chunk_text.chars(), rend_offset_in_cell - 1, 0);
         cell.leading + raw_content_col(chunk_start + content_col.min(chunk_text.chars().count()))
     };
 
@@ -888,6 +888,16 @@ mod tests {
         let (_, pad) = click(6).unwrap();
         let band = preview_table_cell_band(&st, header, pad).expect("inside a cell");
         assert_eq!(band.cols, (2, 6), "the first cell's content area");
+    }
+
+    /// At a width the list marker's hanging indent leaves no room in, continuation rows start at
+    /// the left edge, as the painter draws them: `• ` / `abc` / `def` at three cells, so cell 1 of
+    /// the second row is `b`.  The click once padded the row by the unclamped indent.
+    #[test]
+    fn preview_click_on_a_row_too_narrow_for_its_indent() {
+        let st = preview_state("- abcdef\n", 3);
+        let click = |col| rendered_click_to_line_col(&st, col, 1, 3).map(|(_, c)| c);
+        assert_eq!([click(0), click(1), click(2)], [Some(2), Some(3), Some(4)]);
     }
 
     /// Hit-testing takes the glyph under either half of a wide glyph, and still declines the

@@ -394,16 +394,18 @@ pub(crate) fn is_html_comment_only(body: &str) -> bool {
     true
 }
 
-/// Promote comment-only `Block::Html` into `Block::HtmlComment`.  The stored string keeps
-/// its delimiters so downstream helpers need no variant-specific path.
+/// Promote comment-only `Block::Html` into `Block::HtmlComment`, at any depth: a comment in a
+/// list item, quote or footnote renders nothing, as a top-level one does.  The stored string
+/// keeps its delimiters so downstream helpers need no variant-specific path.
 pub fn promote_html_comments(blocks: &mut [Block]) {
     for block in blocks.iter_mut() {
-        if let Block::Html(body, src) = block {
-            if is_html_comment_only(body) {
+        match block {
+            Block::Html(body, src) if is_html_comment_only(body) => {
                 let body = std::mem::take(body);
                 let src = std::mem::take(src);
                 *block = Block::HtmlComment(body, src);
             }
+            _ => for_each_child_list(block, |children| promote_html_comments(children)),
         }
     }
 }
@@ -435,5 +437,40 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
             continue;
         }
         i += 1;
+    }
+}
+
+/// [`attach_trailing_tui_columns_comments`] inside containers: a table in a list item, quote or
+/// footnote takes its widths from a comment directly after it.  The comment stays, an
+/// `HtmlComment` rendering nothing: a container gives every line between its children a blank
+/// row (`hidden` excepts only link reference definitions), so removing it would show its line as
+/// one.  Runs after the top-level merge, at every depth below it.
+pub fn attach_nested_tui_columns_comments(blocks: &mut [Block]) {
+    for block in blocks.iter_mut() {
+        for_each_child_list(block, |children| {
+            for i in 1..children.len() {
+                let Block::HtmlComment(body, _) = &children[i] else {
+                    continue;
+                };
+                let Some(widths) = crate::markdown::table_layout::parse_column_widths_comment(body)
+                else {
+                    continue;
+                };
+                if let Block::Table { user_widths, .. } = &mut children[i - 1] {
+                    user_widths.get_or_insert(widths);
+                }
+            }
+            attach_nested_tui_columns_comments(children);
+        });
+    }
+}
+
+/// Call `f` on each child block list of a container: a quote's or footnote's blocks, each list
+/// item's.  A leaf has none.
+fn for_each_child_list(block: &mut Block, mut f: impl FnMut(&mut Vec<Block>)) {
+    match block {
+        Block::BlockQuote { blocks, .. } | Block::FootnoteDefinition { blocks, .. } => f(blocks),
+        Block::List { items, .. } => items.iter_mut().for_each(|item| f(&mut item.blocks)),
+        _ => {}
     }
 }

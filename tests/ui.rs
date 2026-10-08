@@ -816,6 +816,16 @@ fn a_quotes_hidden_definition_reveals_with_the_line_below() {
     assert_eq!(cursor, Some((3, 2)), "{rows:?}");
 }
 
+/// A comment inside a quote renders no row either, and reveals the same way: with the line below.
+#[test]
+fn a_quotes_hidden_comment_reveals_with_the_line_below() {
+    let src = "> a\n>\n> <!-- note -->\n> b\n\nafter\n";
+    let (rows, cursor) = paint_revealed(src, src.find("note").unwrap());
+    assert_eq!(rows[2], "> <!-- note -->", "{rows:?}");
+    assert_eq!(rows[3], "> b", "{rows:?}");
+    assert_eq!(cursor, Some((7, 2)), "{rows:?}");
+}
+
 /// A hidden definition sharing a marker row (`- - a`'s outer bullet, whose line shows again on
 /// the row below) reveals over that row alone: stacking the marker's line too would show it
 /// twice, raw and then rendered.
