@@ -14,9 +14,12 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::document::{
+    str_next_grapheme, str_prev_grapheme, str_remove_grapheme_at, str_remove_grapheme_before,
+};
 use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
-use crate::ui::cursor::{insert_char_at, remove_char_at};
+use crate::ui::cursor::insert_char_at;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, modal_inner_width, wrapped_rows, ContentSize, FrameOpts,
     ModalKind, MAX_PAD_H,
@@ -116,17 +119,14 @@ impl SaveCopyState {
             // Left / Right move the field cursor, or swap buttons when focus is on one.
             KeyCode::Left => {
                 if self.focus.is_path() {
-                    self.cursor = self.cursor.saturating_sub(1);
+                    self.cursor = str_prev_grapheme(&self.path, self.cursor);
                 } else {
                     self.focus = self.focus.prev();
                 }
             }
             KeyCode::Right => {
                 if self.focus.is_path() {
-                    let len = self.path.chars().count();
-                    if self.cursor < len {
-                        self.cursor += 1;
-                    }
+                    self.cursor = str_next_grapheme(&self.path, self.cursor);
                 } else {
                     self.focus = self.focus.next();
                 }
@@ -139,15 +139,13 @@ impl SaveCopyState {
             }
             KeyCode::Backspace if self.focus.is_path() => {
                 if self.cursor > 0 {
-                    let target = self.cursor - 1;
-                    remove_char_at(&mut self.path, target);
-                    self.cursor = target;
+                    self.cursor = str_remove_grapheme_before(&mut self.path, self.cursor);
                     self.last_error = None;
                 }
             }
             KeyCode::Delete if self.focus.is_path() => {
                 if self.cursor < self.path.chars().count() {
-                    remove_char_at(&mut self.path, self.cursor);
+                    str_remove_grapheme_at(&mut self.path, self.cursor);
                     self.last_error = None;
                 }
             }

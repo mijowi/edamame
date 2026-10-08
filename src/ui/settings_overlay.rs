@@ -23,6 +23,7 @@ use ratatui::{
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::controls::{self, Control, ControlEvent, ControlInput};
+use crate::ui::cursor::pop_grapheme;
 use crate::ui::overlay_nav::next_focusable;
 
 /// Width of the padded label column; sized to fit the longest label while leaving room
@@ -144,7 +145,7 @@ impl SettingsState {
             KeyCode::Enter => self.activate_focused(config),
             KeyCode::Backspace => {
                 if let Some(buf) = self.editing.as_mut() {
-                    buf.pop();
+                    pop_grapheme(buf);
                     self.last_error = None;
                 }
                 SettingsResponse::Continue

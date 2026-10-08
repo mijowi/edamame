@@ -11,8 +11,12 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::document::{
+    str_next_grapheme, str_prev_grapheme, str_remove_grapheme_at, str_remove_grapheme_before,
+};
 use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
+use crate::ui::cursor::insert_char_at;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, MAX_PAD_H,
 };
@@ -130,19 +134,16 @@ impl SearchModalState {
             // Left / Right move the in-field cursor, or swap between the buttons.
             KeyCode::Left => {
                 if self.focus.is_field() {
-                    let cursor = self.focused_cursor_mut();
-                    *cursor = cursor.saturating_sub(1);
+                    let (value, cursor) = self.focused_pair_mut();
+                    *cursor = str_prev_grapheme(value, *cursor);
                 } else {
                     self.focus = self.focus.prev();
                 }
             }
             KeyCode::Right => {
                 if self.focus.is_field() {
-                    let len = self.focused_value().chars().count();
-                    let cursor = self.focused_cursor_mut();
-                    if *cursor < len {
-                        *cursor += 1;
-                    }
+                    let (value, cursor) = self.focused_pair_mut();
+                    *cursor = str_next_grapheme(value, *cursor);
                 } else {
                     self.focus = self.focus.next();
                 }
@@ -154,17 +155,14 @@ impl SearchModalState {
             KeyCode::Backspace if self.focus.is_field() => {
                 let (value, cursor) = self.focused_pair_mut();
                 if *cursor > 0 {
-                    let target = *cursor - 1;
-                    remove_char_at(value, target);
-                    *cursor = target;
+                    *cursor = str_remove_grapheme_before(value, *cursor);
                     self.last_error = None;
                 }
             }
             KeyCode::Delete if self.focus.is_field() => {
                 let (value, cursor) = self.focused_pair_mut();
                 if *cursor < value.chars().count() {
-                    let at = *cursor;
-                    remove_char_at(value, at);
+                    str_remove_grapheme_at(value, *cursor);
                     self.last_error = None;
                 }
             }
@@ -257,23 +255,6 @@ impl SearchModalState {
             SearchModalField::Replace => (&mut self.replace, &mut self.replace_cursor),
             _ => (&mut self.query, &mut self.query_cursor),
         }
-    }
-}
-
-/// Insert `ch` at char-index `cursor` in `s`; appends past the end.
-fn insert_char_at(s: &mut String, cursor: usize, ch: char) {
-    let byte_idx = s
-        .char_indices()
-        .nth(cursor)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len());
-    s.insert(byte_idx, ch);
-}
-
-/// Remove the char at char-index `cursor` from `s`; no-op out of bounds.
-fn remove_char_at(s: &mut String, cursor: usize) {
-    if let Some((byte_idx, ch)) = s.char_indices().nth(cursor) {
-        s.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
     }
 }
 

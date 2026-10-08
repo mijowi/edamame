@@ -21,6 +21,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::ui::cursor::pop_grapheme;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
     VERTICAL_CHROME_ROWS,
@@ -322,7 +323,7 @@ impl<T> SearchableList<T> {
                 ListEvent::Continue
             }
             KeyCode::Backspace => {
-                if self.query.pop().is_some() {
+                if pop_grapheme(&mut self.query) {
                     self.invalidate();
                     self.refresh();
                     return self.focus_event();

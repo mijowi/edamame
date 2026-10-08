@@ -24,6 +24,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - A `---` further down a file that starts with frontmatter is no longer mistaken for more frontmatter.
 - Pasting an image on the blank line after an indented code block or HTML block now works.
 - Dragging to select no longer switches lines between rendered and Markdown source mid-drag.
+- Arrow keys, Backspace and Delete in text fields and the vim command line now move over or delete a whole emoji or accented letter, not part of one.
 
 ## [0.1.5] - 2026-10-05
 

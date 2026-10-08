@@ -11,9 +11,12 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::document::{
+    str_next_grapheme, str_prev_grapheme, str_remove_grapheme_at, str_remove_grapheme_before,
+};
 use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::controls;
-use crate::ui::cursor::{insert_char_at, remove_char_at};
+use crate::ui::cursor::insert_char_at;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{draw_frame, FrameOpts, ModalKind};
 use crate::ui::searchable_list::{
@@ -160,13 +163,11 @@ impl ExportThemeState {
                 ExportThemeResponse::Continue
             }
             KeyCode::Left if matches!(self.focus, ExportThemeField::Name) => {
-                self.cursor = self.cursor.saturating_sub(1);
+                self.cursor = str_prev_grapheme(&self.name, self.cursor);
                 ExportThemeResponse::Continue
             }
             KeyCode::Right if matches!(self.focus, ExportThemeField::Name) => {
-                if self.cursor < self.name.chars().count() {
-                    self.cursor += 1;
-                }
+                self.cursor = str_next_grapheme(&self.name, self.cursor);
                 ExportThemeResponse::Continue
             }
             KeyCode::Home if matches!(self.focus, ExportThemeField::Name) => {
@@ -183,9 +184,7 @@ impl ExportThemeState {
             }
             KeyCode::Backspace if matches!(self.focus, ExportThemeField::Name) => {
                 if self.cursor > 0 {
-                    let target = self.cursor - 1;
-                    remove_char_at(&mut self.name, target);
-                    self.cursor = target;
+                    self.cursor = str_remove_grapheme_before(&mut self.name, self.cursor);
                     self.last_error = None;
                     self.name_user_edited = true;
                 }
@@ -193,7 +192,7 @@ impl ExportThemeState {
             }
             KeyCode::Delete if matches!(self.focus, ExportThemeField::Name) => {
                 if self.cursor < self.name.chars().count() {
-                    remove_char_at(&mut self.name, self.cursor);
+                    str_remove_grapheme_at(&mut self.name, self.cursor);
                     self.last_error = None;
                     self.name_user_edited = true;
                 }

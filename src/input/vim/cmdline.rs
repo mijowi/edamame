@@ -5,6 +5,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::state::CmdLineState;
+use crate::document::{
+    str_byte_index, str_next_grapheme, str_prev_grapheme, str_remove_grapheme_before,
+};
 
 /// What feeding one key to the command line decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,17 +32,16 @@ pub fn feed_key(cl: &mut CmdLineState, key: KeyEvent) -> CmdLineStep {
                 }
                 return CmdLineStep::Editing;
             }
-            let idx = byte_index(&cl.input, cl.cursor - 1);
-            cl.input.remove(idx);
-            cl.cursor -= 1;
+            // A whole grapheme cluster, as the editor's own Backspace removes.
+            cl.cursor = str_remove_grapheme_before(&mut cl.input, cl.cursor);
             CmdLineStep::Editing
         }
         KeyCode::Left => {
-            cl.cursor = cl.cursor.saturating_sub(1);
+            cl.cursor = str_prev_grapheme(&cl.input, cl.cursor);
             CmdLineStep::Editing
         }
         KeyCode::Right => {
-            cl.cursor = (cl.cursor + 1).min(cl.input.chars().count());
+            cl.cursor = str_next_grapheme(&cl.input, cl.cursor);
             CmdLineStep::Editing
         }
         KeyCode::Home => {
@@ -55,7 +57,7 @@ pub fn feed_key(cl: &mut CmdLineState, key: KeyEvent) -> CmdLineStep {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
         {
-            let idx = byte_index(&cl.input, cl.cursor);
+            let idx = str_byte_index(&cl.input, cl.cursor);
             cl.input.insert(idx, c);
             cl.cursor += 1;
             CmdLineStep::Editing
@@ -115,15 +117,10 @@ pub fn paste_str(cl: &mut CmdLineState, text: &str) {
         text
     };
     for c in text.chars().filter(|c| *c != '\n' && *c != '\r') {
-        let idx = byte_index(&cl.input, cl.cursor);
+        let idx = str_byte_index(&cl.input, cl.cursor);
         cl.input.insert(idx, c);
         cl.cursor += 1;
     }
-}
-
-/// Byte offset of char index `char_idx` within `s` (clamped to `s.len()`).
-fn byte_index(s: &str, char_idx: usize) -> usize {
-    s.char_indices().nth(char_idx).map_or(s.len(), |(i, _)| i)
 }
 
 #[cfg(test)]
@@ -183,6 +180,25 @@ mod tests {
         feed_key(&mut s, ch('X'));
         assert_eq!(s.input, "fXo");
         assert_eq!(s.cursor, 2);
+    }
+
+    /// Left, Right and Backspace step over a whole grapheme cluster, so the cursor never stops
+    /// on a combining mark or inside a ZWJ sequence.
+    #[test]
+    fn cursor_and_backspace_step_by_grapheme_cluster() {
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut s = cl();
+        paste_str(&mut s, "ae\u{0301}👨\u{200D}👩");
+        assert_eq!(s.cursor, 6);
+        feed_key(&mut s, key(KeyCode::Left));
+        assert_eq!(s.cursor, 3, "over the family");
+        feed_key(&mut s, key(KeyCode::Left));
+        assert_eq!(s.cursor, 1, "over the accented e");
+        feed_key(&mut s, key(KeyCode::Right));
+        assert_eq!(s.cursor, 3);
+        feed_key(&mut s, key(KeyCode::Backspace));
+        assert_eq!(s.input, "a👨\u{200D}👩", "the base and its accent");
+        assert_eq!(s.cursor, 1);
     }
 
     #[test]

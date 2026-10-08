@@ -24,12 +24,15 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::document::{
+    str_next_grapheme, str_prev_grapheme, str_remove_grapheme_at, str_remove_grapheme_before,
+};
 use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls::{
     self, control_input_for, control_row_spans, cycle_index, input_delta, pill_spans, pill_width,
     toggle_spans, toggle_width, Control, ControlEvent, ControlInput, ControlValue,
 };
-use crate::ui::cursor::{insert_char_at, remove_char_at, scrolled_field_spans};
+use crate::ui::cursor::{insert_char_at, scrolled_field_spans};
 use crate::ui::overlay_nav::next_focusable_wrapping;
 use crate::ui::sanitize_paste;
 use crate::ui::scroll_container::{
@@ -705,17 +708,14 @@ impl ExportState {
         let len = self.title.chars().count();
         let cursor = self.title_cursor.min(len);
         match code {
-            KeyCode::Left => self.title_cursor = cursor.saturating_sub(1),
-            KeyCode::Right => self.title_cursor = (cursor + 1).min(len),
+            KeyCode::Left => self.title_cursor = str_prev_grapheme(&self.title, cursor),
+            KeyCode::Right => self.title_cursor = str_next_grapheme(&self.title, cursor),
             KeyCode::Home => self.title_cursor = 0,
             KeyCode::End => self.title_cursor = len,
             KeyCode::Backspace => {
-                if cursor > 0 {
-                    remove_char_at(&mut self.title, cursor - 1);
-                    self.title_cursor = cursor - 1;
-                }
+                self.title_cursor = str_remove_grapheme_before(&mut self.title, cursor);
             }
-            KeyCode::Delete => remove_char_at(&mut self.title, cursor),
+            KeyCode::Delete => str_remove_grapheme_at(&mut self.title, cursor),
             KeyCode::Char(c) => self.insert_title_char(c),
             _ => return false,
         }

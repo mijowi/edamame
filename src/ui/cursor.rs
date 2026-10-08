@@ -5,18 +5,25 @@
 //! mis-restores in VTE).  The cursor is always a block; context is signaled by color
 //! (see `docs/dev/theming.md`).
 //!
-//! The block recolors the cell under the cursor ([`text_field_spans`]), so it is always one cell
-//! wide and the field never jitters on blink.  A field that can outgrow its width goes through
-//! [`scrolled_field_spans`], which windows the value around the cursor and pads the field out to
-//! its full width.
+//! The block recolors the grapheme cluster under the cursor ([`text_field_spans`]), so it is
+//! always that cluster's cells, or one blank cell past the end, and the field never jitters on
+//! blink.  A field that can outgrow its width goes through [`scrolled_field_spans`], which
+//! windows the value around the cursor and pads the field out to its full width.
+//!
+//! Cursors are char indices, but they step and delete by grapheme cluster through the `str_*`
+//! helpers in [`crate::document::graphemes`], as the editor's own cursor does, so a cursor never
+//! stops inside a ZWJ emoji sequence or on a combining mark.
 
 use ratatui::style::Style;
 use ratatui::text::Span;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+use crate::document::str_byte_index;
 
 /// The three spans of a single-line field value with a blink-stable block cursor at char index
-/// `cursor`.  The middle span is always one cell (the char under the cursor, or a space past
-/// the end), styled `cursor_style` when `visible` and `value_style` otherwise.
+/// `cursor`.  The middle span is the grapheme cluster under the cursor (a space past the end),
+/// styled `cursor_style` when `visible` and `value_style` otherwise.
 pub fn text_field_spans(
     value: &str,
     cursor: usize,
@@ -25,50 +32,65 @@ pub fn text_field_spans(
     cursor_style: Style,
 ) -> [Span<'static>; 3] {
     let (pre, rest) = split_at_char(value, cursor);
-    let mut rest_chars = rest.chars();
-    let under = rest_chars.next();
-    let post: String = rest_chars.collect();
+    let (under, post) = match rest.graphemes(true).next() {
+        Some(g) => (g.to_owned(), rest[g.len()..].to_owned()),
+        None => (" ".to_owned(), String::new()),
+    };
     let cell_style = if visible { cursor_style } else { value_style };
     [
         Span::styled(pre, value_style),
-        Span::styled(under.unwrap_or(' ').to_string(), cell_style),
+        Span::styled(under, cell_style),
         Span::styled(post, value_style),
     ]
 }
 
-/// The visible slice of a single-line field `width` cells wide, scrolled so the cursor cell
-/// (the char under the cursor, or one blank cell past the end) is always on screen.  `scroll`
-/// is the first visible char index from the previous frame: the window moves only as far as the
-/// cursor forces it, and slides back left while the text no longer fills it (after a delete).
-/// Returns the new scroll offset and the visible text; the cursor sits at `cursor - scroll` in
-/// it, ready for [`text_field_spans`].
+/// The visible slice of a single-line field `width` cells wide, scrolled so the cursor's cluster
+/// (or one blank cell past the end) is always on screen.  `scroll` is the first visible char
+/// index from the previous frame: the window moves only as far as the cursor forces it, and
+/// slides back left while the text no longer fills it (after a delete).  The window moves a
+/// whole grapheme cluster at a time, so neither edge splits one.  Returns the new scroll offset
+/// and the visible text; the cursor sits at `cursor - scroll` in it, ready for
+/// [`text_field_spans`].
 pub fn scroll_field(value: &str, cursor: usize, scroll: usize, width: usize) -> (usize, String) {
-    let chars: Vec<char> = value.chars().collect();
-    let cursor = cursor.min(chars.len());
-    let cells = |cs: &[char]| -> usize { cs.iter().map(|c| c.width().unwrap_or(0)).sum() };
-    let cursor_cell = chars
-        .get(cursor)
-        .map_or(1, |c| c.width().unwrap_or(0).max(1));
+    // Each cluster: its first char index, its cells, its text.
+    let mut units: Vec<(usize, usize, &str)> = Vec::new();
+    let mut len = 0;
+    for g in value.graphemes(true) {
+        units.push((len, g.width(), g));
+        len += g.chars().count();
+    }
+    // The cluster holding char index `ch` (`units.len()` at or past the end).
+    let unit_of = |ch: usize| -> usize {
+        if ch >= len {
+            units.len()
+        } else {
+            units.partition_point(|u| u.0 <= ch).saturating_sub(1)
+        }
+    };
+    let cells = |from: usize, to: usize| -> usize { units[from..to].iter().map(|u| u.1).sum() };
+    let cursor = unit_of(cursor);
+    let cursor_cell = units.get(cursor).map_or(1, |u| u.1.max(1));
 
-    let mut scroll = scroll.min(cursor);
-    while scroll < cursor && cells(&chars[scroll..cursor]) + cursor_cell > width {
+    let mut scroll = unit_of(scroll).min(cursor);
+    while scroll < cursor && cells(scroll, cursor) + cursor_cell > width {
         scroll += 1;
     }
     // Strictly less than `width` reserves the end-of-text cursor cell whether or not the cursor
     // is there, so stepping the cursor back from the end never shifts the text.
-    while scroll > 0 && cells(&chars[scroll - 1..]) < width {
+    while scroll > 0 && cells(scroll - 1, units.len()) < width {
         scroll -= 1;
     }
 
     let mut used = 0;
-    let visible = chars[scroll..]
+    let visible = units[scroll..]
         .iter()
-        .take_while(|c| {
-            used += c.width().unwrap_or(0);
+        .take_while(|u| {
+            used += u.1;
             used <= width
         })
+        .map(|u| u.2)
         .collect();
-    (scroll, visible)
+    (units.get(scroll).map_or(len, |u| u.0), visible)
 }
 
 /// The spans of a single-line field exactly `width` cells wide: the value windowed by
@@ -104,28 +126,23 @@ pub fn scrolled_field_spans(
 
 /// Insert `ch` at char index `cursor` (appends when past the end).
 pub fn insert_char_at(s: &mut String, cursor: usize, ch: char) {
-    let byte_idx = s
-        .char_indices()
-        .nth(cursor)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len());
-    s.insert(byte_idx, ch);
+    s.insert(str_byte_index(s, cursor), ch);
 }
 
-/// Remove the char at char index `cursor`; no-op when out of bounds.
-pub fn remove_char_at(s: &mut String, cursor: usize) {
-    if let Some((byte_idx, ch)) = s.char_indices().nth(cursor) {
-        s.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
+/// Remove the last grapheme cluster of an append-only field; `false` when `s` was empty.
+pub fn pop_grapheme(s: &mut String) -> bool {
+    match s.grapheme_indices(true).next_back() {
+        Some((byte_idx, _)) => {
+            s.truncate(byte_idx);
+            true
+        }
+        None => false,
     }
 }
 
 /// Split `s` at char index `cursor` (clamped to the end) into two owned halves.
 fn split_at_char(s: &str, cursor: usize) -> (String, String) {
-    let byte_idx = s
-        .char_indices()
-        .nth(cursor)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len());
+    let byte_idx = str_byte_index(s, cursor);
     (s[..byte_idx].to_owned(), s[byte_idx..].to_owned())
 }
 
@@ -165,6 +182,19 @@ mod tests {
         assert!(spans[2].content.is_empty());
     }
 
+    /// The cursor cell holds the whole cluster, so a combining mark or the rest of a ZWJ
+    /// sequence never paints as a cell of its own.
+    #[test]
+    fn text_field_cursor_covers_the_whole_cluster() {
+        let s = "e\u{0301}👨\u{200D}👩x";
+        let spans = text_field_spans(s, 0, true, Style::default(), Style::default());
+        assert_eq!(spans[1].content.as_ref(), "e\u{0301}");
+        assert_eq!(spans[2].content.as_ref(), "👨\u{200D}👩x");
+        let spans = text_field_spans(s, 2, true, Style::default(), Style::default());
+        assert_eq!(spans[1].content.as_ref(), "👨\u{200D}👩");
+        assert_eq!(spans[2].content.as_ref(), "x");
+    }
+
     #[test]
     fn scroll_field_leaves_a_fitting_value_unscrolled() {
         assert_eq!(scroll_field("hello", 5, 0, 10), (0, "hello".into()));
@@ -197,15 +227,38 @@ mod tests {
         assert_eq!(scroll_field("日本語", 3, 0, 5), (1, "本語".into()));
     }
 
+    /// The window scrolls by whole clusters: the left edge never lands on a combining mark,
+    /// and a cluster is measured as it paints, not as the sum of its chars.
     #[test]
-    fn insert_and_remove_char_at_respect_char_boundaries() {
+    fn scroll_field_never_splits_a_cluster() {
+        // Four `é`s, each two chars and one cell; the end cursor needs a cell, so three fit.
+        let s = "e\u{0301}".repeat(4);
+        assert_eq!(scroll_field(&s, 8, 0, 4), (2, "e\u{0301}".repeat(3)));
+        // A stale scroll inside a cluster snaps back to that cluster's start.
+        assert_eq!(scroll_field(&s, 8, 3, 4), (2, "e\u{0301}".repeat(3)));
+        // 👍🏽 paints two cells, not the four its two chars would sum to.
+        assert_eq!(
+            scroll_field("👍\u{1F3FD}ab", 4, 0, 5),
+            (0, "👍\u{1F3FD}ab".into())
+        );
+    }
+
+    #[test]
+    fn insert_char_at_respects_char_boundaries() {
         let mut s = "é!".to_owned();
         insert_char_at(&mut s, 1, 'x');
         assert_eq!(s, "éx!");
-        remove_char_at(&mut s, 0);
-        assert_eq!(s, "x!");
-        remove_char_at(&mut s, 9);
-        assert_eq!(s, "x!");
+        insert_char_at(&mut s, 9, '?');
+        assert_eq!(s, "éx!?");
+    }
+
+    #[test]
+    fn pop_grapheme_removes_the_last_cluster() {
+        let mut s = "a👍\u{1F3FD}".to_owned();
+        assert!(pop_grapheme(&mut s));
+        assert_eq!(s, "a");
+        assert!(pop_grapheme(&mut s));
+        assert!(!pop_grapheme(&mut s));
     }
 
     #[test]
