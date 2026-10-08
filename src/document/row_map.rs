@@ -32,9 +32,10 @@ fn own_origins(parsed: &ParsedDoc, block: usize) -> (&[RowOrigin], usize) {
 }
 
 /// The row of `block` that shows block-relative source `line`: the first row whose lines reach
-/// it.  A line that renders no row of its own (an interior blank, a setext underline below a
-/// one-row heading, a bare `-`) shares the next line's row; a line past every row clamps to the
-/// last row that shows a line, so never onto trailing chrome no line owns (a table's bottom
+/// it.  A line that renders no row of its own (a link reference definition inside a container,
+/// a setext underline below a one-row heading, a bare `-`) shares the next line's row; a line
+/// past every row clamps to the last row that shows a line, so never onto trailing chrome no
+/// line owns (a table's bottom
 /// border, an unclosed fence's placeholder).  A block with no rows answers 0.
 pub fn row_for_line(parsed: &ParsedDoc, block: usize, line: usize) -> usize {
     let (origins, band) = own_origins(parsed, block);
@@ -748,14 +749,31 @@ mod tests {
 
     #[test]
     fn a_line_with_no_row_shares_the_next_lines_row() {
-        // An interior blank between an item's paragraphs renders no row.
+        // A link reference definition inside a quote renders no row.
+        let d = doc("> a\n>\n> [r]: /u\n> b\n");
+        let b = block_at(&d, 0);
+        assert_eq!(
+            (0..4).map(|l| row_for_line(&d, b, l)).collect::<Vec<_>>(),
+            [0, 1, 2, 2]
+        );
+        assert_eq!(line_for_row(&d, b, 2), 3);
+    }
+
+    #[test]
+    fn a_blank_between_an_items_blocks_has_a_row_of_its_own() {
         let d = doc("- a\n\n  b\n");
         let b = block_at(&d, 0);
         assert_eq!(
             (0..3).map(|l| row_for_line(&d, b, l)).collect::<Vec<_>>(),
-            [0, 1, 1]
+            [0, 1, 2]
         );
-        assert_eq!(line_for_row(&d, b, 1), 2);
+        // So does a blank between a nested loose list's items.
+        let d = doc("- x\n  - b\n\n  - d\n");
+        let b = block_at(&d, 0);
+        assert_eq!(
+            (0..4).map(|l| row_for_line(&d, b, l)).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
     }
 
     #[test]

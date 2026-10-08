@@ -9,8 +9,8 @@
 //! - **A row is numbered with the first line it shows, and only the first row to reach a line
 //!   numbers it.**  A marker on a row of its own and the block below it, a table row's wrap
 //!   chunks and separators, an image's reserves: the later rows stay blank.  A line with no row
-//!   of its own (an interior blank in a list item) is omitted, never reassigned.  Numbers
-//!   therefore ascend and never repeat.
+//!   of its own (a link reference definition inside a container) is omitted, never reassigned.
+//!   Numbers therefore ascend and never repeat.
 //! - The walk reads [`ParsedDoc::source`], never the live `Buffer`: it resolves parse-time
 //!   byte ranges, and a deferred in-line edit leaves the buffer ahead of the parse.  The
 //!   table is memoized per parse, so a mislabel would persist until the next re-parse.
@@ -293,23 +293,34 @@ mod tests {
             Some(4),
             "row {row} shows `continuation` (line index 4): {labels:?}"
         );
-        assert!(
-            !labels.iter().flatten().any(|&l| l == 3),
-            "the swallowed blank must not be numbered elsewhere: {labels:?}"
+        // The blank inside the item has its own row, numbered with its own line.
+        assert_eq!(labels[row - 1], Some(3), "{labels:?}");
+        assert_eq!(
+            labels.iter().flatten().filter(|&&l| l == 3).count(),
+            1,
+            "{labels:?}"
         );
     }
 
-    /// A blank inside a code block nested in a list item renders a code row, unlike an
-    /// interior blank in the item's prose; counting it as rowless shifted every number below it.
+    /// A blank inside a code block nested in a list item renders a code row, and the blank
+    /// between the item's text and the block a blank row: every line keeps its number.
     #[test]
     fn a_blank_inside_a_nested_code_block_keeps_its_number() {
         let source = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
         let state = state_for(source, 80);
         let labels = labels(&state, 80);
-        // Rows: item, ` bash ` label, body, blank body, body, closing fence.
+        // Rows: item, blank, ` bash ` label, body, blank body, body, closing fence.
         assert_eq!(
-            labels[..6],
-            [Some(0), Some(2), Some(3), Some(4), Some(5), Some(6)],
+            labels[..7],
+            [
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6)
+            ],
             "{labels:?}"
         );
     }

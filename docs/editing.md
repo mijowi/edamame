@@ -41,7 +41,7 @@ Reflow applies to every paragraph, including the text of a list item, a blockquo
 
 With reflow off, every paragraph keeps your line breaks, one row per source line. The exception is a line break inside bold, italic or link text, which joins the two lines onto one row.
 
-Blank lines inside a blockquote (a line holding only `>`) show as empty quoted rows, exactly as many as you wrote. A link reference definition (`[label]: /url`) shows nothing, inside a quote or out.
+Blank lines inside a blockquote (a line holding only `>`) show as empty quoted rows, exactly as many as you wrote. So do the blank lines between the paragraphs, code blocks and other blocks of one list item or footnote, and an item's later paragraphs line up under its text. A link reference definition (`[label]: /url`) shows nothing, inside a quote or out.
 
 **Frontmatter is shown as data, not prose.** A `---`-delimited YAML block (or a `+++`-delimited TOML one) at the top of a file renders verbatim — one row per source line, dimmed, with each key picked out from its value. It stays fully editable, and it is left out of an HTML export, since it describes the document rather than belonging to it.
 

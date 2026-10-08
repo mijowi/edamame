@@ -389,6 +389,7 @@ fn nested_reflowed_paragraph_reveals_its_whole_source_lines_stacked() {
                 "",
                 "[^n]: note one",
                 "    two three",
+                "",
                 "      second para more ↩",
                 "",
                 "after",
@@ -402,6 +403,7 @@ fn nested_reflowed_paragraph_reveals_its_whole_source_lines_stacked() {
                 "ref[n]",
                 "",
                 "  n.  note one two three",
+                "",
                 "    second para",
                 "    more",
                 "",
@@ -2316,7 +2318,7 @@ fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
     use edamame::ui::{RenderedView, RenderedViewState};
 
     let theme = Box::leak(Box::new(Theme::default()));
-    // Rendered rows: 0 = "8. Tag it.", 1 = " bash " label, 2 = " gh run watch".
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash " label, 3 = " gh run watch".
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n    ```\n";
     let width: u16 = 30;
     let draw = |cursor: usize| {
@@ -2349,23 +2351,23 @@ fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
     let active = draw(src.find("run").unwrap());
     let cursor_x = 4u16;
     for x in 0..width {
-        let (r, a) = (resting.cell((x, 2)).unwrap(), active.cell((x, 2)).unwrap());
+        let (r, a) = (resting.cell((x, 3)).unwrap(), active.cell((x, 3)).unwrap());
         assert_eq!(a.symbol(), r.symbol(), "row text changed at col {x}");
         if x != cursor_x {
             assert_eq!(a.style(), r.style(), "row styling changed at col {x}");
         }
     }
-    assert_eq!(active.cell((cursor_x, 2)).unwrap().symbol(), "r");
+    assert_eq!(active.cell((cursor_x, 3)).unwrap().symbol(), "r");
     assert_eq!(
-        active.cell((cursor_x, 2)).unwrap().style().bg,
+        active.cell((cursor_x, 3)).unwrap().style().bg,
         theme.status_mode_rendered.bg,
         "cursor indicator must sit on the `r`",
     );
 }
 
 /// The selection overlay on a code body row nested in a list item maps through the pad cell
-/// and the stripped item indent, and finds the row's source line past the blank line that
-/// renders no row (a 1:1 lookup washed the line above).
+/// and the stripped item indent, and finds the row's source line below the item's blank line
+/// (a 1:1 lookup, when that blank rendered no row, washed the line above).
 #[test]
 fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
     use edamame::document::{Buffer, Selection};
@@ -2373,7 +2375,7 @@ fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
     use edamame::ui::{RenderedView, RenderedViewState};
 
     let theme = Box::leak(Box::new(Theme::default()));
-    // Rendered rows: 0 = "8. Tag it.", 1 = " bash " label, 2 = " gh run watch".
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash " label, 3 = " gh run watch".
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n    ```\n";
     let width: u16 = 30;
     let mut state = EditorState::new(Buffer::from_str(src), theme);
@@ -2409,11 +2411,11 @@ fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
             .collect()
     };
     assert_eq!(
-        washed(2),
+        washed(3),
         [4, 5, 6],
         "`run` sits at cols 4..7 of the body row"
     );
-    assert!(washed(1).is_empty(), "the label row must stay unselected");
+    assert!(washed(2).is_empty(), "the label row must stay unselected");
 }
 
 /// The selection overlay on the nested item a last list item opens on its marker line: it

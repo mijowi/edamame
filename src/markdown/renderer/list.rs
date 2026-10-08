@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::markdown::ast::{to_u32, Block, ListItem};
-use crate::markdown::renderer::{paragraph_rows, Renderer};
+use crate::markdown::renderer::{paragraph_rows, push_gap_rows, render_children, Renderer};
 use crate::markdown::row_origin::{RowOrigin, RowSink};
 use crate::markdown::table_layout::str_cells;
 
@@ -16,15 +16,13 @@ impl<'t> Renderer<'t> {
         items: &[ListItem],
         out: &mut RowSink,
         indent_prefix: &str,
-        // Whether to render loose-list spacing: for a top-level list or one directly inside a
-        // quote.  A loose list nested in an item renders tight.
-        spaced: bool,
     ) {
         // `marker_width` is the prefix printed before each item's first line; `nested_indent_width`
-        // is the leading whitespace before each nested block.  The latter is `max(4, marker_width)`
-        // because source nesting uses 4 spaces, and rendering at the same width keeps the raw-mode
-        // view from showing the nested marker shifted; a marker wider than 4 grows the indent with
-        // it so those markers still align under their parent's content column.
+        // is the leading whitespace before each nested list (other blocks align under the item's
+        // text, see `indent_for`).  The latter is `max(4, marker_width)` because source nesting
+        // uses 4 spaces, and rendering at the same width keeps the raw-mode view from showing the
+        // nested marker shifted; a marker wider than 4 grows the indent with it so those markers
+        // still align under their parent's content column.
         let first_num = start.unwrap_or(1);
         let last_num = first_num + items.len().saturating_sub(1) as u64;
         let digit_width = last_num.to_string().len().max(1);
@@ -35,15 +33,12 @@ impl<'t> Renderer<'t> {
         let mut counter = first_num;
         let mut prev_end: Option<u32> = None;
         for item in items {
-            // Loose-list spacing: one blank row per source line between this item's span and
-            // the last one's.  A blank inside an item (in a fence, or between its paragraphs)
-            // lies within that item's span, so it never counts.
-            if spaced {
-                if let Some(end) = prev_end {
-                    for line in end..item.span.start {
-                        out.push(Line::raw(""), RowOrigin::chrome(Some(line)));
-                    }
-                }
+            // Loose-list spacing, at any depth: one blank row per source line between this
+            // item's span and the last one's.  A blank inside an item (in a fence, or between its
+            // blocks) lies within that item's span, so it never counts here; the item renders it
+            // itself.
+            if let Some(end) = prev_end {
+                push_gap_rows(out, end..item.span.start, &[]);
             }
             prev_end = Some(item.span.end);
             // A task is a decorated bullet — the same marker plus the checkbox span below — so
@@ -88,6 +83,20 @@ impl<'t> Renderer<'t> {
                 Style::default()
             };
 
+            // Blocks after the first indent to the item's text, behind the marker and any task box
+            // (of the blocks that take an indent, paragraphs and raw HTML).  A nested list instead
+            // takes `child_indent_prefix`, the 4-space nesting.
+            let text_indent = " ".repeat(
+                str_cells(&marker) + task_prefix.as_ref().map_or(0, |tp| str_cells(&tp.content)),
+            );
+            let indent_for = |block: &Block| {
+                if matches!(block, Block::List { .. }) {
+                    child_indent_prefix.as_str()
+                } else {
+                    text_indent.as_str()
+                }
+            };
+
             // The marker row shows the item's first line; a marker-only row is chrome.
             let marker_row = RowOrigin::chrome(Some(item.span.start));
             // An empty item still emits its marker so the block produces at least one line.
@@ -100,7 +109,9 @@ impl<'t> Renderer<'t> {
                 continue;
             }
 
-            for (i, block) in item.blocks.iter().enumerate() {
+            // A blank line between two of the item's blocks renders a blank row (one per line),
+            // so the item stays one row per source line, as a quote does.
+            render_children(out, &item.blocks, None, &item.hidden, |i, block, out| {
                 if i == 0 {
                     match block {
                         Block::Paragraph { inlines, src } => {
@@ -142,15 +153,13 @@ impl<'t> Renderer<'t> {
                                 spans.push(tp);
                             }
                             out.push(Line::from(spans), marker_row.clone());
-                            self.render_block(other, out, &child_indent_prefix, false);
+                            self.render_block(other, out, indent_for(other), false);
                         }
                     }
                 } else {
-                    // Later blocks take the child indent, so their text aligns with this item's
-                    // text column.
-                    self.render_block(block, out, &child_indent_prefix, false);
+                    self.render_block(block, out, indent_for(block), false);
                 }
-            }
+            });
         }
     }
 }

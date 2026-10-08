@@ -226,6 +226,9 @@ pub enum Block {
         label: String,
         blocks: Vec<Block>,
         span: LineSpan,
+        /// Lines between two children that no child covers and that aren't blank: link
+        /// reference definitions, which render nothing.  Usually empty.
+        hidden: Vec<u32>,
     },
 }
 
@@ -290,6 +293,9 @@ pub struct ListItem {
     /// after it, which pulldown-cmark's item range absorbs.  A loose list's spacing is the gap
     /// between one item's span and the next's.
     pub span: LineSpan,
+    /// Lines between two of `blocks` that no block covers and that aren't blank: link
+    /// reference definitions, which render nothing.  Usually empty.
+    pub hidden: Vec<u32>,
 }
 
 // ─── Inline nodes ─────────────────────────────────────────────────────────────

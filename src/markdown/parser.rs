@@ -11,7 +11,7 @@ use std::ops::Range;
 
 use pulldown_cmark::{CodeBlockKind, Event, MetadataBlockKind, Tag, TagEnd};
 
-use super::ast::{inlines_to_plain, Block, Inline, ListItem, MetadataKind, SrcLines};
+use super::ast::{inlines_to_plain, Block, Inline, LineSpan, ListItem, MetadataKind, SrcLines};
 use super::parse_offsets;
 use stream::{EventStream, LeafMode};
 
@@ -240,18 +240,7 @@ where
     consume_end(events);
     // A bare `>` before or after the children is the quote's own line, so its range counts.
     let span = events.container_span(&start, children_end(&inner), true);
-    // Uncovered lines that aren't bare `>`: link reference definitions.  The empty range at
-    // the span's end closes the gap after the last child.
-    let mut hidden = Vec::new();
-    let mut next_line = span.start;
-    for child in inner
-        .iter()
-        .map(Block::span)
-        .chain(std::iter::once(span.end..span.end))
-    {
-        hidden.extend((next_line..child.start).filter(|&line| !events.is_bare_line(line)));
-        next_line = next_line.max(child.end);
-    }
+    let hidden = hidden_lines(events, &inner, Some(&span));
     Block::BlockQuote {
         blocks: inner,
         span,
@@ -272,10 +261,12 @@ where
     let inner = parse_blocks(events, false);
     consume_end(events);
     let span = events.container_span(&start, children_end(&inner), false);
+    let hidden = hidden_lines(events, &inner, None);
     Block::FootnoteDefinition {
         label,
         blocks: inner,
         span,
+        hidden,
     }
 }
 
@@ -391,6 +382,31 @@ fn children_end(blocks: &[Block]) -> Option<u32> {
     blocks.iter().map(|b| b.span().end).max()
 }
 
+/// The lines between consecutive `blocks` that none covers and that aren't blank (bare, inside a
+/// quote): link reference definitions, which render nothing where every other gap line renders
+/// a blank row.  With `outer` (a blockquote's span), the lines before the first block and after
+/// the last count too.
+fn hidden_lines<'a, I>(
+    events: &EventStream<'a, I>,
+    blocks: &[Block],
+    outer: Option<&LineSpan>,
+) -> Vec<u32>
+where
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
+{
+    let mut hidden = Vec::new();
+    let mut next_line = outer.map(|span| span.start);
+    // The empty range at `outer`'s end closes the gap after the last block.
+    let trailing = outer.map(|span| span.end..span.end);
+    for span in blocks.iter().map(Block::span).chain(trailing) {
+        if let Some(line) = next_line {
+            hidden.extend((line..span.start).filter(|&line| !events.is_bare_line(line)));
+        }
+        next_line = Some(next_line.map_or(span.end, |line| line.max(span.end)));
+    }
+    hidden
+}
+
 // ─── List parsing ─────────────────────────────────────────────────────────────
 
 fn parse_list_items<'a, I>(events: &mut EventStream<'a, I>) -> Vec<ListItem>
@@ -444,7 +460,13 @@ where
                 }
                 consume_end(events); // End(Item)
                 let span = events.container_span(&item_range, children_end(&blocks), false);
-                items.push(ListItem { blocks, task, span });
+                let hidden = hidden_lines(events, &blocks, None);
+                items.push(ListItem {
+                    blocks,
+                    task,
+                    span,
+                    hidden,
+                });
             }
             _ => {
                 events.next(); // skip unexpected events

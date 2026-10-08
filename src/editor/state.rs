@@ -898,9 +898,9 @@ impl EditorState {
         let (block, pos) = crate::ui::rendered_view::cursor_block_pos(self)?;
         let row = crate::document::row_map::row_for_pos(&self.parsed, block, pos);
         let lines = crate::document::row_map::stacked_lines(&self.parsed, block, row)?;
-        // A line rendering no row of its own (the blank between an item's paragraphs) shares the
-        // next line's row, but the stack wouldn't hold it: that cursor reveals its own line in
-        // place.
+        // A line rendering no row of its own (a link reference definition inside a container)
+        // shares the next line's row, but the stack wouldn't hold it: that cursor reveals its own
+        // line in place.
         lines
             .contains(&crate::markdown::ast::to_u32(pos.line))
             .then_some(StackedRow { block, row, lines })
@@ -1359,8 +1359,8 @@ pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
 }
 
 /// The cursor's line within its block: the raw line the revealed cursor row paints.  It can
-/// differ from the line that row's origin names, since a line rendering no row of its own (an
-/// interior blank) shares the next line's.
+/// differ from the line that row's origin names, since a line rendering no row of its own (a
+/// link reference definition inside a container) shares the next line's.
 pub(crate) fn cursor_raw_line(state: &EditorState) -> usize {
     // Shared with `RenderedView`, which has one extra branch for a stale parse.
     crate::ui::rendered_view::cursor_block_pos(state).map_or(0, |(_, pos)| pos.line)

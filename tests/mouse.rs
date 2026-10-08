@@ -2129,18 +2129,20 @@ fn click_on_code_block_body_lands_on_clicked_char() {
     }
 }
 
-/// A blank between a list item's paragraph and its nested code block renders no row, so the
-/// rows below it are not 1:1 with the block's source lines.  Indexing raw lines by rendered
-/// row landed every click below the gap on the source line above.
+/// Each row of a code block nested in a list item, and the blank row between it and the item's
+/// text, lands a click on its own source line.  Indexing raw lines by rendered row, when the
+/// blank rendered no row, landed every click below the gap on the source line above.
 #[test]
 fn click_on_code_nested_in_list_item_lands_on_clicked_line() {
     let src = "8. Tag it.\n\n    ```bash\n    git tag\n    gh run watch\n    ```\n";
-    // Rendered rows: 0 = "8. Tag it.", 1 = " bash ", 2 = " git tag", 3 = " gh run watch".
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash ", 3 = " git tag",
+    // 4 = " gh run watch".
     for (row, expected) in [
         (0u16, "8. Tag it."),
-        (1, "    ```bash"),
-        (2, "    git tag"),
-        (3, "    gh run watch"),
+        (1, ""),
+        (2, "    ```bash"),
+        (3, "    git tag"),
+        (4, "    gh run watch"),
     ] {
         let mut st = state(src);
         st.mode = Mode::Rendered;
@@ -2187,13 +2189,13 @@ fn click_on_a_nested_items_continuation_lands_on_clicked_char() {
 #[test]
 fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
-    // Rendered rows: 0 = "8. Tag it.", 1 = " bash ", 2 = " gh run watch", 3 = blank code
-    // row, 4 = "   indented".  Screen col c shows the body char c - 1.
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash ", 3 = " gh run watch",
+    // 4 = blank code row, 5 = "   indented".  Screen col c shows the body char c - 1.
     for (screen_col, row, target) in [
-        (1u16, 2u16, "gh run watch"),
-        (4, 2, "run watch"),
-        (8, 2, "watch"),
-        (3, 4, "indented"),
+        (1u16, 3u16, "gh run watch"),
+        (4, 3, "run watch"),
+        (8, 3, "watch"),
+        (3, 5, "indented"),
     ] {
         let mut st = state(src);
         st.mode = Mode::Rendered;

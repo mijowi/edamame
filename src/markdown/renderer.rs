@@ -14,7 +14,7 @@ use tui_big_text::{BigText, PixelSize};
 use crate::config::Theme;
 
 use self::util::{link_fallback, link_style_for};
-use super::ast::{inlines_to_plain, to_u32, Block, Inline, MetadataKind, SrcLines};
+use super::ast::{inlines_to_plain, to_u32, Block, Inline, LineSpan, MetadataKind, SrcLines};
 use super::highlight::{self, Token};
 use super::render_cache::{is_cache_worthy, CachedRows, RenderCache, RenderSettings};
 use super::row_origin::{ContentKind, RowOrigin, RowSink};
@@ -332,7 +332,7 @@ impl<'t> Renderer<'t> {
                 items,
                 ..
             } => {
-                self.render_list(*ordered, *start, items, out, indent_prefix, top_level);
+                self.render_list(*ordered, *start, items, out, indent_prefix);
             }
             Block::HorizontalRule { src } => {
                 out.push(
@@ -372,8 +372,9 @@ impl<'t> Renderer<'t> {
                 label,
                 blocks,
                 span,
+                hidden,
             } => {
-                self.render_footnote_definition(label, blocks, span, out);
+                self.render_footnote_definition(label, blocks, span, hidden, out);
             }
         }
         debug_assert_eq!(
@@ -446,7 +447,8 @@ impl<'t> Renderer<'t> {
         &self,
         label: &str,
         blocks: &[Block],
-        span: &super::ast::LineSpan,
+        span: &LineSpan,
+        hidden: &[u32],
         out: &mut RowSink,
     ) {
         let leader = format!("  {label}.  ");
@@ -455,9 +457,9 @@ impl<'t> Renderer<'t> {
         let shift = str_cells(&leader);
         let mut body = RowSink::default();
         self.inset_by(shift, || {
-            for b in blocks {
-                self.render_block(b, &mut body, "", false);
-            }
+            render_children(&mut body, blocks, None, hidden, |_, b, body| {
+                self.render_block(b, body, "", false);
+            });
         });
         let cont_indent = " ".repeat(shift);
         let back = " ↩";
@@ -936,7 +938,7 @@ impl<'t> Renderer<'t> {
     fn render_blockquote(
         &self,
         blocks: &[Block],
-        span: &super::ast::LineSpan,
+        span: &LineSpan,
         hidden: &[u32],
         out: &mut RowSink,
     ) {
@@ -947,30 +949,10 @@ impl<'t> Renderer<'t> {
         // two cells narrower.
         let bar_cells = str_cells("▎ ");
         let mut inner = RowSink::default();
-        let blanks = |lines: std::ops::Range<u32>, inner: &mut RowSink| {
-            for line in lines.filter(|line| !hidden.contains(line)) {
-                inner.push(Line::from(""), RowOrigin::chrome(Some(line)));
-            }
-        };
         self.inset_by(bar_cells, || {
-            let mut next_line = span.start;
-            for block in blocks {
-                let child = block.span();
-                blanks(next_line..child.start, &mut inner);
-                match block {
-                    // A loose list keeps its spacing here, so a bare `>` between its items has
-                    // its row like any other.
-                    Block::List {
-                        ordered,
-                        start,
-                        items,
-                        ..
-                    } => self.render_list(*ordered, *start, items, &mut inner, "", true),
-                    _ => self.render_block(block, &mut inner, "", false),
-                }
-                next_line = next_line.max(child.end);
-            }
-            blanks(next_line..span.end, &mut inner);
+            render_children(&mut inner, blocks, Some(span), hidden, |_, block, inner| {
+                self.render_block(block, inner, "", false);
+            });
         });
 
         for (line, origin) in inner.into_rows() {
@@ -1235,6 +1217,39 @@ pub(super) fn paragraph_rows<'a>(
                 RowOrigin::content(lines, raw_col, prefix_cells, kind),
             )
         })
+}
+
+/// One blank row per line of `lines` (a gap in a container), less the `hidden` ones (link
+/// reference definitions, which render nothing): a container shows each blank source line inside
+/// it, so it stays one row per line.
+pub(super) fn push_gap_rows(out: &mut RowSink, lines: std::ops::Range<u32>, hidden: &[u32]) {
+    for line in lines.filter(|line| !hidden.contains(line)) {
+        out.push(Line::from(""), RowOrigin::chrome(Some(line)));
+    }
+}
+
+/// Render a container's children with `render(index, block, out)`, each behind the gap rows
+/// ([`push_gap_rows`]) for the lines between it and the previous child.  With `outer` (a
+/// blockquote's span), the lines before the first child and after the last get rows too.
+pub(super) fn render_children(
+    out: &mut RowSink,
+    blocks: &[Block],
+    outer: Option<&LineSpan>,
+    hidden: &[u32],
+    mut render: impl FnMut(usize, &Block, &mut RowSink),
+) {
+    let mut next_line = outer.map(|span| span.start);
+    for (i, block) in blocks.iter().enumerate() {
+        let span = block.span();
+        if let Some(line) = next_line {
+            push_gap_rows(out, line..span.start, hidden);
+        }
+        render(i, block, out);
+        next_line = Some(next_line.map_or(span.end, |line| line.max(span.end)));
+    }
+    if let Some(outer) = outer {
+        push_gap_rows(out, next_line.unwrap_or(outer.start)..outer.end, hidden);
+    }
 }
 
 /// Whether a paragraph of `inlines` reflows when reflow is on: it has no hard break.  See
@@ -1601,6 +1616,7 @@ mod tests {
             blocks,
             task: None,
             span: Default::default(),
+            hidden: vec![],
         };
         let list = |items| Block::List {
             ordered: false,
@@ -1727,13 +1743,55 @@ mod tests {
             texts,
             [
                 "• a soft",
-                "    later para",
+                "",
+                "  later para",
                 "• b",
                 "  hard",
                 "▎ q more",
                 "  n.  one two ↩",
             ],
             "{texts:?}"
+        );
+    }
+
+    /// An item's later blocks align under its text (behind the marker and any task box), and each
+    /// blank line between its blocks renders a blank row; a nested list keeps the 4-cell nesting,
+    /// and a link reference definition between blocks renders nothing.  A footnote definition
+    /// renders the blanks between its blocks too, and a nested loose list those between its
+    /// items.
+    #[test]
+    fn an_items_later_blocks_sit_under_its_text_behind_a_row_per_blank_line() {
+        let texts = |src: &str| -> Vec<String> {
+            renderer()
+                .with_viewport_width(80)
+                .render(&parse(src))
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        assert_eq!(texts("- a\n\n  b\n"), ["• a", "", "  b"]);
+        assert_eq!(texts("1. a\n\n   b\n"), ["1. a", "", "   b"]);
+        assert_eq!(texts("- [ ] a\n\n  b\n"), ["• [ ] a", "", "      b"]);
+        assert_eq!(texts("- a\n\n\n  b\n"), ["• a", "", "", "  b"]);
+        assert_eq!(texts("- a\n\n  - b\n"), ["• a", "", "    • b"]);
+        assert_eq!(texts("- a\n\n  [r]: /u\n\n  b\n"), ["• a", "", "", "  b"]);
+        assert_eq!(texts("> - a\n>\n>   b\n"), ["▎ • a", "▎", "▎   b"]);
+        assert_eq!(texts("[^n]: a\n\n    b\n"), ["  n.  a", "", "      b ↩"]);
+        assert_eq!(
+            texts("[^n]: a\n\n    [r]: /u\n\n    b\n"),
+            ["  n.  a", "", "", "      b ↩"]
+        );
+        // A loose list keeps its spacing at any depth, between items as within one.
+        assert_eq!(
+            texts("- x\n  - b\n\n    c\n  - d\n\n  - e\n"),
+            ["• x", "    • b", "", "      c", "    • d", "", "    • e"]
         );
     }
 
