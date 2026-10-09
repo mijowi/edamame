@@ -27,6 +27,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Arrow keys, Backspace and Delete in text fields and the vim command line now move over or delete a whole emoji or accented letter, not part of one.
 - Adding, deleting or moving a column, or adding a row, in a table inside a list item no longer moves the table out of the item.
 - The `↩` after a footnote is now clickable when the footnote wraps or contains CJK text.
+- Editing a Mermaid block closed with `~~~` or a longer fence no longer shows that fence as a diagram line.
 - Dialogs now size theme and stylesheet names written in CJK correctly.
 - HTML comments inside a list item, quote or footnote are now hidden, as they already were elsewhere, and a column-width comment after a table inside a list item now sets its widths.
 - In a very narrow window, clicks and highlights on the wrapped rows of a list item now land on the character under them.

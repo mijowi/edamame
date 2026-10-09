@@ -3102,6 +3102,97 @@ fn mermaid_reveal_pads_rows_past_the_source() {
     }
 }
 
+/// Any valid closing fence reveals as the padded placeholder, not as a body row showing the
+/// fence: a tilde fence, a longer backtick fence, and a closing run longer than the opener.  An
+/// unclosed fence's last line is a body row.  The closing fence was once recognized only as
+/// exactly `` ``` `` (issue #68).
+#[test]
+fn mermaid_reveal_hides_every_kind_of_closing_fence() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    for (src, closing) in [
+        ("~~~mermaid\nflowchart TD\nA-->B\n~~~\n", Some("~~~")),
+        ("````mermaid\nflowchart TD\nA-->B\n````\n", Some("````")),
+        ("```mermaid\nflowchart TD\nA-->B\n`````\n", Some("`````")),
+        ("```mermaid\nflowchart TD\nA-->B\n```\n", Some("```")),
+        ("```mermaid\nflowchart TD\nA-->B\n", None),
+    ] {
+        let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 8);
+        state.mode = Mode::Rendered;
+        let byte = src.find("A-->B").unwrap() + 1;
+        state.cursor.offset = state.buffer.rope().byte_to_char(byte);
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None;
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 9)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: &state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let row_text = |y: u16| -> String {
+            (0..20u16)
+                .map(|x| buf.cell((x, y)).unwrap().symbol())
+                .collect::<String>()
+                .trim_end()
+                .replace('\u{00A0}', " ")
+                .trim_end()
+                .to_string()
+        };
+        assert_eq!(row_text(2), "A-->B", "in {src:?}");
+        match closing {
+            Some(fence) => {
+                assert_eq!(
+                    row_text(3),
+                    "",
+                    "{fence} must be the placeholder in {src:?}"
+                );
+                // With the cursor on it, the fence shows raw.
+                let at = src.rfind(fence).unwrap();
+                state.cursor.offset = state.buffer.rope().byte_to_char(at);
+                state.update_cursor_block();
+                state.cursor_block_entered_at = None;
+                terminal
+                    .draw(|frame| {
+                        let view = RenderedView {
+                            cursor_style: theme.status_mode_rendered,
+                            visual_kind: None,
+                            drop_indicator: None,
+                            show_table_buttons: false,
+                            state: &state,
+                            theme,
+                        };
+                        frame.render_stateful_widget(view, frame.area(), &mut view_state);
+                    })
+                    .unwrap();
+                let buf = terminal.backend().buffer().clone();
+                let row3: String = (0..20u16)
+                    .map(|x| buf.cell((x, 3)).unwrap().symbol())
+                    .collect();
+                assert_eq!(
+                    row3.trim_end(),
+                    fence,
+                    "{fence} under the cursor in {src:?}"
+                );
+            }
+            None => assert_eq!(row_text(1), "flowchart TD", "in {src:?}"),
+        }
+    }
+}
+
 /// A yank flash over a revealed diagram's source line paints that line's
 /// raw text, and nothing on the rows around it.  The post-pass overlay
 /// skips image rows, so the reveal paints the flash itself, as it does a

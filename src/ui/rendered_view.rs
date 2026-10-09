@@ -157,6 +157,17 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let is_diagram_block = editor.parsed.is_diagram_reveal_block(cursor_block_idx);
         let is_mermaid_block = editor.parsed.is_mermaid_block(cursor_block_idx);
         let is_latex_block = editor.parsed.is_latex_block(cursor_block_idx);
+        // A mermaid block's closing fence, as a block-relative line, from the parse rather than
+        // the text, so a `~~~` or longer fence counts: fence lines are chrome in the block's
+        // `SrcLines`, so a chrome last line (not also the first) is the closing fence.  An
+        // unclosed fence has none.
+        let closing_fence_line = cursor_block_ast
+            .filter(|_| is_mermaid_block)
+            .and_then(crate::markdown::Block::src)
+            .and_then(|src| {
+                let last = src.len().checked_sub(1).filter(|&k| k > 0)?;
+                src.col(last).is_none().then_some(src.first as usize + last)
+            });
         // Big-text H1 (4 big-text rows + rule vs. the plain 2-line H1) collapses to the raw
         // `# Title` line plus the rendered rule while the cursor is inside.
         let is_big_h1_block = matches!(
@@ -466,11 +477,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 let (src_idx, raw_text, sel_cols) =
                     diagram_row(virtual_idx - cursor_block_lines.start);
                 let cursor_on_this = src_idx == Some(cursor_raw_line);
-                let last_raw_idx = raw_lines.len().saturating_sub(1);
                 let is_opening_fence_row = src_idx == Some(0) && raw_lines.len() >= 2;
-                let is_closing_fence_row = src_idx == Some(last_raw_idx)
-                    && raw_lines.len() >= 2
-                    && raw_text.trim() == "```";
+                let is_closing_fence_row = src_idx.is_some() && src_idx == closing_fence_line;
                 let in_source = src_idx.is_some();
                 let width = area.width as usize;
 
