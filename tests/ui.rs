@@ -376,19 +376,23 @@ fn nested_reflowed_paragraph_reveals_its_whole_source_lines_stacked() {
             &["> - a", ">   b soft", "▎ • c"],
         ),
         (
+            // The nested item renders at its 4-cell nesting, so its 2-space source lines reveal
+            // padded by the difference, keeping the text where it was (issue #65).
             "- a\n  - b\n    soft word\n- c\n",
             "soft",
-            &["• a", "  - b", "    soft word", "• c"],
+            &["• a", "    - b", "      soft word", "• c"],
         ),
         (
             // A footnote's first paragraph stacks from its `[^n]:` line; the second stays a flow.
+            // The continuation's 4-space indent is padded to the leader's 6, the column the
+            // flow's text starts at.
             "ref[^n]\n\n[^n]: note one\n    two three\n\n    second para\n    more\n\nafter\n",
             "two",
             &[
                 "ref[n]",
                 "",
                 "[^n]: note one",
-                "    two three",
+                "      two three",
                 "",
                 "      second para more ↩",
                 "",
@@ -404,8 +408,8 @@ fn nested_reflowed_paragraph_reveals_its_whole_source_lines_stacked() {
                 "",
                 "  n.  note one two three",
                 "",
-                "    second para",
-                "    more",
+                "      second para",
+                "      more",
                 "",
                 "after",
             ],
@@ -779,6 +783,203 @@ fn paint_revealed(src: &str, offset: usize) -> (Vec<String>, Option<(u16, u16)>)
         .flat_map(|y| (0..20u16).map(move |x| (x, y)))
         .find(|&cell| buf.cell(cell).is_some_and(|c| c.bg == cursor_bg));
     (rows, cursor)
+}
+
+/// Paint `src` in Rendered mode at `width`, the cursor at byte `cursor` with its row revealed,
+/// or held off (no reveal) when `None`: each row's text, trailing blanks trimmed, and the cell
+/// carrying the cursor's colors.
+fn paint_rows(src: &str, width: u16, cursor: Option<usize>) -> (Vec<String>, Option<(u16, u16)>) {
+    use std::time::{Duration, Instant};
+
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    const HEIGHT: u16 = 14;
+    let theme = Box::leak(Box::new(Theme::default()));
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_viewport_width(usize::from(width));
+    if let Some(byte) = cursor {
+        state.cursor.offset = state.buffer.rope().byte_to_char(byte);
+        state.update_cursor_block();
+    }
+    state.cursor_block_entered_at = match cursor {
+        Some(_) => None,
+        None => Some(Instant::now() + Duration::from_secs(3600)),
+    };
+    let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let mut rows: Vec<String> = (0..HEIGHT)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
+    }
+    let cursor_bg = theme.status_mode_rendered.bg.unwrap();
+    let cell = (0..HEIGHT)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .find(|&c| buf.cell(c).is_some_and(|c| c.bg == cursor_bg));
+    (rows, cell)
+}
+
+/// A wrapped row's continuation rows start where the renderer drew its text, never where its
+/// text merely looks like it starts (issue #71): a footnote hangs under the text past its leader,
+/// numeric or named, and a paragraph opening with an escaped marker doesn't hang at all, at top
+/// level or in a quote.  Each was guessed from the row's text, one cell short, under the label,
+/// and as a list item, respectively.
+#[test]
+fn wrapped_rows_hang_where_the_renderer_drew_their_text() {
+    for (src, width, expected) in [
+        (
+            "ref[^1]\n\n[^1]: alpha bravo charlie delta echo foxtrot golf\n",
+            24,
+            &[
+                "ref[1]",
+                "",
+                "  1.  alpha bravo",
+                "      charlie delta",
+                "      echo foxtrot golf",
+                "      ↩",
+            ][..],
+        ),
+        (
+            "ref[^note]\n\n[^note]: alpha bravo charlie delta echo foxtrot golf\n",
+            24,
+            &[
+                "ref[note]",
+                "",
+                "  note.  alpha bravo",
+                "         charlie delta",
+                "         echo foxtrot",
+                "         golf ↩",
+            ],
+        ),
+        (
+            "1\\. alpha bravo charlie delta echo\n",
+            16,
+            &["1. alpha bravo", "charlie delta", "echo"],
+        ),
+        (
+            "\\- alpha bravo charlie delta echo\n",
+            16,
+            &["- alpha bravo", "charlie delta", "echo"],
+        ),
+        (
+            "> 2\\. alpha bravo charlie delta echo\n",
+            16,
+            &["▎ 2. alpha", "▎ bravo charlie", "▎ delta echo"],
+        ),
+    ] {
+        // The cursor rests on the trailing blank line, so nothing reveals.
+        let (rows, _) = paint_rows(src, width, Some(src.len()));
+        assert_eq!(rows, expected, "in {src:?}");
+    }
+}
+
+/// A revealed ordered item keeps its rendered marker alignment: ` 6.` beside `10.` reveals as
+/// ` 6.`, not `6.`, so its text doesn't move a cell left, and its wrapped rows hang under that
+/// text (issue #65).  The cursor shows on the char it rests on, past the pad.
+#[test]
+fn a_revealed_ordered_item_keeps_its_marker_alignment() {
+    let src = "1. a\n2. b\n3. c\n4. d\n5. e\n6. alpha bravo charlie delta echo\n7. g\n8. h\n\
+               9. i\n10. j\n";
+    let at = src.find("lpha").unwrap();
+    let (rendered, _) = paint_rows(src, 16, None);
+    let (revealed, cursor) = paint_rows(src, 16, Some(at));
+    assert_eq!(rendered[5], " 6. alpha bravo");
+    assert_eq!(revealed[5], " 6. alpha bravo");
+    assert_eq!(revealed[6..8], ["    charlie", "    delta echo"]);
+    assert_eq!(revealed[8], " 7. g");
+    assert_eq!(cursor, Some((5, 5)), "on the `l` of `alpha`");
+}
+
+/// Vertical navigation lays each line out as the view paints it: on every char, the column
+/// `current_visual_col` reports is the cell the cursor paints at, and a visual move down lands
+/// one painted row lower: always within the line, and onto the next one where moving the reveal
+/// there changes no height (a footnote's rendered back-link takes a row of its own here).
+/// Navigation once wrapped the whole buffer line, so it counted an indented paragraph's
+/// unpainted indent and missed a code row's pad cell.
+#[test]
+fn vertical_navigation_lands_where_the_cursor_paints() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+
+    const WIDTH: u16 = 12;
+    let state_at = |src: &str, byte: usize| {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.set_viewport_width(usize::from(WIDTH));
+        state.cursor.offset = state.buffer.rope().byte_to_char(byte);
+        state.update_cursor_block();
+        state
+    };
+    for (src, line, crosses) in [
+        ("  para alpha bravo charlie delta\n\nend\n", 0, true),
+        ("```\n    code alpha bravo charlie\n```\n\nend\n", 1, true),
+        (
+            "- a\n\n  ```\n    code alpha bravo\n  ```\n\nend\n",
+            3,
+            true,
+        ),
+        ("> - alpha bravo charlie delta\n\nend\n", 0, true),
+        (
+            "x[^1]\n\n[^1]: alpha bravo charlie delta\n\nend\n",
+            2,
+            false,
+        ),
+        (
+            "1. a\n2. b\n3. c\n4. d\n5. e\n6. alpha bravo charlie delta\n7. g\n8. h\n9. i\n\
+             10. j\n",
+            5,
+            true,
+        ),
+    ] {
+        let start: usize = src.split_inclusive('\n').take(line).map(str::len).sum();
+        let end = start + src[start..].find('\n').unwrap();
+        for byte in start..end {
+            let (_, painted) = paint_rows(src, WIDTH, Some(byte));
+            let (x, y) = painted.unwrap_or_else(|| panic!("no cursor at {byte} in {src:?}"));
+            let mut state = state_at(src, byte);
+            let col = state.current_visual_col(usize::from(WIDTH));
+            assert_eq!(col, usize::from(x), "column at byte {byte} of {src:?}");
+
+            state.cursor.preferred_col = col;
+            state.move_down_visual(usize::from(WIDTH));
+            let below = state.buffer.rope().char_to_byte(state.cursor.offset);
+            let (_, moved) = paint_rows(src, WIDTH, Some(below));
+            let (_, moved_y) = moved.unwrap();
+            if !crosses && below > end {
+                continue;
+            }
+            assert_eq!(
+                moved_y,
+                y + 1,
+                "down from byte {byte} of {src:?} to {below}"
+            );
+        }
+    }
 }
 
 /// A multi-line setext heading renders its text on one row.  With the cursor on any of its

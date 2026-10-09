@@ -6,12 +6,9 @@ use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::markdown::table_layout;
 
-/// The rendered `Line` under document-area `row` (scroll- and wrap-aware) and the sub-row
-/// within it.
-pub(super) fn rendered_line_at_row(
-    state: &EditorState,
-    row: usize,
-) -> Option<(Line<'static>, usize)> {
+/// The rendered line under document-area `row` (scroll- and wrap-aware): its index into
+/// `parsed.lines`, and the sub-row within it.
+pub(super) fn rendered_line_at_row(state: &EditorState, row: usize) -> Option<(usize, usize)> {
     let lines = &state.parsed.lines;
     if lines.is_empty() {
         return None;
@@ -19,11 +16,14 @@ pub(super) fn rendered_line_at_row(
     let (mut line_idx, mut first_sub_row) =
         state.rendered_line_at_visual_row(state.scroll.saturating_add(row), state.viewport_width);
     let mut y = 0usize;
-    while let Some(line) = lines.get(line_idx) {
-        let rows_used = wrap::visual_rows_for_line(line, state.viewport_width).max(1);
+    while line_idx < lines.len() {
+        let rows_used = state
+            .parsed
+            .visual_rows_for_line_at(line_idx, state.viewport_width)
+            .max(1);
         let visible_rows = rows_used.saturating_sub(first_sub_row).max(1);
         if y < visible_rows {
-            return Some((line.clone(), first_sub_row));
+            return Some((line_idx, first_sub_row));
         }
         y += visible_rows;
         line_idx += 1;
@@ -154,8 +154,9 @@ fn rendered_click_to_line_col_with_layout(
         return Some((idx, 0, None));
     }
     let width = viewport_width.max(1);
-    let indent = wrap::effective_indent(wrap::compute_hanging_indent(line), width);
-    let rows = wrap::visual_rows_of_chars(&chars, width, indent);
+    let stated = state.parsed.row_indent(idx);
+    let rows = wrap::visual_rows_of_chars(&chars, width, stated);
+    let indent = stated.at(width);
     let sub = sub_row.min(rows.len().saturating_sub(1));
     let row = rows
         .get(sub)
@@ -163,8 +164,8 @@ fn rendered_click_to_line_col_with_layout(
         .unwrap_or((0, chars.len(), chars.len()));
     let (row_start, _, _) = row;
     let max_in_row = wrap::last_col_in_row(row, sub + 1 == rows.len());
-    // Continuation rows carry `indent` cells of left padding (as `patch_char_cols`).
-    let row_indent = if sub == 0 { 0 } else { indent };
+    // Rows carry their indent's cells of left padding (as `patch_char_cols`).
+    let row_indent = indent.row(sub);
     let chars: Vec<char> = chars.into_iter().map(|(c, _)| c).collect();
     let local_col = wrap::char_idx_at_cell_col(chars[row_start..].iter().copied(), col, row_indent);
     let char_col = (row_start + local_col).min(max_in_row);
@@ -208,8 +209,8 @@ pub(super) struct LineLayout {
     /// `(row_start, row_end, next_start)` per visual row, as
     /// [`wrap::visual_rows_of_chars`] produces them.
     rows: Vec<(usize, usize, usize)>,
-    /// Hanging indent applied to every row past the first.
-    indent: usize,
+    /// The indent the rows start behind, as applied at the width.
+    indent: wrap::Indent,
     /// The rendered line's chars, for measuring cells.
     chars: Vec<char>,
 }
@@ -219,7 +220,7 @@ pub(super) struct LineLayout {
 fn cell_col_for_char_col(layout: &LineLayout, char_col: usize) -> Option<usize> {
     let (sub, _) = wrap::sub_line_of_col(&layout.rows, char_col);
     let (row_start, _, _) = layout.rows.get(sub).copied()?;
-    let row_indent = if sub == 0 { 0 } else { layout.indent };
+    let row_indent = layout.indent.row(sub);
     let row_chars = layout.chars.get(row_start..)?.iter().copied();
     Some(wrap::cell_col_at_char_idx(
         row_chars,
@@ -323,7 +324,8 @@ pub fn rendered_sub_line_to_offset(
             remaining -= n;
         }
         let raw_line_text = block_lines.get(chosen).copied().unwrap_or("");
-        let raw_col = raw_click_col(raw_line_text, wrap_sub, col, viewport_width);
+        let indent = row_map::revealed_indent(&state.parsed, block.idx, chosen);
+        let raw_col = raw_click_col(raw_line_text, indent, wrap_sub, col, viewport_width);
         let first_buf_line = state.buffer.rope().byte_to_line(block.range.start);
         let target = (first_buf_line + chosen).min(state.buffer.line_count().saturating_sub(1));
         return (state.buffer.line_to_char(target) + raw_col).min(buffer_len);
@@ -344,7 +346,8 @@ pub fn rendered_sub_line_to_offset(
         };
         let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
         let line_text = &block_text[line_byte_start..line_byte_end];
-        let raw_col = raw_click_col(line_text, sub_row_within_line, col, viewport_width);
+        let indent = row_map::revealed_indent(&state.parsed, block.idx, raw_line_idx);
+        let raw_col = raw_click_col(line_text, indent, sub_row_within_line, col, viewport_width);
         return raw_col_to_buffer_char(state, &block, line_byte_start, line_text, raw_col);
     }
 
@@ -355,7 +358,7 @@ pub fn rendered_sub_line_to_offset(
         .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
         .collect();
     let rendered_idx = click_to_rendered_char_idx(
-        rendered_line,
+        state.parsed.row_indent(rendered_line_idx),
         &rendered_chars,
         col,
         sub_row_within_line,
@@ -397,7 +400,7 @@ fn table_click_to_offset(
         .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
         .collect();
     let rendered_idx = click_to_rendered_char_idx(
-        rendered_line,
+        state.parsed.row_indent(rendered_line_idx),
         &rendered_chars,
         col,
         sub_row_within_line,
@@ -432,15 +435,21 @@ fn table_click_to_offset(
 }
 
 /// The char of `line_text` under cell `col` on wrap row `sub` of the line, laid out as the
-/// reveal painter lays out raw source.
-fn raw_click_col(line_text: &str, sub: usize, col: usize, viewport_width: usize) -> usize {
-    let (rows, indent) = wrap::revealed_rows_of_str(line_text, viewport_width);
+/// reveal painter lays out raw source: behind `indent`, the line's `row_map::revealed_indent`.
+fn raw_click_col(
+    line_text: &str,
+    indent: wrap::Indent,
+    sub: usize,
+    col: usize,
+    viewport_width: usize,
+) -> usize {
+    let (rows, indent) = wrap::revealed_rows_of_str(line_text, indent, viewport_width);
     let sub = sub.min(rows.len().saturating_sub(1));
     let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
     let (start, end, _) = row;
     let is_last_row = sub + 1 == rows.len();
     let max_in_row = wrap::last_col_in_row(row, is_last_row);
-    let row_indent = if sub == 0 { 0 } else { indent };
+    let row_indent = indent.row(sub);
     let row_chars = line_text.chars().skip(start).take(end - start);
     let in_row = wrap::char_idx_at_cell_col(row_chars, col, row_indent);
     (start + in_row).min(max_in_row)
@@ -548,7 +557,10 @@ fn revealed_raw_row_count(
         let raw_line = row_line
             .and_then(|l| block_text.split('\n').nth(l))
             .unwrap_or("");
-        return Some(wrap::revealed_row_count(raw_line, viewport_width));
+        let indent = row_line.map_or(wrap::Indent::NONE, |l| {
+            row_map::revealed_indent(&state.parsed, reveal.block_idx, l)
+        });
+        return Some(wrap::revealed_row_count(raw_line, indent, viewport_width));
     }
 
     // A revealed reflowed paragraph is one rendered line that reveals to its *stacked* raw lines,
@@ -581,7 +593,8 @@ fn revealed_raw_row_count(
     if !row_map::reveals(&state.parsed, reveal.block_idx, cursor_row_in_block) {
         return None;
     }
-    Some(wrap::revealed_row_count(raw_line, viewport_width))
+    let indent = row_map::revealed_indent(&state.parsed, reveal.block_idx, cursor_line);
+    Some(wrap::revealed_row_count(raw_line, indent, viewport_width))
 }
 
 /// Whether `rendered_line_idx` is the revealed cursor row of block `block_idx`, which paints
@@ -624,19 +637,18 @@ fn raw_line_byte_range(block_text: &str, raw_line_idx: usize) -> (usize, usize) 
 /// landed on.  The one shared walk over [`wrap`]'s geometry for every row `row_map`
 /// maps.
 fn click_to_rendered_char_idx(
-    rendered_line: &Line<'_>,
+    indent: wrap::Indent,
     rendered_chars: &[(char, ratatui::style::Style)],
     col: usize,
     sub_row_within_line: usize,
     viewport_width: usize,
 ) -> usize {
     let viewport = viewport_width.max(1);
-    let indent = wrap::effective_indent(wrap::compute_hanging_indent(rendered_line), viewport);
     let rows = wrap::visual_rows_of_chars(rendered_chars, viewport, indent);
     let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
     let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
     let (start, end, _) = row;
-    let row_indent = if sub == 0 { 0 } else { indent };
+    let row_indent = indent.at(viewport).row(sub);
     let is_last_row = sub + 1 == rows.len();
     let max_in_row = wrap::last_col_in_row(row, is_last_row);
     let row_chars = rendered_chars

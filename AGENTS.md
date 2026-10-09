@@ -188,8 +188,9 @@ src/
                     #   a reflowed paragraph's flow row that reveals as its stacked source
                     #   lines); the table row a row belongs to, borders snapped (`table_row`)
     wrap.rs         # wrap geometry, no painting: where a Line or raw line breaks into
-                    #   rows (visual_rows_of_chars / _of_str / _for_line), the hanging
-                    #   indent and its effective_indent clamp, cell ↔ char mapping,
+                    #   rows (visual_rows_of_chars / _of_str / _for_line) behind a stated
+                    #   Indent (lead + hang, never read off the text) and its clamp,
+                    #   cell ↔ char mapping,
                     #   PaintedRows; revealed_rows_of_str / revealed_row_count: the one
                     #   wrap measure for raw source on a revealed row
 

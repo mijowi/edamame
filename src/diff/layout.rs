@@ -23,7 +23,7 @@ use ratatui::text::Line;
 use ropey::Rope;
 
 use crate::document::visual_cache::VisualRowCache;
-use crate::document::wrap::visual_rows_for_line;
+use crate::document::wrap::{visual_rows_for_line, Indent};
 use crate::document::ParsedDoc;
 
 use super::hunk::Decision;
@@ -348,22 +348,25 @@ impl DiffState {
                         // Measured as the very `Line` the painter will hand to
                         // `render_line_from_visual`, so wrap and scroll math agree by
                         // construction.
-                        self.parsed_new
-                            .as_ref()
-                            .and_then(|p| p.lines.get(lines[i].rope_line))
-                            .map_or(1, |l| visual_rows_for_line(l, width))
+                        self.parsed_new.as_ref().map_or(1, |p| {
+                            p.lines.get(lines[i].rope_line).map_or(1, |l| {
+                                visual_rows_for_line(l, p.row_indent(lines[i].rope_line), width)
+                            })
+                        })
                     } else {
-                        // Measure the marker *with* the text, and via `visual_rows_for_line`:
-                        // `render_line` derives a hanging indent from a leading marker, and `- `
-                        // / `+ ` / the two-space context prefix all match its recognized shapes.
-                        // Measuring flat while the painter wraps at indent 2 desyncs every
+                        // Measure the marker *with* the text, behind the marker's hang, exactly
+                        // as `DiffView` paints it; measuring any other way desyncs every
                         // wrapping line.
                         let text = format!(
                             "{}{}",
                             line_marker(lines[i].source),
                             line_text(self, &lines[i])
                         );
-                        visual_rows_for_line(&Line::from(text), width)
+                        visual_rows_for_line(
+                            &Line::from(text),
+                            marker_indent(lines[i].source),
+                            width,
+                        )
                     }
                 })
             };
@@ -625,6 +628,13 @@ pub fn line_marker(source: DiffLineSource) -> &'static str {
         // The divider is chrome, not a body line.
         DiffLineSource::Decision => "",
     }
+}
+
+/// The indent a marked line wraps behind: continuation rows hang past [`line_marker`], under the
+/// line's text.  The diff line is raw source, so only the marker is prefix: its own Markdown
+/// markers are text.  Rendered rows wrap behind their own `ParsedDoc::row_indent` instead.
+pub fn marker_indent(source: DiffLineSource) -> Indent {
+    Indent::hanging(line_marker(source).len())
 }
 
 /// Divider text for a `Decision`.  The resolved glyphs spell out the yes/no answer so the

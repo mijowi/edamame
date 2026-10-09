@@ -11,6 +11,7 @@ use crate::markdown::table_layout::{char_cells, CellOverlay};
 use crate::ui::line_render;
 
 use crate::document::row_map::{self, RawPos};
+use crate::document::wrap::Indent;
 use crate::markdown::{ColOrigin, ContentKind};
 
 /// [`make_raw_line_with_selection`] with no selection.
@@ -157,6 +158,7 @@ pub(super) fn paint_byte_range_overlay(
     let Some(line) = editor.parsed.lines.get(rendered_line_idx) else {
         return;
     };
+    let indent = editor.parsed.row_indent(rendered_line_idx);
     let actual_rendered: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
 
     let line_start = |l: usize| match l {
@@ -198,7 +200,7 @@ pub(super) fn paint_byte_range_overlay(
             parsed.ref_labels(),
         ) {
             paint_cols_on_line(
-                line, buf, area, y_start, rows_used, skip_rows, rs, re, style,
+                line, indent, buf, area, y_start, rows_used, skip_rows, rs, re, style,
             );
         }
         return;
@@ -236,6 +238,7 @@ pub(super) fn paint_byte_range_overlay(
         }
         paint_cols_on_line(
             line,
+            indent,
             buf,
             area,
             y_start,
@@ -277,7 +280,7 @@ pub(super) fn paint_byte_range_overlay(
         return;
     }
     paint_cols_on_line(
-        line, buf, area, y_start, rows_used, skip_rows, rend_start, rend_end, style,
+        line, indent, buf, area, y_start, rows_used, skip_rows, rend_start, rend_end, style,
     );
 }
 
@@ -500,6 +503,7 @@ pub(crate) fn paint_yank_flash(editor: &EditorState, buf: &mut TuiBuf, area: Rec
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_cols_on_line(
     line: &Line<'_>,
+    indent: Indent,
     buf: &mut TuiBuf,
     area: Rect,
     y_start: u16,
@@ -511,6 +515,7 @@ pub(super) fn paint_cols_on_line(
 ) {
     line_render::patch_char_cols(
         line,
+        indent,
         buf,
         area,
         area.y + y_start,

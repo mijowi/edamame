@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::Theme;
 use crate::diff::DiffState;
+use crate::document::row_map;
+use crate::document::wrap::Indent;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::vim_ops::SubstitutePreview;
@@ -157,7 +159,7 @@ impl StackedRow {
     /// The unit this row reveals as, `(block, row)`: what [`EditorState::cursor_stacked_unit`]
     /// remembers across cursor moves.  Keyed on the row, not its lines, which can differ by the
     /// cursor's line: a row a line with no row of its own shares stacks that line only while the
-    /// cursor is on it ([`row_map::cursor_stack`](crate::document::row_map::cursor_stack)).
+    /// cursor is on it ([`row_map::cursor_stack`]).
     pub(crate) fn unit(&self) -> (usize, usize) {
         (self.block, self.row)
     }
@@ -851,13 +853,13 @@ impl EditorState {
                 let block_lines = crate::ui::rendered_view::raw_source_lines(&source);
                 let first = (lines.start as usize).min(block_lines.len());
                 let end = (lines.end as usize).clamp(first, block_lines.len());
-                EffectiveRows::with_reveal(
-                    &self.parsed,
-                    width,
-                    rendered..rendered + 1,
-                    first,
-                    &block_lines[first..end],
-                )
+                let raw: Vec<(&str, Indent)> = (first..end)
+                    .map(|l| {
+                        let indent = row_map::revealed_indent(&self.parsed, block, l);
+                        (block_lines[l], indent)
+                    })
+                    .collect();
+                EffectiveRows::with_reveal(&self.parsed, width, rendered..rendered + 1, first, &raw)
             }
             None => EffectiveRows::identity(&self.parsed, width),
         };
@@ -880,7 +882,7 @@ impl EditorState {
     }
 
     /// The cursor's row as a [`StackedRow`]; `None` unless the reveal stacks it
-    /// ([`row_map::cursor_stack`](crate::document::row_map::cursor_stack)).  Independent of the
+    /// ([`row_map::cursor_stack`]).  Independent of the
     /// mode and the reveal timer: the timer asks it to decide how to reveal.
     pub(crate) fn cursor_stacked_row(&self) -> Option<StackedRow> {
         let key = (self.parsed_version, self.cursor.offset);
@@ -1310,12 +1312,29 @@ fn set_rendered_scroll_for_screen_row(state: &mut EditorState, target_row: usize
 fn cursor_sub_line_in_rendered(state: &EditorState, width: usize) -> usize {
     let (cursor_buf_line, cursor_col) = state.cursor.line_col(&state.buffer);
     let line_text = line_text_trimmed(&state.buffer, cursor_buf_line);
-    let rows = if cursor_row_shows_raw(state) {
-        crate::document::wrap::revealed_rows_of_str(&line_text, width).0
-    } else {
-        crate::document::wrap::visual_rows_of_str(&line_text, width)
+    let shown = cursor_row_shows_raw(state)
+        .then(|| crate::ui::rendered_view::cursor_block_pos(state))
+        .flatten();
+    let (rows, col) = match shown {
+        Some((block, pos)) => {
+            // The painter shows the line from its block's range start (`pos.col`'s space), so
+            // a top-level line indented before its block starts drops that indent here too.
+            let text: String = line_text
+                .chars()
+                .skip(cursor_col.saturating_sub(pos.col))
+                .collect();
+            let indent = row_map::revealed_indent(&state.parsed, block, pos.line);
+            (
+                crate::document::wrap::revealed_rows_of_str(&text, indent, width).0,
+                pos.col,
+            )
+        }
+        None => (
+            crate::document::wrap::visual_rows_of_str(&line_text, width),
+            cursor_col,
+        ),
     };
-    let (sub, _) = crate::document::wrap::sub_line_of_col(&rows, cursor_col);
+    let (sub, _) = crate::document::wrap::sub_line_of_col(&rows, col);
     sub
 }
 
@@ -1326,7 +1345,6 @@ fn cursor_sub_line_in_rendered(state: &EditorState, width: usize) -> usize {
 ///
 /// [`row_map::reveals`]: crate::document::row_map::reveals
 fn cursor_row_shows_raw(state: &EditorState) -> bool {
-    use crate::document::row_map;
     if state.mode != Mode::Rendered || !state.cursor_block_revealed() {
         return false;
     }
@@ -1340,7 +1358,7 @@ fn cursor_row_shows_raw(state: &EditorState) -> bool {
 
 /// Rendered-line index where the cursor appears, mirroring `ui::rendered_view`'s own computation
 /// so scroll arithmetic lands on the line the view actually paints: the row
-/// [`row_map::row_for_pos`](crate::document::row_map::row_for_pos) gives the cursor's source
+/// [`row_map::row_for_pos`] gives the cursor's source
 /// position, which the view and the mouse hit-test both ask the same way.
 pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
     let Some((block, pos)) = crate::ui::rendered_view::cursor_block_pos(state) else {
@@ -1676,7 +1694,7 @@ mod tests {
             .chars()
             .map(|c| (c, ratatui::style::Style::default()))
             .collect();
-        let rows = crate::document::wrap::visual_rows_of_chars(&chars, width, 2);
+        let rows = crate::document::wrap::visual_rows_of_chars(&chars, width, Indent::hanging(2));
         assert!(rows.len() >= 2, "list item must wrap");
         let (row1_start, row1_end, _) = rows[1];
         // Screen cell 5 on row 1 → content cell 3.
@@ -1734,7 +1752,7 @@ mod tests {
                 .map(|c| (c, ratatui::style::Style::default()))
                 .collect::<Vec<_>>(),
             20,
-            2,
+            Indent::hanging(2),
         );
         assert!(rows.len() >= 2);
         let (row1_start, _, _) = rows[1];

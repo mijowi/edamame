@@ -12,10 +12,13 @@
 use std::cell::OnceCell;
 use std::ops::Range;
 
+use crate::document::wrap::Indent;
 use crate::document::ParsedDoc;
 use crate::markdown::ast::to_u32;
 use crate::markdown::table_layout::char_cells;
-use crate::markdown::{strip_atx_closing, Block, ColOrigin, ContentKind, InlineColMap, RowOrigin};
+use crate::markdown::{
+    strip_atx_closing, Block, ColOrigin, ContentKind, InlineColMap, RowOrigin, SrcLines,
+};
 
 /// `block`'s own rows' origins, and how many rows a `$$…$$` reveal's math-preview band holds
 /// above them.  The band is editor state (the cursor's reveal), not the renderer's, so the
@@ -416,15 +419,7 @@ impl<'a> Row<'a> {
         else {
             return 0;
         };
-        let k = (line - src.first) as usize;
-        let at = |i: usize| {
-            let col = src.col(i)? as usize;
-            (col < self.line_len(src.first as usize + i)).then_some(col)
-        };
-        (k..src.len())
-            .find_map(at)
-            .or_else(|| (0..k).rev().find_map(at))
-            .unwrap_or(0)
+        nearest_content_col(src, line, |l| self.line_len(l))
     }
 
     /// The row's raw position per content char, then the end of its content; `None` when no
@@ -621,6 +616,184 @@ fn leaf_at(block: &Block, line: u32) -> Option<&Block> {
             .find_map(|b| leaf_at(b, line)),
         leaf => leaf.span().contains(&line).then_some(leaf),
     }
+}
+
+/// The content column of block-relative `line` of the leaf `src`, or, on a line that is all
+/// chrome (a fence, a setext underline), the nearest one of the same leaf on a line with text
+/// there, below first, then above: past the container prefix (`- `, `> `).  0 when the leaf has
+/// none.  `line_len` gives a block-relative line's length in chars.
+fn nearest_content_col(src: &SrcLines, line: u32, line_len: impl Fn(usize) -> usize) -> usize {
+    let k = (line - src.first) as usize;
+    let at = |i: usize| {
+        let col = src.col(i)? as usize;
+        (col < line_len(src.first as usize + i)).then_some(col)
+    };
+    (k..src.len())
+        .find_map(at)
+        .or_else(|| (0..k).rev().find_map(at))
+        .unwrap_or(0)
+}
+
+/// The indent the reveal paints block-relative source `line` of `block` behind, in the space
+/// every reveal consumer slices the block in (from the range start on its first line): the one
+/// measure the painter, `EffectiveRows`, the click and the cursor's sub-row share.
+///
+/// Read from the parse, never guessed from the text: continuation rows hang where the line's
+/// content starts past its containers and marker (its leaf's `SrcLines` column, in cells), so
+/// a footnote's `[^1]: ` hangs and an escaped `1\. ` doesn't; a verbatim leaf's line (a
+/// diagram's body) also hangs under its own indentation.  A line all chrome (a fence) takes the
+/// leaf's nearest content column, and one in no leaf (a container's hidden link definition)
+/// none.
+///
+/// The `lead` keeps the text where the rendered row showed it: when the row showing the line
+/// started its content further right than the line's raw prefix ends (a right-aligned ` 6.`
+/// beside `10.`, a nested item rendered at its 4-cell nesting), the first row is padded by the
+/// difference, so the reveal doesn't shift it left (issue #65).  A line with no prefix (a lazy
+/// continuation) is never padded.
+pub fn revealed_indent(parsed: &ParsedDoc, block: usize, line: usize) -> Indent {
+    indent_and_skip(parsed, block, line).map_or(Indent::NONE, |(indent, _)| indent)
+}
+
+/// How the rendered views lay out a whole buffer line: its first `skip` chars aren't painted,
+/// and the rest wrap behind `indent`.  See [`source_line_layout`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LineLayout {
+    /// Chars at the line's start that no row paints.
+    pub skip: usize,
+    /// The indent the painted rest wraps behind.
+    pub indent: Indent,
+}
+
+/// The layout of source line `line` of the parse as the cursor's vertical navigation, which
+/// steps whole buffer lines, must model it to land where the cursor shows.
+///
+/// A line that reveals is laid out as the reveal paints it: from its block's range start (a
+/// paragraph indented ` ` to `   ` drops those spaces), behind [`revealed_indent`].  A line
+/// whose row never de-renders (a code body, frontmatter, raw HTML; [`reveals`]) shows as that
+/// row: its raw chars from the origin's `raw_col` on (a list's or a fence's indentation hidden),
+/// at its `rendered_col` (past a code row's pad cell), hanging as the row does.
+pub fn source_line_layout(parsed: &ParsedDoc, line: usize) -> LineLayout {
+    let byte = parsed.line_start_byte(line);
+    let Some(block) = parsed.source_map.block_for_byte(byte) else {
+        return LineLayout::default();
+    };
+    let first = parsed
+        .source_map
+        .original_range_for_block(block)
+        .map_or(line, |r| parsed.byte_to_line(r.start));
+    let rel = line.saturating_sub(first);
+    let Some((indent, range_skip)) = indent_and_skip(parsed, block, rel) else {
+        return LineLayout::default();
+    };
+    let row = row_for_line(parsed, block, rel);
+    if !reveals(parsed, block, row) {
+        let (origins, band) = own_origins(parsed, block);
+        let origin = row.checked_sub(band).and_then(|r| origins.get(r));
+        if let Some(RowOrigin {
+            lines: Some(lines),
+            cols:
+                ColOrigin::Content {
+                    raw_col,
+                    rendered_col,
+                    ..
+                },
+            hang,
+        }) = origin
+        {
+            if lines.contains(&to_u32(rel)) {
+                return LineLayout {
+                    // Origins count from the line start, range start or not.
+                    skip: *raw_col as usize,
+                    indent: Indent {
+                        lead: *rendered_col as usize,
+                        hang: *hang as usize,
+                    },
+                };
+            }
+        }
+    }
+    LineLayout {
+        skip: range_skip,
+        indent,
+    }
+}
+
+/// [`revealed_indent`], and the chars of the line before its block's range start (0 past the
+/// block's first line), which the reveal doesn't paint.
+fn indent_and_skip(parsed: &ParsedDoc, block: usize, line: usize) -> Option<(Indent, usize)> {
+    let range_start = parsed
+        .source_map
+        .original_range_for_block(block)
+        .map(|r| r.start)?;
+    let ast = parsed.real_block_for_byte(range_start)?;
+    let first_line = parsed.byte_to_line(range_start);
+    let rel = to_u32(line);
+    let src = leaf_at(ast, rel).and_then(Block::src)?;
+    let text_of = |l: usize| parsed.source_line(first_line + l);
+    let chars: Vec<char> = text_of(line).chars().collect();
+    // The painted text starts at the range start on the block's first line.
+    let skip = if line == 0 {
+        parsed
+            .source()
+            .get(parsed.line_start_byte(first_line)..range_start)
+            .map_or(0, |t| t.chars().count())
+    } else {
+        0
+    };
+    let own_col = src.col((rel - src.first) as usize);
+    let col = own_col.map_or_else(
+        || nearest_content_col(src, rel, |l| text_of(l).chars().count()),
+        |c| c as usize,
+    );
+    let cells = |from: usize, to: usize| -> usize {
+        chars
+            .get(from.min(chars.len())..to.min(chars.len()))
+            .map_or(0, |cs| cs.iter().map(|&c| char_cells(c)).sum())
+    };
+    let prefix = cells(skip.min(col), col);
+    let own_indent = if leaf_at(ast, rel).is_some_and(is_verbatim_leaf) {
+        chars
+            .get(col..)
+            .map_or(0, |rest| rest.iter().take_while(|&&c| c == ' ').count())
+    } else {
+        0
+    };
+    // Only a line with a prefix of its own is padded: a lazy continuation, written flush, shows
+    // as written rather than gaining an indent the file doesn't have.
+    let lead = own_col
+        .filter(|_| prefix > 0)
+        .and_then(|_| {
+            let (origins, band) = own_origins(parsed, block);
+            let row = row_for_line(parsed, block, line);
+            let origin = origins.get(row.checked_sub(band)?)?;
+            if !origin.lines.as_ref()?.contains(&rel) {
+                return None;
+            }
+            match origin.cols {
+                ColOrigin::Content { rendered_col, .. } => {
+                    Some((rendered_col as usize).saturating_sub(prefix))
+                }
+                ColOrigin::Chrome => None,
+            }
+        })
+        .unwrap_or(0);
+    let indent = Indent {
+        lead,
+        hang: lead + prefix + own_indent,
+    };
+    Some((indent, skip))
+}
+
+/// Whether `leaf` shows its lines verbatim: a code block, raw HTML, frontmatter, or a diagram
+/// (an image block revealing its fence's source).
+fn is_verbatim_leaf(leaf: &Block) -> bool {
+    matches!(
+        leaf,
+        Block::CodeBlock { .. }
+            | Block::Html(..)
+            | Block::MetadataBlock { .. }
+            | Block::ImageBlock { .. }
+    )
 }
 
 /// Whether row `row` of `block` de-renders to raw source when it is the revealed cursor row.
@@ -856,6 +1029,38 @@ mod tests {
     /// Rows and lines of the block holding `byte`.
     fn block_at(doc: &ParsedDoc, byte: usize) -> usize {
         doc.source_map.block_for_byte(byte).unwrap()
+    }
+
+    /// Navigation's layout of a whole line: a revealing line drops what precedes its block's
+    /// range and hangs as the reveal does; a code line shows from its content past the hidden
+    /// indentation, behind the row's pad cell, hanging under its own indent.
+    #[test]
+    fn a_source_lines_layout_is_what_its_row_paints() {
+        let d = doc("  para text\n\n- a\n\n  ```\n    x\n  ```\n");
+        let at = |line| source_line_layout(&d, line);
+        assert_eq!(
+            at(0),
+            LineLayout {
+                skip: 2,
+                indent: Indent::NONE
+            }
+        );
+        assert_eq!(
+            at(2),
+            LineLayout {
+                skip: 0,
+                indent: Indent::hanging(2)
+            }
+        );
+        // `    x` in a list item: the item's 2 columns hidden (its code renders flush), the pad
+        // cell first, and the code's own 2-space indent joining the hang.
+        assert_eq!(
+            at(5),
+            LineLayout {
+                skip: 2,
+                indent: Indent { lead: 1, hang: 3 }
+            }
+        );
     }
 
     #[test]

@@ -5,6 +5,8 @@ mod raw_text;
 use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, widgets::StatefulWidget};
 
 use crate::config::Theme;
+use crate::document::row_map::revealed_indent;
+use crate::document::wrap::Indent;
 use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered};
@@ -317,6 +319,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             }
 
             let skip_rows = first_sub_row;
+            // The indent a rendered row of this iteration wraps behind; a revealed raw line
+            // takes its own (`revealed_indent`).
+            let row_indent = editor.parsed.row_indent(virtual_idx);
             let rows_used;
             let in_cursor_block =
                 virtual_idx >= cursor_block_lines.start && virtual_idx < cursor_block_lines.end;
@@ -360,8 +365,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     let styled = make_raw_line_over(raw_text, sel_cols, self.theme, reveal_base);
                     let cursor_override = (cursor_visible && raw_idx == cursor_raw_line)
                         .then_some((cursor_col, cursor_indicator_style));
+                    let indent = revealed_indent(&editor.parsed, cursor_block_idx, raw_idx);
                     let rows = render_line_with_cursor_from_visual(
                         &styled,
+                        indent,
                         area,
                         buf,
                         (vis_y + used) as u16,
@@ -379,9 +386,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 let last_sub = cursor_block_own.saturating_sub(1);
                 if sub == last_sub {
                     if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                        rows_used =
-                            render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
-                                as usize;
+                        rows_used = render_line_from_visual(
+                            line,
+                            row_indent,
+                            area,
+                            buf,
+                            vis_y as u16,
+                            wrap,
+                            skip_rows,
+                        ) as usize;
                     } else {
                         rows_used = 1;
                     }
@@ -401,8 +414,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
                     let cursor_override = (cursor_on_this && cursor_visible)
                         .then_some((cursor_col, cursor_indicator_style));
+                    let indent = if sub == 0 {
+                        revealed_indent(&editor.parsed, cursor_block_idx, 0)
+                    } else {
+                        Indent::NONE
+                    };
                     rows_used = render_line_with_cursor_from_visual(
                         &styled,
+                        indent,
                         area,
                         buf,
                         vis_y as u16,
@@ -427,8 +446,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
                 let cursor_override = (cursor_on_this && cursor_visible)
                     .then_some((cursor_col, cursor_indicator_style));
+                let indent = revealed_indent(&editor.parsed, cursor_block_idx, sub);
                 rows_used = render_line_with_cursor_from_visual(
                     &styled,
+                    indent,
                     area,
                     buf,
                     vis_y as u16,
@@ -478,8 +499,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 // bare source text.
                 let cursor_override = (cursor_on_this && cursor_visible)
                     .then_some((cursor_col, cursor_indicator_style));
+                let indent = src_idx.map_or(Indent::NONE, |l| {
+                    revealed_indent(&editor.parsed, cursor_block_idx, l)
+                });
                 rows_used = render_line_with_cursor_from_visual(
                     &styled,
+                    indent,
                     area,
                     buf,
                     vis_y as u16,
@@ -544,8 +569,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 };
                 let cursor_override = (cursor_on_this && cursor_visible)
                     .then_some((cursor_col, cursor_indicator_style));
+                let indent = src_idx.map_or(Indent::NONE, |l| {
+                    revealed_indent(&editor.parsed, cursor_block_idx, l)
+                });
                 rows_used = render_line_with_cursor_from_visual(
                     &styled,
+                    indent,
                     area,
                     buf,
                     vis_y as u16,
@@ -561,9 +590,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     .expect("wrapped_sub_idx implies wrapped_cell");
                 let overlay = &w.subs[sub_idx];
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    rows_used =
-                        render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
-                            as usize;
+                    rows_used = render_line_from_visual(
+                        line,
+                        row_indent,
+                        area,
+                        buf,
+                        vis_y as u16,
+                        wrap,
+                        skip_rows,
+                    ) as usize;
                     let sel_in_cell = highlight_bytes.and_then(|sel| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
                         // Every chunk is a slice of the single raw row `cursor_raw_line`.
@@ -602,9 +637,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 };
                 if let Some(overlay) = cell_overlay.or(chunk_overlay) {
                     let line = &editor.parsed.lines[virtual_idx];
-                    rows_used =
-                        render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
-                            as usize;
+                    rows_used = render_line_from_visual(
+                        line,
+                        row_indent,
+                        area,
+                        buf,
+                        vis_y as u16,
+                        wrap,
+                        skip_rows,
+                    ) as usize;
 
                     let sel_in_cell = highlight_bytes.and_then(|sel| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
@@ -637,8 +678,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     let styled = make_raw_line_over(raw_text, sel_cols, self.theme, reveal_base);
                     let cursor_override =
                         cursor_visible.then_some((cursor_col, cursor_indicator_style));
+                    let indent = revealed_indent(&editor.parsed, cursor_block_idx, cursor_raw_line);
                     rows_used = render_line_with_cursor_from_visual(
                         &styled,
+                        indent,
                         area,
                         buf,
                         vis_y as u16,
@@ -669,6 +712,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     };
                     let (rows, cursor_cell) = render_line_reporting_cursor(
                         line,
+                        row_indent,
                         area,
                         buf,
                         vis_y as u16,
@@ -687,9 +731,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 }
             } else {
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    rows_used =
-                        render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
-                            as usize;
+                    rows_used = render_line_from_visual(
+                        line,
+                        row_indent,
+                        area,
+                        buf,
+                        vis_y as u16,
+                        wrap,
+                        skip_rows,
+                    ) as usize;
                 } else {
                     break;
                 }

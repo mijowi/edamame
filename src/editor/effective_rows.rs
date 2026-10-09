@@ -20,7 +20,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use crate::document::wrap::revealed_row_count;
+use crate::document::wrap::{revealed_row_count, Indent};
 use crate::document::ParsedDoc;
 
 /// What a visual row resolves to under the reveal patch.
@@ -95,6 +95,10 @@ impl EffectiveRowsCache {
     }
 }
 
+/// A revealed raw source line and the indent it wraps behind
+/// ([`row_map::revealed_indent`](crate::document::row_map::revealed_indent)).
+pub type RevealedLine<'s> = (&'s str, Indent);
+
 impl<'a> EffectiveRows<'a> {
     /// Identity view: every query delegates straight to the base cache.
     pub fn identity(parsed: &'a ParsedDoc, width: usize) -> Self {
@@ -109,13 +113,15 @@ impl<'a> EffectiveRows<'a> {
 
     /// View with the row at rendered range `rendered` revealed to `raw_lines`: the paragraph's raw
     /// source lines (soft breaks split back out), the first of them block-relative line
-    /// `first_line`.  Each is wrapped at `width`.
+    /// `first_line`.  Each is wrapped at `width` behind its indent
+    /// ([`row_map::revealed_indent`](crate::document::row_map::revealed_indent)), as the painter
+    /// wraps it.
     pub fn with_reveal(
         parsed: &'a ParsedDoc,
         width: usize,
         rendered: Range<usize>,
         first_line: usize,
-        raw_lines: &[&str],
+        raw_lines: &[RevealedLine],
     ) -> Self {
         let width = width.max(1);
         Self {
@@ -237,7 +243,7 @@ impl Patch {
         width: usize,
         rendered: Range<usize>,
         first_line: usize,
-        raw_lines: &[&str],
+        raw_lines: &[RevealedLine],
     ) -> Self {
         let base_before = parsed.visual_rows_before(rendered.start, width);
         let base_end = parsed.visual_rows_before(rendered.end, width);
@@ -247,8 +253,8 @@ impl Patch {
         let mut raw_prefix = Vec::with_capacity(raw_lines.len() + 1);
         raw_prefix.push(0usize);
         let mut acc = 0usize;
-        for line in raw_lines {
-            let rows = revealed_row_count(line, width);
+        for &(line, indent) in raw_lines {
+            let rows = revealed_row_count(line, indent, width);
             raw_wrap.push(rows);
             acc += rows;
             raw_prefix.push(acc);
@@ -302,12 +308,12 @@ mod tests {
     }
 
     /// Brute-force expansion of the effective visual-row sequence: one `RowHit` per visual row.
-    /// Raw lines count as the painter wraps them (a `Line` of the raw text, its hanging indent
-    /// detected from its marker), independently of the patch's own measure.
+    /// Raw lines count as the painter wraps them (a `Line` of the raw text, behind the indent
+    /// it is given), independently of the patch's own measure.
     fn expand(
         parsed: &ParsedDoc,
         width: usize,
-        reveal: Option<(Range<usize>, &[&str])>,
+        reveal: Option<(Range<usize>, &[RevealedLine])>,
     ) -> Vec<RowHit> {
         expand_from(parsed, width, reveal, 0)
     }
@@ -315,19 +321,19 @@ mod tests {
     fn expand_from(
         parsed: &ParsedDoc,
         width: usize,
-        reveal: Option<(Range<usize>, &[&str])>,
+        reveal: Option<(Range<usize>, &[RevealedLine])>,
         first_line: usize,
     ) -> Vec<RowHit> {
         let mut out = Vec::new();
         let n = parsed.lines.len();
-        let (start, end, raw): (usize, usize, &[&str]) = match &reveal {
+        let (start, end, raw): (usize, usize, &[RevealedLine]) = match &reveal {
             Some((r, raw)) => (r.start, r.end, raw),
             None => (n, n, &[]),
         };
         for line in 0..n {
             if line == start && !raw.is_empty() {
-                for (i, text) in raw.iter().enumerate() {
-                    let rows = visual_rows_for_line(&Line::raw(*text), width).max(1);
+                for (i, &(text, indent)) in raw.iter().enumerate() {
+                    let rows = visual_rows_for_line(&Line::raw(text), indent, width).max(1);
                     for sub in 0..rows {
                         out.push(RowHit::Raw {
                             raw_line: first_line + i,
@@ -339,7 +345,8 @@ mod tests {
             if line >= start && line < end {
                 continue; // replaced by the raw lines above
             }
-            let rows = visual_rows_for_line(&parsed.lines[line], width).max(1);
+            let rows =
+                visual_rows_for_line(&parsed.lines[line], parsed.row_indent(line), width).max(1);
             for sub in 0..rows {
                 out.push(RowHit::Rendered { line, sub });
             }
@@ -347,10 +354,15 @@ mod tests {
         out
     }
 
+    /// Raw lines that wrap flat, as a top-level paragraph's do.
+    fn flat<'s>(lines: &[&'s str]) -> Vec<RevealedLine<'s>> {
+        lines.iter().map(|&l| (l, Indent::NONE)).collect()
+    }
+
     fn check_against_brute_force(
         parsed: &ParsedDoc,
         width: usize,
-        reveal: Option<(Range<usize>, Vec<&str>)>,
+        reveal: Option<(Range<usize>, Vec<RevealedLine>)>,
     ) {
         let er = match &reveal {
             None => EffectiveRows::identity(parsed, width),
@@ -399,7 +411,7 @@ mod tests {
                     .contains("one two three")
             })
             .expect("reflowed paragraph must render as one line");
-        let raw = vec!["one", "two", "three"];
+        let raw = flat(&["one", "two", "three"]);
         for width in [80, 20, 6] {
             check_against_brute_force(&parsed, width, Some((block..block + 1, raw.clone())));
         }
@@ -420,15 +432,15 @@ mod tests {
                     .contains("alpha bravo charlie")
             })
             .expect("reflowed paragraph must render as one line");
-        let raw = vec!["alpha bravo", "charlie delta echo"];
+        let raw = flat(&["alpha bravo", "charlie delta echo"]);
         for width in [80, 10, 6] {
             check_against_brute_force(&parsed, width, Some((block..block + 1, raw.clone())));
         }
     }
 
     /// A nested paragraph's patch replaces its one flow row inside a multi-row block (a list),
-    /// names its lines block-relative, and wraps them as the painter does: a raw `- ` marker and a
-    /// continuation's indent hang their wrapped rows.
+    /// names its lines block-relative, and wraps them as the painter does: behind the item's
+    /// content column, which both lines start at.
     #[test]
     fn a_nested_reveal_splices_one_row_inside_its_block() {
         let parsed = reflowed("- one\n- alpha bravo charlie\n  delta echo foxtrot\n- four\n");
@@ -443,7 +455,10 @@ mod tests {
                     .contains("alpha bravo charlie delta")
             })
             .expect("the item's paragraph must render as one flow row");
-        let raw = ["- alpha bravo charlie", "  delta echo foxtrot"];
+        let raw = [
+            ("- alpha bravo charlie", Indent::hanging(2)),
+            ("  delta echo foxtrot", Indent::hanging(2)),
+        ];
         for width in [80, 12, 9] {
             let er = EffectiveRows::with_reveal(&parsed, width, row..row + 1, 1, &raw);
             let expected = expand_from(&parsed, width, Some((row..row + 1, &raw)), 1);
@@ -479,7 +494,7 @@ mod tests {
                     .contains("one two three")
             })
             .unwrap();
-        let raw = vec!["one", "two", "three"];
+        let raw = flat(&["one", "two", "three"]);
         let width = 8;
         let er = EffectiveRows::with_reveal(&parsed, width, block..block + 1, 0, &raw);
         let expected = expand(&parsed, width, Some((block..block + 1, &raw)));

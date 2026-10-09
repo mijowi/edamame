@@ -1,7 +1,9 @@
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, text::Line, widgets::StatefulWidget};
 
 use super::line_render::{patch_char_cols, render_line_from_visual};
+use crate::document::wrap::Indent;
 use crate::document::VisualSelection;
+use crate::markdown::RowOrigin;
 
 /// State for the `PreviewView` widget.  The rendered lines are not held here: they are borrowed
 /// through `PreviewView::lines` so a scroll or mouse event never clones `parsed.lines`.
@@ -27,6 +29,9 @@ pub struct PreviewState {
 /// `EditorState::parsed.lines`.
 pub struct PreviewView<'a> {
     pub lines: &'a [Line<'static>],
+    /// The lines' origins, 1:1 with them, for the indent each wraps behind
+    /// ([`Indent::of_row`]).  Shorter (or empty) wraps the lines past its end flat.
+    pub origins: &'a [RowOrigin],
     pub scroll: usize,
 }
 
@@ -45,14 +50,18 @@ impl<'a> StatefulWidget for PreviewView<'a> {
         let band = state.selection.and_then(|s| s.band);
         let sel_style = state.selection_style;
         let width = area.width as usize;
-        let (mut line_idx, mut first_sub_row) = line_at_visual_row(self.lines, self.scroll, width);
+        let indent_of = |i: usize| Indent::of_row(self.origins.get(i));
+        let (mut line_idx, mut first_sub_row) =
+            line_at_visual_row(self.lines, self.origins, self.scroll, width);
         let mut vis_y: u16 = 0;
         while vis_y < area.height {
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
             let skip_rows = first_sub_row;
-            let rows_used = render_line_from_visual(line, area, buf, vis_y, true, skip_rows);
+            let indent = indent_of(line_idx);
+            let rows_used =
+                render_line_from_visual(line, indent, area, buf, vis_y, true, skip_rows);
             if rows_used == 0 {
                 break;
             }
@@ -75,6 +84,7 @@ impl<'a> StatefulWidget for PreviewView<'a> {
                     };
                     patch_char_cols(
                         line,
+                        indent,
                         buf,
                         area,
                         vis_y,
@@ -93,10 +103,16 @@ impl<'a> StatefulWidget for PreviewView<'a> {
     }
 }
 
-fn line_at_visual_row(lines: &[Line<'static>], visual_row: usize, width: usize) -> (usize, usize) {
+fn line_at_visual_row(
+    lines: &[Line<'static>],
+    origins: &[RowOrigin],
+    visual_row: usize,
+    width: usize,
+) -> (usize, usize) {
     let mut acc = 0usize;
     for (idx, line) in lines.iter().enumerate() {
-        let rows = crate::document::wrap::visual_rows_for_line(line, width).max(1);
+        let indent = Indent::of_row(origins.get(idx));
+        let rows = crate::document::wrap::visual_rows_for_line(line, indent, width).max(1);
         if visual_row < acc + rows {
             return (idx, visual_row - acc);
         }
@@ -133,6 +149,7 @@ mod tests {
                 frame.render_stateful_widget(
                     PreviewView {
                         lines: &lines,
+                        origins: &[],
                         scroll: 0,
                     },
                     frame.area(),
@@ -171,7 +188,9 @@ mod tests {
     #[test]
     fn list_item_wrap_hangs_indent_after_marker() {
         let theme = theme();
-        let lines = Renderer::new(theme).render(&parse("- alpha bravo charlie delta\n"));
+        // The rows' origins state the hang the painter wraps them behind.
+        let (rows, _) =
+            Renderer::new(theme).render_with_counts(&parse("- alpha bravo charlie delta\n"));
         let mut state = PreviewState::default();
 
         let backend = TestBackend::new(12, 4);
@@ -180,7 +199,8 @@ mod tests {
             .draw(|frame| {
                 frame.render_stateful_widget(
                     PreviewView {
-                        lines: &lines,
+                        lines: &rows.lines,
+                        origins: &rows.origins,
                         scroll: 0,
                     },
                     frame.area(),
@@ -219,7 +239,9 @@ mod tests {
     #[test]
     fn list_item_wrap_hangs_indent_for_task_and_ordered() {
         let theme = theme();
-        let lines = Renderer::new(theme).render(&parse("- [ ] alpha bravo charlie delta\n"));
+        // The rows' origins state the hang the painter wraps them behind.
+        let (rows, _) =
+            Renderer::new(theme).render_with_counts(&parse("- [ ] alpha bravo charlie delta\n"));
         let mut state = PreviewState::default();
         let backend = TestBackend::new(16, 4);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -227,7 +249,8 @@ mod tests {
             .draw(|frame| {
                 frame.render_stateful_widget(
                     PreviewView {
-                        lines: &lines,
+                        lines: &rows.lines,
+                        origins: &rows.origins,
                         scroll: 0,
                     },
                     frame.area(),
@@ -272,6 +295,7 @@ mod tests {
                 frame.render_stateful_widget(
                     PreviewView {
                         lines: &lines,
+                        origins: &[],
                         scroll: 0,
                     },
                     frame.area(),
@@ -320,6 +344,7 @@ mod tests {
                 frame.render_stateful_widget(
                     PreviewView {
                         lines: &lines,
+                        origins: &[],
                         scroll: 1,
                     },
                     frame.area(),

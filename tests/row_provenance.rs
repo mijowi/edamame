@@ -642,6 +642,15 @@ const CORPUS: &[&str] = &[
     "> [d]: /u\n> - - a\n",
     "- a\n  b\n  ---\n",
     "- a\n\n  ```\n  x\n  ```\n",
+    // Rows hang where the renderer says their text starts (issue #71): a footnote flow under its
+    // leader, a named one too, and text that only reads like a marker not at all.
+    "[^1]: alpha bravo charlie delta echo foxtrot golf hotel\n\nref[^1]\n",
+    "[^note]: alpha bravo charlie delta echo foxtrot golf\n\nref[^note]\n",
+    "1\\. alpha bravo charlie delta echo\n\n\\- alpha bravo charlie\n\n> 2\\. alpha bravo charlie\n",
+    // A revealed line keeps its rendered marker alignment (issue #65): ` 6.` padded beside `10.`,
+    // wrapping, and a 2-space nested item at its 4-cell nesting.
+    "1. a\n2. b\n3. c\n4. d\n5. e\n6. alpha bravo charlie delta echo\n7. g\n8. h\n9. i\n10. j\n",
+    "- a\n  - alpha bravo charlie\n    delta echo foxtrot\n- b\n",
 ];
 
 #[test]

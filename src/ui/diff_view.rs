@@ -18,9 +18,10 @@ use ratatui::{
 use crate::config::{Action, Theme};
 use crate::diff::hunk::InlineSide;
 use crate::diff::layout::{
-    decision_line_text, line_marker, line_text, DiffLineSource, DiffVisualLine,
+    decision_line_text, line_marker, line_text, marker_indent, DiffLineSource, DiffVisualLine,
 };
 use crate::diff::{Decision, DiffState};
+use crate::document::wrap::Indent;
 use crate::input::diff_hint;
 use crate::ui::line_render::render_line_from_visual;
 
@@ -63,8 +64,23 @@ impl<'a> StatefulWidget for DiffView<'a> {
                 let line = build_line(self.diff, self.theme, dvl);
                 // The decision divider is pinned to one row in the layout cache, so no wrap.
                 let wrap = dvl.source != DiffLineSource::Decision;
-                let painted =
-                    render_line_from_visual(&line, area, buf, visual_y, wrap, skip_first_subrow);
+                let indent = if dvl.source == DiffLineSource::ContextRendered {
+                    self.diff
+                        .parsed_new
+                        .as_ref()
+                        .map_or(Indent::NONE, |p| p.row_indent(dvl.rope_line))
+                } else {
+                    marker_indent(dvl.source)
+                };
+                let painted = render_line_from_visual(
+                    &line,
+                    indent,
+                    area,
+                    buf,
+                    visual_y,
+                    wrap,
+                    skip_first_subrow,
+                );
                 skip_first_subrow = 0;
                 if painted == 0 {
                     break;

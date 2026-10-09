@@ -9,6 +9,8 @@ use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
+use crate::markdown::RowOrigin;
+
 /// Display width of `ch` in terminal cells (0 for control chars).  Shared by the renderer
 /// and the wrap-row calculator so geometry agrees with cursor and selection coordinates.
 pub fn char_cells(ch: char) -> usize {
@@ -216,8 +218,59 @@ fn ends_with_lone_word(chars: &[(char, Style)], start: usize, break_at: usize) -
     chars[word].0.is_alphanumeric() && word > start && chars[word - 1].0.is_whitespace()
 }
 
-/// The visual rows produced by wrapping `chars` at `width` cells with a hanging `indent`
-/// (applied to continuation rows only), as `(start, end, next_start)` char-index tuples.
+// ── Row indents ───────────────────────────────────────────────────────────
+
+/// Where a line's wrapped rows start, in cells: `lead` before its first row's text, `hang` before
+/// each continuation row's.  Never detected from the text: a rendered row's comes from the
+/// renderer (`RowOrigin::hang`, through `ParsedDoc::row_indent`), a revealed raw line's from its
+/// leaf's recorded content column (`row_map::revealed_indent`), so a row that merely reads like
+/// a list item (`1\. text`) doesn't hang, and a footnote's flow hangs under its text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Indent {
+    /// Blank cells before the first row's text: a revealed line padded to where its rendered
+    /// content started (a right-aligned ` 6.` marker's pad).  0 on every rendered row.
+    pub lead: usize,
+    /// Cells before each continuation row's text: the hanging indent.
+    pub hang: usize,
+}
+
+impl Indent {
+    /// No indent: a flat wrap (Raw mode, plain text).
+    pub const NONE: Indent = Indent { lead: 0, hang: 0 };
+
+    /// Continuation rows hang `hang` cells; the first row starts at cell 0.
+    pub const fn hanging(hang: usize) -> Self {
+        Indent { lead: 0, hang }
+    }
+
+    /// A rendered row's indent: the hang its origin states ([`RowOrigin::hang`]); none for a row
+    /// with no origin.
+    pub fn of_row(origin: Option<&RowOrigin>) -> Self {
+        origin.map_or(Indent::NONE, |o| Indent::hanging(o.hang as usize))
+    }
+
+    /// The indent the wrap applies at `width`: each part clamped by [`effective_indent`], so a
+    /// row always has room for text.
+    pub fn at(self, width: usize) -> Self {
+        Indent {
+            lead: effective_indent(self.lead, width),
+            hang: effective_indent(self.hang, width),
+        }
+    }
+
+    /// The cells before row `sub_row`'s text: `lead` on the first row, `hang` on the rest.
+    pub fn row(self, sub_row: usize) -> usize {
+        if sub_row == 0 {
+            self.lead
+        } else {
+            self.hang
+        }
+    }
+}
+
+/// The visual rows produced by wrapping `chars` at `width` cells behind `indent` (its `lead`
+/// before the first row, its `hang` before every other), as `(start, end, next_start)`
+/// char-index tuples.
 ///
 /// `chars[start..end]` is the row's content.  `next_start` normally equals `end`, but is
 /// `end + 1` when the break absorbed the single following space; chars in `end..next_start`
@@ -229,14 +282,14 @@ fn ends_with_lone_word(chars: &[(char, Style)], start: usize, break_at: usize) -
 pub fn visual_rows_of_chars(
     chars: &[(char, Style)],
     width: usize,
-    indent: usize,
+    indent: Indent,
 ) -> Vec<(usize, usize, usize)> {
     let mut rows = Vec::new();
     if width == 0 {
         rows.push((0, chars.len(), chars.len()));
         return rows;
     }
-    let indent = effective_indent(indent, width);
+    let indent = indent.at(width);
 
     let clusters = cluster_starts(chars);
     let clusters = clusters.as_deref();
@@ -250,11 +303,7 @@ pub fn visual_rows_of_chars(
             }
             break;
         }
-        let row_width = if row_idx == 0 {
-            width
-        } else {
-            width.saturating_sub(indent).max(1)
-        };
+        let row_width = width.saturating_sub(indent.row(row_idx)).max(1);
         let n_chars = chars_within_cell_budget(chars, start, row_width);
         let remaining = chars.len() - start;
         let (row_end, next_start) = if n_chars >= remaining {
@@ -306,34 +355,38 @@ pub fn visual_rows_of_chars(
 /// follows the source layout, not the rendered one.
 pub fn visual_rows_of_str(text: &str, width: usize) -> Vec<(usize, usize, usize)> {
     let chars: Vec<(char, Style)> = text.chars().map(|c| (c, Style::default())).collect();
-    visual_rows_of_chars(&chars, width, 0)
+    visual_rows_of_chars(&chars, width, Indent::NONE)
 }
 
-/// The wrap of a raw source line as the reveal paints it: `render_line`'s hanging indent, detected
-/// from the line's own leading marker (`- `, `> `, `1. `, an indent), plus that indent.  The indent
-/// is the *effective* one ([`effective_indent`]).
-/// The reveal's row count (`EffectiveRows`), its click mapping and the cursor's sub-row (stacked
-/// or revealed in place) all read this, so none of them can disagree with the painter about where
-/// a revealed line wraps.  Callers mapping a column must shift it by the indent on sub-rows past
-/// the first.
-pub fn revealed_rows_of_str(text: &str, width: usize) -> (Vec<(usize, usize, usize)>, usize) {
+/// The wrap of a raw source line as the reveal paints it behind `indent` (the line's
+/// `row_map::revealed_indent`), and that indent as applied at `width` ([`Indent::at`]).  The
+/// reveal's row count (`EffectiveRows`), its click mapping and the cursor's sub-row (stacked or
+/// revealed in place) all read this, so none of them can disagree with the painter about where a
+/// revealed line wraps.  Callers mapping a column offset it by [`Indent::row`].
+pub fn revealed_rows_of_str(
+    text: &str,
+    indent: Indent,
+    width: usize,
+) -> (Vec<(usize, usize, usize)>, Indent) {
     let width = width.max(1);
-    let indent = effective_indent(compute_hanging_indent_str(text), width);
     let chars: Vec<(char, Style)> = text.chars().map(|c| (c, Style::default())).collect();
-    (visual_rows_of_chars(&chars, width, indent), indent)
+    (
+        visual_rows_of_chars(&chars, width, indent),
+        indent.at(width),
+    )
 }
 
 /// Rows (>= 1) a revealed raw source line paints at `width`: [`revealed_rows_of_str`]'s count,
 /// with an empty line taking one row.
-pub fn revealed_row_count(text: &str, width: usize) -> usize {
-    revealed_rows_of_str(text, width).0.len().max(1)
+pub fn revealed_row_count(text: &str, indent: Indent, width: usize) -> usize {
+    revealed_rows_of_str(text, indent, width).0.len().max(1)
 }
 
-/// Rows a styled `Line` occupies at `width`, hanging indent included — the same layout
+/// Rows a styled `Line` occupies at `width` behind `indent` — the same layout
 /// [`render_line`](crate::ui::line_render::render_line) paints, so scroll-bound math matches the
 /// viewport.  Empty lines take one row.
-pub fn visual_rows_for_line(line: &Line<'_>, width: usize) -> usize {
-    PaintedRows::new(line, width).rows.len()
+pub fn visual_rows_for_line(line: &Line<'_>, indent: Indent, width: usize) -> usize {
+    PaintedRows::new(line, indent, width).rows.len()
 }
 
 /// The hanging indent continuation rows take at `width`: `indent`, or 0 when it would leave no
@@ -349,38 +402,36 @@ pub fn effective_indent(indent: usize, width: usize) -> usize {
 
 /// A styled `Line`'s wrapped rows at one width, laid out as
 /// [`render_line`](crate::ui::line_render::render_line) paints them: chars, row breaks and the
-/// effective hanging indent derived together, for every reader of the painted geometry (row
-/// counts, hit-tests, highlight patching).
+/// applied indent derived together, for every reader of the painted geometry (row counts,
+/// hit-tests, highlight patching).
 pub struct PaintedRows {
     /// The line's chars, each with its span's style.
     pub chars: Vec<(char, Style)>,
     /// `(start, end, next_start)` per row, as [`visual_rows_of_chars`] returns them.
     pub rows: Vec<(usize, usize, usize)>,
-    /// The hanging indent continuation rows start at ([`effective_indent`]).
-    pub indent: usize,
+    /// The indent the rows start behind, as applied at the width ([`Indent::at`]).
+    pub indent: Indent,
 }
 
 impl PaintedRows {
-    pub fn new(line: &Line<'_>, width: usize) -> Self {
+    pub fn new(line: &Line<'_>, indent: Indent, width: usize) -> Self {
         let chars: Vec<(char, Style)> = line
             .spans
             .iter()
             .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
             .collect();
-        let indent = compute_hanging_indent(line);
         let rows = visual_rows_of_chars(&chars, width, indent);
         Self {
             chars,
             rows,
-            indent: effective_indent(indent, width),
+            indent: indent.at(width),
         }
     }
 
     /// The cell where char `char_idx` starts on row `sub_row`, which must hold it (or end at it:
     /// the row's `end` gives the cell just past its last char).
     pub fn cell_of(&self, sub_row: usize, char_idx: usize) -> usize {
-        let row_indent = if sub_row == 0 { 0 } else { self.indent };
-        row_indent
+        self.indent.row(sub_row)
             + self.chars[self.rows[sub_row].0..char_idx]
                 .iter()
                 .map(|&(c, _)| char_cells(c))
@@ -395,13 +446,14 @@ impl PaintedRows {
 /// cell only on an unwrapped row of single-cell chars.
 pub fn char_cells_at(
     line: &Line<'_>,
+    indent: Indent,
     width: usize,
     char_idx: usize,
 ) -> Option<(usize, std::ops::Range<usize>)> {
     if width == 0 {
         return None;
     }
-    let painted = PaintedRows::new(line, width);
+    let painted = PaintedRows::new(line, indent, width);
     let sub_row = painted
         .rows
         .iter()
@@ -411,93 +463,16 @@ pub fn char_cells_at(
 }
 
 /// The cell just past the last char `line` paints on wrapped row `sub_row` at `width`, its
-/// hanging indent included; 0 for a row the line doesn't have.
-pub fn sub_row_end_cell(line: &Line<'_>, width: usize, sub_row: usize) -> usize {
+/// indent included; 0 for a row the line doesn't have.
+pub fn sub_row_end_cell(line: &Line<'_>, indent: Indent, width: usize, sub_row: usize) -> usize {
     if width == 0 {
         return 0;
     }
-    let painted = PaintedRows::new(line, width);
+    let painted = PaintedRows::new(line, indent, width);
     painted
         .rows
         .get(sub_row)
         .map_or(0, |&(_, end, _)| painted.cell_of(sub_row, end))
-}
-
-/// Hanging indent in cells: the column where text begins after a list marker, so
-/// continuation rows align under it and the marker hangs off to the left.
-///
-/// Detected shapes: rendered (`• `) and raw (`- `) bullets, either plus a task marker
-/// (`[ ] `), ordered markers in raw (`1. `) and right-aligned rendered (` 1. `) form, and
-/// a plain leading-whitespace continuation.  0 for anything else.
-pub fn compute_hanging_indent(line: &Line<'_>) -> usize {
-    let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
-    compute_hanging_indent_chars(&chars)
-}
-
-/// [`compute_hanging_indent`] against raw buffer text, where no `Line` spans exist.
-pub fn compute_hanging_indent_str(text: &str) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    compute_hanging_indent_chars(&chars)
-}
-
-fn compute_hanging_indent_chars(chars: &[char]) -> usize {
-    let mut i = 0;
-    while i < chars.len() && chars[i] == ' ' {
-        i += 1;
-    }
-    let leading = i;
-
-    // Each blockquote level is a 2-cell prefix that hangs off continuation rows, where
-    // the bar is repainted (see `ui::line_render::leading_bar_prefix`).  Recurse so an inner list marker
-    // after the bar(s) is aligned too.
-    if blockquote_prefix_unit(&chars[i..]) {
-        let after = i + 2;
-        return 2 + compute_hanging_indent_chars(&chars[after..]);
-    }
-
-    if chars.get(i) == Some(&'•') && chars.get(i + 1) == Some(&' ') {
-        return text_start_after_optional_task_prefix(chars, i + 2);
-    }
-    // Raw bullet: the cursor's raw-revealed list line inside `RenderedView`.  Indented
-    // too, so its row stays aligned with the surrounding rendered list.
-    if matches!(chars.get(i), Some('-') | Some('*') | Some('+')) && chars.get(i + 1) == Some(&' ') {
-        return text_start_after_optional_task_prefix(chars, i + 2);
-    }
-    let digit_count = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
-    if digit_count > 0
-        && matches!(chars.get(i + digit_count), Some('.') | Some(')'))
-        && chars.get(i + digit_count + 1) == Some(&' ')
-    {
-        return text_start_after_optional_task_prefix(chars, i + digit_count + 2);
-    }
-
-    // Continuation paragraph or otherwise-indented text: indenting at the leading-space
-    // count keeps wrapped continuations flush with the indented body.
-    if leading > 0 {
-        return leading;
-    }
-    0
-}
-
-fn is_task_marker(chars: &[char], i: usize) -> bool {
-    chars.get(i) == Some(&'[')
-        && matches!(chars.get(i + 1), Some(' ') | Some('x') | Some('X'))
-        && chars.get(i + 2) == Some(&']')
-        && chars.get(i + 3) == Some(&' ')
-}
-
-fn text_start_after_optional_task_prefix(chars: &[char], pos: usize) -> usize {
-    if is_task_marker(chars, pos) {
-        pos + 4
-    } else {
-        pos
-    }
-}
-
-/// One blockquote-bar unit: `▎` or `>` plus a space.  Nesting is handled by recursion in
-/// [`compute_hanging_indent_chars`].
-fn blockquote_prefix_unit(chars: &[char]) -> bool {
-    matches!(chars.first(), Some('▎') | Some('>')) && chars.get(1) == Some(&' ')
 }
 
 /// The highest char column the cursor may occupy while still rendering on visual row
@@ -581,108 +556,12 @@ mod tests {
     }
 
     #[test]
-    fn hanging_indent_bullet() {
-        let line = Line::from(vec![Span::raw("• "), Span::raw("foo bar")]);
-        assert_eq!(compute_hanging_indent(&line), 2);
-    }
-
-    #[test]
-    fn hanging_indent_raw_bullet() {
-        let line = Line::from(vec![Span::raw("- foo bar")]);
-        assert_eq!(compute_hanging_indent(&line), 2);
-    }
-
-    #[test]
-    fn hanging_indent_ordered_single_digit() {
-        let line = Line::from(vec![Span::raw("1. "), Span::raw("foo")]);
-        assert_eq!(compute_hanging_indent(&line), 3);
-    }
-
-    #[test]
-    fn hanging_indent_ordered_padded() {
-        // ` 1. foo` — right-aligned single-digit when list reaches 10+.
-        let line = Line::from(vec![Span::raw(" 1. "), Span::raw("foo")]);
-        assert_eq!(compute_hanging_indent(&line), 4);
-    }
-
-    #[test]
-    fn hanging_indent_ordered_double_digit() {
-        let line = Line::from(vec![Span::raw("10. "), Span::raw("foo")]);
-        assert_eq!(compute_hanging_indent(&line), 4);
-    }
-
-    #[test]
-    fn hanging_indent_rendered_task_includes_bullet_and_checkbox() {
-        // Tasks render as `• [ ] foo` — bullet + space + checkbox + space
-        // = 6 cells of marker before the body text begins.
-        let line = Line::from(vec![Span::raw("• [ ] "), Span::raw("foo")]);
-        assert_eq!(compute_hanging_indent(&line), 6);
-    }
-
-    #[test]
-    fn hanging_indent_task_raw_revealed() {
-        // Cursor's raw line in Rendered view: `- [ ] foo`.
-        let line = Line::from(vec![Span::raw("- [ ] foo")]);
-        assert_eq!(compute_hanging_indent(&line), 6);
-    }
-
-    #[test]
-    fn hanging_indent_nested_bullet() {
-        // Outer bullet → child indent of 2 spaces, then nested bullet.
-        let line = Line::from(vec![Span::raw("  • "), Span::raw("inner")]);
-        assert_eq!(compute_hanging_indent(&line), 4);
-    }
-
-    #[test]
-    fn hanging_indent_continuation_paragraph() {
-        // List-item continuation paragraph: just leading spaces, no marker.
-        let line = Line::from(vec![Span::raw("   "), Span::raw("more text")]);
-        assert_eq!(compute_hanging_indent(&line), 3);
-    }
-
-    #[test]
-    fn hanging_indent_plain_paragraph() {
-        let line = Line::from(vec![Span::raw("Hello world")]);
-        assert_eq!(compute_hanging_indent(&line), 0);
-    }
-
-    #[test]
-    fn hanging_indent_blockquote() {
-        // Rendered blockquote bar hangs off so wrapped quote text aligns
-        // under the gutter (2 cells: glyph + space).
-        let line = Line::from(vec![Span::raw("▎ "), Span::raw("quoted")]);
-        assert_eq!(compute_hanging_indent(&line), 2);
-    }
-
-    #[test]
-    fn hanging_indent_blockquote_raw_marker() {
-        // The raw `> ` marker (cursor's quote line raw-revealed, and the
-        // text the navigation side wraps) hangs off the same 2 cells, so
-        // wrap budgets agree between the rendered bar and the raw source.
-        assert_eq!(compute_hanging_indent_str("> quoted text"), 2);
-    }
-
-    #[test]
-    fn hanging_indent_nested_blockquote() {
-        // Two bar levels stack to a 4-cell hanging indent.
-        let line = Line::from(vec![Span::raw("▎ ▎ "), Span::raw("quoted")]);
-        assert_eq!(compute_hanging_indent(&line), 4);
-    }
-
-    #[test]
-    fn hanging_indent_list_inside_blockquote() {
-        // A bullet nested in a quote: bar (2) + bullet marker (2) = 4.
-        let line = Line::from(vec![Span::raw("▎ • "), Span::raw("item")]);
-        assert_eq!(compute_hanging_indent(&line), 4);
-    }
-
-    #[test]
     fn visual_rows_with_indent_word_aligned() {
         let chars: Vec<(char, Style)> = "• hello world foo"
             .chars()
             .map(|c| (c, Style::default()))
             .collect();
-        let rows = visual_rows_of_chars(&chars, 10, 2);
+        let rows = visual_rows_of_chars(&chars, 10, Indent::hanging(2));
         assert_eq!(rows[0].0, 0);
         assert!(rows.len() >= 2);
         assert_eq!(rows.last().map(|r| r.1), Some(17));
@@ -692,7 +571,7 @@ mod tests {
     fn visual_rows_with_indent_zero_matches_flat() {
         let s = "hello world foo";
         let chars: Vec<(char, Style)> = s.chars().map(|c| (c, Style::default())).collect();
-        let with_indent = visual_rows_of_chars(&chars, 10, 0);
+        let with_indent = visual_rows_of_chars(&chars, 10, Indent::NONE);
         let flat = visual_rows_of_str(s, 10);
         assert_eq!(with_indent, flat);
     }
@@ -701,10 +580,42 @@ mod tests {
     fn visual_rows_for_line_counts_indent_extra_rows() {
         // Indent 2 makes continuation rows narrower, so the row count can only grow.
         let line = Line::from(vec![Span::raw("• "), Span::raw("hello world foo bar baz")]);
-        let with_marker = visual_rows_for_line(&line, 10);
-        let line_flat = Line::from(vec![Span::raw("hello world foo bar baz")]);
-        let flat = visual_rows_for_line(&line_flat, 10);
+        let with_marker = visual_rows_for_line(&line, Indent::hanging(2), 10);
+        let flat = visual_rows_for_line(&line, Indent::NONE, 10);
         assert!(with_marker >= flat);
+    }
+
+    /// The indent is stated, never read off the text: a line that looks like a list item wraps
+    /// flat unless told to hang, and hangs wherever it is told to.
+    #[test]
+    fn the_indent_comes_from_the_caller_not_the_text() {
+        let text = "1. alpha bravo charlie delta";
+        let flat = revealed_rows_of_str(text, Indent::NONE, 15).0;
+        let hung = revealed_rows_of_str(text, Indent::hanging(3), 15).0;
+        assert_eq!(flat, visual_rows_of_str(text, 15));
+        // `charlie delta` fits a 15-cell row, not the 12 cells left behind a 3-cell hang.
+        assert_eq!((flat.len(), hung.len()), (2, 3));
+    }
+
+    /// A `lead` narrows the first row and shifts its cells; continuation rows take `hang`.
+    #[test]
+    fn a_lead_narrows_and_shifts_the_first_row_only() {
+        let line = Line::from("ab cd ef gh");
+        let indent = Indent { lead: 2, hang: 4 };
+        let painted = PaintedRows::new(&line, indent, 8);
+        // 6 cells for `ab cd `, then 4 for each continuation row.
+        assert_eq!(painted.rows[0], (0, 6, 6));
+        assert_eq!(painted.cell_of(0, 0), 2);
+        assert_eq!(painted.cell_of(1, painted.rows[1].0), 4);
+    }
+
+    /// Both parts collapse to 0 where they would leave a row no room for text.
+    #[test]
+    fn an_indent_too_wide_for_the_row_collapses() {
+        let indent = Indent { lead: 9, hang: 3 };
+        assert_eq!(indent.at(10), Indent { lead: 0, hang: 3 });
+        assert_eq!(indent.at(4), Indent { lead: 0, hang: 0 });
+        assert_eq!(indent.at(80), indent);
     }
 
     #[test]
@@ -925,7 +836,7 @@ mod tests {
     #[test]
     fn wrap_budget_is_cells_not_chars_for_wide_chars() {
         let chars: Vec<(char, Style)> = "🥇🥇🥇".chars().map(|c| (c, Style::default())).collect();
-        let rows = visual_rows_of_chars(&chars, 4, 0);
+        let rows = visual_rows_of_chars(&chars, 4, Indent::NONE);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], (0, 2, 2));
         assert_eq!(rows[1], (2, 3, 3));
@@ -935,7 +846,7 @@ mod tests {
     fn wrap_force_breaks_when_single_wide_char_exceeds_width() {
         // Width 1 can't fit a 2-cell emoji, but the loop must still make progress.
         let chars: Vec<(char, Style)> = "🥇🥇".chars().map(|c| (c, Style::default())).collect();
-        let rows = visual_rows_of_chars(&chars, 1, 0);
+        let rows = visual_rows_of_chars(&chars, 1, Indent::NONE);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], (0, 1, 1));
         assert_eq!(rows[1], (1, 2, 2));

@@ -139,12 +139,14 @@ pub fn hit_test_clickable_non_link(
 
     let c = col as usize;
     let r = row as usize;
-    let Some((line, sub_row)) = rendered_line_at_row(state, r) else {
+    let Some((idx, sub_row)) = rendered_line_at_row(state, r) else {
         return false;
     };
     // Past the cells this wrapped row paints, in cells: a char count would stop short of a
     // footnote marker after wide text (issue #60).
-    if c >= wrap::sub_row_end_cell(&line, state.viewport_width, sub_row) {
+    let line = &state.parsed.lines[idx];
+    let indent = state.parsed.row_indent(idx);
+    if c >= wrap::sub_row_end_cell(line, indent, state.viewport_width, sub_row) {
         return false;
     }
 

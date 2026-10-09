@@ -353,10 +353,10 @@ impl<'t> Renderer<'t> {
             Block::Html(html, src) => {
                 let prefix_cells = str_cells(indent_prefix);
                 for (k, line) in html.lines().enumerate() {
-                    out.push(
-                        Line::styled(format!("{indent_prefix}{line}"), self.theme.code_block_text),
-                        verbatim_origin(src, k, prefix_cells),
-                    );
+                    let row =
+                        Line::styled(format!("{indent_prefix}{line}"), self.theme.code_block_text);
+                    let origin = verbatim_origin(src, k, prefix_cells).hung_under_indent(&row);
+                    out.push(row, origin);
                 }
             }
             Block::HtmlComment(..) => {
@@ -407,7 +407,9 @@ impl<'t> Renderer<'t> {
         let mut k = 0;
         for line in content.lines() {
             k += 1;
-            out.push(self.metadata_line(kind, line), verbatim_origin(src, k, 0));
+            let row = self.metadata_line(kind, line);
+            let origin = verbatim_origin(src, k, 0).hung_under_indent(&row);
+            out.push(row, origin);
         }
         out.push(
             Line::styled(delim.to_string(), self.theme.frontmatter_delimiter),
@@ -559,6 +561,7 @@ impl<'t> Renderer<'t> {
             let glyph_origin = RowOrigin {
                 lines: Some(src.first..line_at(src, text_lines)),
                 cols: super::row_origin::ColOrigin::Chrome,
+                hang: 0,
             };
             if self.try_render_h1_big(inlines, &glyph_origin, &rule_origin, out) {
                 return;
@@ -882,10 +885,9 @@ impl<'t> Renderer<'t> {
                     // Tokens address the whole source line, so each segment
                     // takes the overlapping part re-based to its own column 0.
                     let seg = highlight::slice_tokens(row_tokens(i), start, end);
-                    out.push(
-                        self.code_body_row(&slice, &seg, block_width),
-                        body_origin(i, start),
-                    );
+                    let row = self.code_body_row(&slice, &seg, block_width);
+                    let origin = body_origin(i, start).hung_under_indent(&row);
+                    out.push(row, origin);
                     start = end;
                 }
             }
@@ -903,10 +905,9 @@ impl<'t> Renderer<'t> {
                         body_origin(i, 0),
                     );
                 } else {
-                    out.push(
-                        self.code_body_row(line, row_tokens(i), block_width),
-                        body_origin(i, 0),
-                    );
+                    let row = self.code_body_row(line, row_tokens(i), block_width);
+                    let origin = body_origin(i, 0).hung_under_indent(&row);
+                    out.push(row, origin);
                 }
             }
         }

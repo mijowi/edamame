@@ -19,6 +19,13 @@ pub struct RowOrigin {
     /// table's top border).
     pub lines: Option<Range<u32>>,
     pub cols: ColOrigin,
+    /// Cells the row's wrapped continuation rows hang behind: where its text starts past every
+    /// prefix the renderer drew (bars, markers, leaders, indent), so they line up under it.
+    /// Stated here by the renderer rather than read off the row's text, which can't tell a
+    /// marker from text that looks like one (`1\. a`) or know a footnote's leader.  Content
+    /// starts at `rendered_col` and so hangs there, a verbatim row under its own indentation
+    /// too ([`Self::hung_under_indent`]); chrome hangs behind its containers' prefixes only.
+    pub hang: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,6 +72,7 @@ impl RowOrigin {
                 l..l + 1
             }),
             cols: ColOrigin::Chrome,
+            hang: 0,
         }
     }
 
@@ -77,13 +85,44 @@ impl RowOrigin {
                 rendered_col,
                 kind,
             },
+            hang: rendered_col,
         }
     }
 
-    /// The same row behind `cells` more cells of prefix (a quote bar, a footnote leader).
+    /// The same row behind `cells` more cells of prefix (a quote bar, a footnote leader): its
+    /// content and its hang both move right.
     pub fn shifted(mut self, cells: usize) -> Self {
+        let cells = to_u32(cells);
         if let ColOrigin::Content { rendered_col, .. } = &mut self.cols {
-            *rendered_col = rendered_col.saturating_add(to_u32(cells));
+            *rendered_col = rendered_col.saturating_add(cells);
+        }
+        self.hang = self.hang.saturating_add(cells);
+        self
+    }
+
+    /// A verbatim row hung under its own indentation as well as its prefix: `line`'s leading
+    /// spaces past `rendered_col` (a code line's indent, which is content) join the hang, so a
+    /// wrapped code line continues under its first char, as an editor's soft wrap does.  Any
+    /// other row is returned as is.
+    pub fn hung_under_indent(mut self, line: &Line<'_>) -> Self {
+        if let ColOrigin::Content {
+            rendered_col,
+            kind: ContentKind::Verbatim,
+            ..
+        } = self.cols
+        {
+            let mut cell = 0usize;
+            let mut spaces = 0usize;
+            for ch in line.spans.iter().flat_map(|s| s.content.chars()) {
+                if cell >= rendered_col as usize {
+                    if ch != ' ' {
+                        break;
+                    }
+                    spaces += 1;
+                }
+                cell += super::table_layout::char_cells(ch);
+            }
+            self.hang = rendered_col.saturating_add(to_u32(spaces));
         }
         self
     }
@@ -145,15 +184,15 @@ mod tests {
     }
 
     #[test]
-    fn shifting_moves_only_the_rendered_column() {
+    fn shifting_moves_the_rendered_column_and_the_hang() {
         let row = RowOrigin::content(2..4, 3, 1, ContentKind::Flow).shifted(2);
         assert_eq!(row, RowOrigin::content(2..4, 3, 3, ContentKind::Flow));
         assert_eq!(row.first_line(), Some(2));
-        // Chrome has no column to shift.
-        assert_eq!(
-            RowOrigin::chrome(Some(1)).shifted(2),
-            RowOrigin::chrome(Some(1))
-        );
+        assert_eq!(row.hang, 3);
+        // Chrome has no column to shift, but hangs behind the prefix.
+        let chrome = RowOrigin::chrome(Some(1)).shifted(2);
+        assert_eq!(chrome.cols, ColOrigin::Chrome);
+        assert_eq!(chrome.hang, 2);
         // Saturates rather than wrapping.
         let far = RowOrigin::content(0..1, 0, u32::MAX - 1, ContentKind::Inline).shifted(5);
         assert_eq!(
@@ -164,6 +203,19 @@ mod tests {
                 kind: ContentKind::Inline,
             }
         );
+    }
+
+    /// Content hangs at its content column; a verbatim row also under its own indentation.
+    #[test]
+    fn a_verbatim_row_hangs_under_its_indentation() {
+        let code = Line::from("     x = 1");
+        let row = RowOrigin::content(1..2, 0, 1, ContentKind::Verbatim).hung_under_indent(&code);
+        assert_eq!(row.hang, 5);
+        // An inline row is left at its content column, whatever its text starts with.
+        let text = Line::from("  1. a");
+        let inline = RowOrigin::content(0..1, 0, 2, ContentKind::Inline);
+        assert_eq!(inline.clone().hung_under_indent(&text), inline);
+        assert_eq!(inline.hang, 2);
     }
 
     #[test]

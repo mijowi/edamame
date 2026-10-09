@@ -30,6 +30,9 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Dialogs now size theme and stylesheet names written in CJK correctly.
 - HTML comments inside a list item, quote or footnote are now hidden, as they already were elsewhere, and a column-width comment after a table inside a list item now sets its widths.
 - In a very narrow window, clicks and highlights on the wrapped rows of a list item now land on the character under them.
+- Wrapped footnotes now line up under their text, and a paragraph starting with an escaped `1\.` or `\-` no longer wraps like a list item.
+- Editing an item of a numbered list that reaches 10, or of a nested list, no longer shifts its text left.
+- Moving the cursor up or down into or within a wrapped code block or an indented paragraph now lands it directly above or below where it was.
 
 ## [0.1.5] - 2026-10-05
 

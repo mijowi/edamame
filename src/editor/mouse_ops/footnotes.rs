@@ -54,19 +54,21 @@ pub(super) fn back_link_glyph_at_click(
     col: u16,
     row: u16,
 ) -> Option<LinkTarget> {
-    let (line, sub_row) = rendered_line_at_row(state, row as usize)?;
+    let (idx, sub_row) = rendered_line_at_row(state, row as usize)?;
+    let line = state.parsed.lines.get(idx)?;
+    let indent = state.parsed.row_indent(idx);
     if line.spans.iter().flat_map(|s| s.content.chars()).last() != Some(BACK_LINK_GLYPH) {
         return None;
     }
     let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
     let width = state.viewport_width;
-    let (glyph_row, glyph) = wrap::char_cells_at(&line, width, total - 1)?;
+    let (glyph_row, glyph) = wrap::char_cells_at(line, indent, width, total - 1)?;
     if glyph_row != sub_row {
         return None;
     }
     let zone_start = match total
         .checked_sub(2)
-        .and_then(|i| wrap::char_cells_at(&line, width, i))
+        .and_then(|i| wrap::char_cells_at(line, indent, width, i))
     {
         Some((space_row, space)) if space_row == glyph_row => space.start,
         _ => glyph.start,

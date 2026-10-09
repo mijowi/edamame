@@ -1,15 +1,15 @@
 use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, text::Line};
 
-use crate::document::wrap::{
-    char_cells, compute_hanging_indent, effective_indent, visual_rows_of_chars, PaintedRows,
-};
+use crate::document::wrap::{char_cells, visual_rows_of_chars, Indent, PaintedRows};
 
 /// Write a styled `Line` to the TUI buffer, wrapping at `area.width` (in *cells*) when
 /// `wrap` is true.  Returns the visual rows consumed (≥ 1).
 ///
 /// Trailing cells are filled with the line's base style so styled blocks extend the full
-/// width.  Wrapping is word-aware, and a recognized list marker gives continuation rows a
-/// hanging indent (see [`compute_hanging_indent`]).
+/// width.  Wrapping is word-aware, and the rows start behind `indent`: its `lead` before the
+/// first, its `hang` before every continuation row.  The caller states it — a rendered row's
+/// from `ParsedDoc::row_indent`, a revealed line's from `row_map::revealed_indent` — so the
+/// painter and every reader of the same row agree.
 ///
 /// `cursor_col_override` is `Some((char index, style))` — not a cell column — and recolors
 /// that cell while leaving the character visible.  It applies only to a wide char's first
@@ -20,40 +20,54 @@ use crate::document::wrap::{
 #[allow(dead_code)]
 pub fn render_line(
     line: &Line<'static>,
+    indent: Indent,
     area: Rect,
     buf: &mut TuiBuf,
     visual_y: u16,
     wrap: bool,
 ) -> u16 {
-    render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, None, 0)
+    render_line_with_cursor_from_visual(line, indent, area, buf, visual_y, wrap, None, 0)
 }
 
 pub fn render_line_from_visual(
     line: &Line<'static>,
+    indent: Indent,
     area: Rect,
     buf: &mut TuiBuf,
     visual_y: u16,
     wrap: bool,
     skip_rows: usize,
 ) -> u16 {
-    render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, None, skip_rows)
+    render_line_with_cursor_from_visual(line, indent, area, buf, visual_y, wrap, None, skip_rows)
 }
 
 /// Used by tests in this module.
 #[allow(dead_code)]
 pub fn render_line_with_cursor(
     line: &Line<'static>,
+    indent: Indent,
     area: Rect,
     buf: &mut TuiBuf,
     visual_y: u16,
     wrap: bool,
     cursor_col_override: Option<(usize, Style)>,
 ) -> u16 {
-    render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, cursor_col_override, 0)
+    render_line_with_cursor_from_visual(
+        line,
+        indent,
+        area,
+        buf,
+        visual_y,
+        wrap,
+        cursor_col_override,
+        0,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_line_with_cursor_from_visual(
     line: &Line<'static>,
+    indent: Indent,
     area: Rect,
     buf: &mut TuiBuf,
     visual_y: u16,
@@ -63,6 +77,7 @@ pub fn render_line_with_cursor_from_visual(
 ) -> u16 {
     render_line_reporting_cursor(
         line,
+        indent,
         area,
         buf,
         visual_y,
@@ -76,8 +91,10 @@ pub fn render_line_with_cursor_from_visual(
 /// [`render_line_with_cursor_from_visual`] plus the absolute `(x, y)` cell the cursor
 /// override was painted at.  `RenderedView` uses it to re-stamp the cursor over post-pass
 /// overlays (search highlights, selection washes) that would otherwise bury it.
+#[allow(clippy::too_many_arguments)]
 pub fn render_line_reporting_cursor(
     line: &Line<'static>,
+    indent: Indent,
     area: Rect,
     buf: &mut TuiBuf,
     visual_y: u16,
@@ -87,13 +104,13 @@ pub fn render_line_reporting_cursor(
 ) -> (u16, Option<(u16, u16)>) {
     render_line_core(
         line,
+        indent,
         area,
         buf,
         visual_y,
         wrap,
         cursor_col_override,
         skip_rows,
-        None,
     )
 }
 
@@ -116,30 +133,29 @@ pub fn render_raw_line_with_cursor(
 ) -> u16 {
     render_line_core(
         line,
+        Indent::NONE,
         area,
         buf,
         visual_y,
         true,
         cursor_col_override,
         skip_rows,
-        Some(0),
     )
     .0
 }
 
 /// Shared implementation behind [`render_line_reporting_cursor`] and
-/// [`render_raw_line_with_cursor`].  `hanging_indent` of `None` detects the indent from
-/// the leading marker; `Some(n)` forces it, which is how Raw mode asks for a flat wrap.
+/// [`render_raw_line_with_cursor`], which passes [`Indent::NONE`] for Raw mode's flat wrap.
 #[allow(clippy::too_many_arguments)]
 fn render_line_core(
     line: &Line<'static>,
+    indent: Indent,
     area: Rect,
     buf: &mut TuiBuf,
     visual_y: u16,
     wrap: bool,
     cursor_col_override: Option<(usize, Style)>,
     skip_rows: usize,
-    hanging_indent: Option<usize>,
 ) -> (u16, Option<(u16, u16)>) {
     if visual_y >= area.height {
         return (0, None);
@@ -181,9 +197,8 @@ fn render_line_core(
 
     // Single source of truth for row breaks, keeping the renderer in lockstep with the
     // navigation/selection helpers below.
-    let indent = hanging_indent.unwrap_or_else(|| compute_hanging_indent(line));
     let rows = visual_rows_of_chars(&chars, width, indent);
-    let effective_indent = effective_indent(indent, width);
+    let indent = indent.at(width);
     // Repainted on each continuation row so the quote gutter doesn't vanish mid-quote.
     let cont_prefix = leading_bar_prefix(&chars);
 
@@ -194,7 +209,7 @@ fn render_line_core(
             break;
         }
         let cur_abs_y = area.y + cur_visual;
-        let row_indent = if row_idx == 0 { 0 } else { effective_indent };
+        let row_indent = indent.row(row_idx);
         let row_prefix: &[(char, Style)] = if row_idx == 0 { &[] } else { &cont_prefix };
         // A space absorbed by the previous row's break owns no cell, so show a cursor
         // resting on it at this row's first char — where `sub_line_of_col` reports it.
@@ -344,6 +359,7 @@ fn paint_row(
 #[allow(clippy::too_many_arguments)]
 pub fn patch_char_cols(
     line: &Line<'_>,
+    indent: Indent,
     buf: &mut TuiBuf,
     area: Rect,
     y_first: u16,
@@ -356,7 +372,7 @@ pub fn patch_char_cols(
     if width == 0 || cols.is_empty() {
         return;
     }
-    let painted = PaintedRows::new(line, width);
+    let painted = PaintedRows::new(line, indent, width);
     for (painted_off, (row_off, &(row_start, row_end, _))) in
         painted.rows.iter().enumerate().skip(skip_rows).enumerate()
     {
@@ -417,7 +433,17 @@ mod tests {
         let sel = Style::default().bg(Color::Magenta);
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = TuiBuf::empty(area);
-        patch_char_cols(&Line::from("日本ab"), &mut buf, area, 0, 1, 0, 1..3, sel);
+        patch_char_cols(
+            &Line::from("日本ab"),
+            Indent::NONE,
+            &mut buf,
+            area,
+            0,
+            1,
+            0,
+            1..3,
+            sel,
+        );
         let bg = |x: u16| buf[(x, 0)].bg;
         assert_ne!(bg(1), Color::Magenta);
         assert_eq!(bg(2), Color::Magenta);
@@ -433,11 +459,12 @@ mod tests {
         let sel = Style::default().bg(Color::Magenta);
         let area = Rect::new(0, 0, 3, 3);
         let line = Line::from("• abcdef");
+        let indent = Indent::hanging(2);
         let mut painted = TuiBuf::empty(area);
-        render_line(&line, area, &mut painted, 0, true);
+        render_line(&line, indent, area, &mut painted, 0, true);
         assert_eq!(painted[(0, 1)].symbol(), "a", "rows: `• ` / `abc` / `def`");
         let mut buf = TuiBuf::empty(area);
-        patch_char_cols(&line, &mut buf, area, 0, 3, 0, 2..3, sel);
+        patch_char_cols(&line, indent, &mut buf, area, 0, 3, 0, 2..3, sel);
         assert_eq!(
             buf[(0, 1)].bg,
             Color::Magenta,
@@ -465,7 +492,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, 3);
         let mut buf = TuiBuf::empty(area);
         let line = Line::from(vec![Span::raw("▎ "), Span::raw("alpha beta gamma")]);
-        let rows = render_line(&line, area, &mut buf, 0, true);
+        let rows = render_line(&line, Indent::hanging(2), area, &mut buf, 0, true);
         assert!(rows >= 2, "expected the quote to wrap, got {rows} row(s)");
         // Row 0 starts with the bar.
         assert_eq!(
@@ -506,6 +533,7 @@ mod tests {
             let col = text.chars().count();
             let (_, cursor) = render_line_reporting_cursor(
                 &Line::from(text),
+                Indent::NONE,
                 area,
                 &mut buf,
                 0,
@@ -527,9 +555,41 @@ mod tests {
         let area = Rect::new(0, 0, 10, 3);
         let mut buf = TuiBuf::empty(area);
         let style = Style::default().fg(ratatui::style::Color::Red);
-        let (_, cursor) =
-            render_line_reporting_cursor(&line, area, &mut buf, 0, true, Some((10, style)), 0);
+        let (_, cursor) = render_line_reporting_cursor(
+            &line,
+            Indent::NONE,
+            area,
+            &mut buf,
+            0,
+            true,
+            Some((10, style)),
+            0,
+        );
         assert_eq!(cursor, Some((0, 1)));
+    }
+
+    /// A `lead` pads the first row and narrows it; the cursor and the continuation rows follow.
+    #[test]
+    fn a_lead_pads_the_first_row_and_the_cursor_with_it() {
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = TuiBuf::empty(area);
+        let style = Style::default().fg(ratatui::style::Color::Red);
+        let indent = Indent { lead: 1, hang: 4 };
+        let (rows, cursor) = render_line_reporting_cursor(
+            &Line::from("6. alpha bravo"),
+            indent,
+            area,
+            &mut buf,
+            0,
+            true,
+            Some((3, style)),
+            0,
+        );
+        let row = |y: u16| (0..12u16).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert_eq!(rows, 2);
+        assert_eq!(row(0), " 6. alpha   ");
+        assert_eq!(row(1), "    bravo   ");
+        assert_eq!(cursor, Some((4, 0)), "on the `a`, past the pad");
     }
 
     #[test]
@@ -539,7 +599,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = TuiBuf::empty(area);
         let line = Line::from(vec![Span::raw("A🥇B")]);
-        render_line(&line, area, &mut buf, 0, false);
+        render_line(&line, Indent::NONE, area, &mut buf, 0, false);
         assert_eq!(
             buf.cell((0, 0)).map(|c| c.symbol().to_string()),
             Some("A".into())
@@ -561,7 +621,7 @@ mod tests {
         let area = Rect::new(0, 0, 4, 1);
         let mut buf = TuiBuf::empty(area);
         let line = Line::from(vec![Span::raw("e\u{0301}!")]);
-        render_line(&line, area, &mut buf, 0, false);
+        render_line(&line, Indent::NONE, area, &mut buf, 0, false);
         assert_eq!(
             buf.cell((0, 0)).map(|c| c.symbol().to_string()),
             Some("e".into())

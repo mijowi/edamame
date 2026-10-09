@@ -8,6 +8,7 @@ use crate::config::Theme;
 use crate::diagram::DiagramSource;
 use crate::document::row_map::{JoinedMap, RowCache};
 use crate::document::visual_cache::VisualRowCache;
+use crate::document::wrap::Indent;
 use crate::document::SourceMap;
 use crate::markdown::{
     attach_nested_tui_columns_comments, inlines_to_plain, parse_document,
@@ -452,6 +453,13 @@ impl ParsedDoc {
         &self.row_origins
     }
 
+    /// The indent rendered line `idx` wraps behind: the hang its origin states
+    /// ([`RowOrigin::hang`]).  Every reader of a rendered row's wrap (painters, row counts,
+    /// clicks, hit-tests) takes it from here.  [`Indent::NONE`] past the last line.
+    pub fn row_indent(&self, idx: usize) -> Indent {
+        Indent::of_row(self.row_origins.get(idx))
+    }
+
     /// Number of rendered lines.
     pub fn line_count(&self) -> usize {
         self.lines.len()
@@ -681,7 +689,7 @@ impl ParsedDoc {
             return;
         }
         let cache = VisualRowCache::build(self.lines.len(), width, |i| {
-            crate::document::wrap::visual_rows_for_line(&self.lines[i], width)
+            crate::document::wrap::visual_rows_for_line(&self.lines[i], self.row_indent(i), width)
         });
         let mut entries = self.visual_rows.borrow_mut();
         entries.insert(0, cache);
@@ -1426,7 +1434,8 @@ mod tests {
 
     // ── Visual-row cache ────────────────────────────────────────────────
 
-    /// The cache must agree with `wrap::visual_rows_for_line` on every line.
+    /// The cache must agree with `wrap::visual_rows_for_line` on every line, behind its row's
+    /// stated indent.
     #[test]
     fn visual_rows_cache_matches_line_render() {
         let long = "x".repeat(120);
@@ -1434,7 +1443,8 @@ mod tests {
         let doc = ParsedDoc::build(&src, theme(), true, 24);
         let width = 40;
         for (i, line) in doc.lines.iter().enumerate() {
-            let canonical = crate::document::wrap::visual_rows_for_line(line, width).max(1);
+            let canonical =
+                crate::document::wrap::visual_rows_for_line(line, doc.row_indent(i), width).max(1);
             assert_eq!(
                 doc.visual_rows_for_line_at(i, width),
                 canonical,
@@ -1467,7 +1477,10 @@ mod tests {
         let expect = |w: usize| -> Vec<usize> {
             doc.lines
                 .iter()
-                .map(|l| crate::document::wrap::visual_rows_for_line(l, w).max(1))
+                .enumerate()
+                .map(|(i, l)| {
+                    crate::document::wrap::visual_rows_for_line(l, doc.row_indent(i), w).max(1)
+                })
                 .collect()
         };
         let at_40 = expect(40);

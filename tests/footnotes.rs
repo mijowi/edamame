@@ -404,9 +404,10 @@ fn the_back_link_after_wide_text_is_where_it_paints() {
 fn the_back_link_on_a_wrapped_definitions_last_row_is_clickable() {
     let src =
         "First line.\n\nBody[^1] more.\n\n[^1]: alpha bravo charlie delta echo foxtrot golf\n";
-    // Rows 4–6: `  1.  alpha bravo` / `     charlie delta echo` / `     foxtrot golf ↩`.
-    assert_eq!(back_link_cols(src, 24, 5), (vec![], vec![]));
-    assert_eq!(back_link_cols(src, 24, 6), (vec![17, 18], vec![17, 18]));
+    // Rows 4–6, hung under the text (issue #71): `  1.  alpha bravo charlie` /
+    // `      delta echo foxtrot` / `      golf ↩`.
+    assert_eq!(back_link_cols(src, 26, 5), (vec![], vec![]));
+    assert_eq!(back_link_cols(src, 26, 6), (vec![10, 11], vec![10, 11]));
 }
 
 /// The hover hit test measures a row in cells: a footnote marker after wide text, past the

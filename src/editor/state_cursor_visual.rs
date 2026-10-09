@@ -1,6 +1,8 @@
 //! Visual-line cursor navigation, using the same word-aware wrap as
 //! `ui::line_render::render_line` so the cursor lands at the screen column the user sees.
 
+use crate::document::row_map::LineLayout;
+use crate::document::wrap::Indent;
 use crate::editor::state::line_text_trimmed;
 use crate::editor::{EditorState, Mode};
 
@@ -86,31 +88,17 @@ impl EditorState {
         let (line, col) = self.cursor.line_col(&self.buffer);
         let target_cell = self.cursor.preferred_col;
 
-        let text = line_text_trimmed(&self.buffer, line);
-        let indent = hanging_indent_for_mode(&text, self.mode);
-        let rows = wrap_rows_for_text(&text, col_width, indent);
-        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, col);
+        let shown = ShownLine::of(self, line, col_width);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&shown.rows, shown.col(col));
 
         if sub_idx > 0 {
             let target_idx = sub_idx - 1;
-            let target = rows[target_idx];
-            let is_last = target_idx + 1 == rows.len();
-            let row_indent = if target_idx == 0 { 0 } else { indent };
-            let raw_col = raw_col_for_visual_cells(&text, target, target_cell, is_last, row_indent);
-            let line_start = self.buffer.line_to_char(line);
-            self.cursor.offset = line_start + raw_col;
+            let is_last = target_idx + 1 == shown.rows.len();
+            self.cursor.offset = shown.offset_at(self, target_idx, target_cell, is_last);
         } else if line > 0 {
-            let prev_line = line - 1;
-            let prev_text = line_text_trimmed(&self.buffer, prev_line);
-            let prev_indent = hanging_indent_for_mode(&prev_text, self.mode);
-            let prev_rows = wrap_rows_for_text(&prev_text, col_width, prev_indent);
-            let target_idx = prev_rows.len() - 1;
-            let target = *prev_rows.last().expect("rows always non-empty");
-            let row_indent = if target_idx == 0 { 0 } else { prev_indent };
-            let raw_col =
-                raw_col_for_visual_cells(&prev_text, target, target_cell, true, row_indent);
-            let prev_start = self.buffer.line_to_char(prev_line);
-            self.cursor.offset = prev_start + raw_col;
+            let prev = ShownLine::of(self, line - 1, col_width);
+            let target_idx = prev.rows.len() - 1;
+            self.cursor.offset = prev.offset_at(self, target_idx, target_cell, true);
         } else {
             self.cursor.offset = self.buffer.line_to_char(0);
         }
@@ -125,67 +113,100 @@ impl EditorState {
         let (line, col) = self.cursor.line_col(&self.buffer);
         let target_cell = self.cursor.preferred_col;
 
-        let text = line_text_trimmed(&self.buffer, line);
-        let indent = hanging_indent_for_mode(&text, self.mode);
-        let rows = wrap_rows_for_text(&text, col_width, indent);
-        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, col);
+        let shown = ShownLine::of(self, line, col_width);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&shown.rows, shown.col(col));
 
-        if sub_idx + 1 < rows.len() {
+        if sub_idx + 1 < shown.rows.len() {
             let target_idx = sub_idx + 1;
-            let target = rows[target_idx];
-            let is_last = target_idx + 1 == rows.len();
-            let row_indent = if target_idx == 0 { 0 } else { indent };
-            let raw_col = raw_col_for_visual_cells(&text, target, target_cell, is_last, row_indent);
-            let line_start = self.buffer.line_to_char(line);
-            self.cursor.offset = line_start + raw_col;
+            let is_last = target_idx + 1 == shown.rows.len();
+            self.cursor.offset = shown.offset_at(self, target_idx, target_cell, is_last);
+        } else if line < self.buffer.line_count().saturating_sub(1) {
+            let next = ShownLine::of(self, line + 1, col_width);
+            let is_last = next.rows.len() == 1;
+            self.cursor.offset = next.offset_at(self, 0, target_cell, is_last);
         } else {
-            let last_line = self.buffer.line_count().saturating_sub(1);
-            if line < last_line {
-                let next_line = line + 1;
-                let next_text = line_text_trimmed(&self.buffer, next_line);
-                let next_indent = hanging_indent_for_mode(&next_text, self.mode);
-                let next_rows = wrap_rows_for_text(&next_text, col_width, next_indent);
-                let target = next_rows[0];
-                let is_last = next_rows.len() == 1;
-                let raw_col = raw_col_for_visual_cells(&next_text, target, target_cell, is_last, 0);
-                let next_start = self.buffer.line_to_char(next_line);
-                self.cursor.offset = next_start + raw_col;
-            } else {
-                self.cursor.move_line_end(&self.buffer);
-            }
+            self.cursor.move_line_end(&self.buffer);
         }
     }
 
-    /// Cell column of the cursor from the screen-row's left edge (hanging indent included),
-    /// used to seed `preferred_col`.
+    /// Cell column of the cursor from the screen-row's left edge (indent included), used to
+    /// seed `preferred_col`.
     pub fn current_visual_col(&self, col_width: usize) -> usize {
         if col_width == 0 {
             return self.cursor.cell_col(&self.buffer);
         }
         let (line, col) = self.cursor.line_col(&self.buffer);
-        let text = line_text_trimmed(&self.buffer, line);
-        let indent = hanging_indent_for_mode(&text, self.mode);
-        let rows = wrap_rows_for_text(&text, col_width, indent);
-        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&rows, col);
-        let row = rows[sub_idx];
-        let row_indent = if sub_idx == 0 { 0 } else { indent };
-        cell_col_within_row(&text, row, col, row_indent)
+        let shown = ShownLine::of(self, line, col_width);
+        let col = shown.col(col);
+        let (sub_idx, _) = crate::document::wrap::sub_line_of_col(&shown.rows, col);
+        let row = shown.rows[sub_idx];
+        cell_col_within_row(&shown.text, row, col, shown.indent.row(sub_idx))
     }
 }
 
-/// Hanging indent to wrap `text` with: the same one `line_render` paints the revealed line
-/// with in Rendered/Preview, so the cursor lands where it appears; Raw paints flat
-/// (`line_render::render_raw_line_with_cursor`) and so wraps flat.
-fn hanging_indent_for_mode(text: &str, mode: Mode) -> usize {
-    if mode == Mode::Raw {
-        0
-    } else {
-        crate::document::wrap::compute_hanging_indent_str(text)
+/// A buffer line as the view shows it, wrapped at one width: the part of it painted and the
+/// rows that part wraps into.  Rendered/Preview lay it out as `row_map::source_line_layout`
+/// says, so the cursor lands where it appears; Raw paints the whole line flat
+/// (`line_render::render_raw_line_with_cursor`) and so wraps it flat.
+struct ShownLine {
+    line: usize,
+    /// Chars at the line's start that aren't painted (a paragraph's or a code line's
+    /// indentation, past the block's or the list's range).
+    skip: usize,
+    /// The painted rest of the line.
+    text: String,
+    /// The indent the rows start behind, as applied at the width.
+    indent: Indent,
+    rows: Vec<(usize, usize, usize)>,
+}
+
+impl ShownLine {
+    fn of(state: &EditorState, line: usize, col_width: usize) -> Self {
+        let full = line_text_trimmed(&state.buffer, line);
+        let layout = if state.mode == Mode::Raw {
+            LineLayout::default()
+        } else {
+            crate::document::row_map::source_line_layout(&state.parsed, line)
+        };
+        let skip = layout.skip.min(full.chars().count());
+        let text: String = full.chars().skip(skip).collect();
+        let rows = wrap_rows_for_text(&text, col_width, layout.indent);
+        Self {
+            line,
+            skip,
+            text,
+            indent: layout.indent.at(col_width),
+            rows,
+        }
+    }
+
+    /// Buffer column `col` in the painted text's columns; one in the unpainted head shows on
+    /// the first painted char.
+    fn col(&self, col: usize) -> usize {
+        col.saturating_sub(self.skip)
+    }
+
+    /// The buffer offset a cursor aiming at screen cell `target_cell` on row `row_idx` lands on.
+    fn offset_at(
+        &self,
+        state: &EditorState,
+        row_idx: usize,
+        target_cell: usize,
+        is_last: bool,
+    ) -> usize {
+        let raw_col = raw_col_for_visual_cells(
+            &self.text,
+            self.rows[row_idx],
+            target_cell,
+            is_last,
+            self.indent.row(row_idx),
+        );
+        state.buffer.line_to_char(self.line) + self.skip + raw_col
     }
 }
 
 /// `visual_rows_of_chars` bridged from `&str`: `(start, end, next_start)` char-index rows.
-fn wrap_rows_for_text(text: &str, col_width: usize, indent: usize) -> Vec<(usize, usize, usize)> {
+fn wrap_rows_for_text(text: &str, col_width: usize, indent: Indent) -> Vec<(usize, usize, usize)> {
     let chars: Vec<(char, ratatui::style::Style)> = text
         .chars()
         .map(|c| (c, ratatui::style::Style::default()))
@@ -195,7 +216,7 @@ fn wrap_rows_for_text(text: &str, col_width: usize, indent: usize) -> Vec<(usize
 
 /// Inverse of the wrap layout: the absolute char column on the logical line where a cursor
 /// aiming at screen cell `target_cell` lands on visual row `row`.  A cell inside a wide
-/// glyph snaps past it; a target in the hanging-indent area snaps to the row's first content
+/// glyph snaps past it; a target in the row's indent snaps to the row's first content
 /// char; non-last rows clamp via `wrap::last_col_in_row` (measured against `end`,
 /// never `next_start`, which would land on a break-absorbed space that paints on the next row).
 fn raw_col_for_visual_cells(
@@ -214,7 +235,7 @@ fn raw_col_for_visual_cells(
 }
 
 /// Screen cell column of char `char_col` within visual row `row` of `text`, `indent` being
-/// the row's hanging indent in cells (0 on first rows).
+/// the cells before the row's text ([`Indent::row`]).
 fn cell_col_within_row(
     text: &str,
     row: (usize, usize, usize),
