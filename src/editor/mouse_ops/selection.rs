@@ -2,6 +2,7 @@ use ratatui::text::Line;
 
 use crate::document::{Selection, VisualSelection};
 use crate::editor::table_edit;
+use crate::editor::table_edit_ops;
 use crate::editor::EditorState;
 
 /// Expand `sel` over a matching pair of inline formatting markers (`*…*`, `**…**`, `_…_`,
@@ -148,9 +149,8 @@ pub(super) fn select_word_at_cursor(state: &mut EditorState) {
 /// trimmed content of the cursor's cell, since the buffer line would pull in borders and
 /// neighboring cells.
 pub(super) fn select_line_at_cursor(state: &mut EditorState) {
-    let source = state.buffer.contents();
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
-    if let Some(info) = table_edit::find_table_at(&source, cursor_byte) {
+    if let Some(info) = table_edit_ops::locate_table(state, cursor_byte) {
         if let Some((row_idx, col_idx)) = table_edit::cursor_cell(&info, cursor_byte) {
             if let Some(row) = info.rows.get(row_idx) {
                 if let Some(cell) = row.cells.get(col_idx) {

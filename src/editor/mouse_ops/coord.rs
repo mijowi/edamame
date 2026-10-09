@@ -2,7 +2,7 @@ use ratatui::text::Line;
 
 use crate::document::wrap;
 use crate::document::{row_map, CellBand};
-use crate::editor::table_edit;
+use crate::editor::table_edit_ops;
 use crate::editor::{EditorState, Mode};
 use crate::markdown::table_layout;
 
@@ -424,6 +424,7 @@ fn table_click_to_offset(
         .and_then(|line| {
             table_click_to_raw_col(
                 line_text,
+                hit.raw_col,
                 line,
                 clamped_col,
                 table_sub,
@@ -691,31 +692,39 @@ fn raw_col_to_buffer_char(
 /// under the cursor, and wrap chunks are those `render_table_row` drew, even on continuation
 /// sub-lines.  `labels` are the document's, so a reference link collapses as it renders.
 ///
+/// Raw cells are [`table_layout::paired_raw_cells`] from `content_col`, the row's content
+/// column, so a container prefix, missing edge pipes and a row with more cells than the header
+/// all pair cell for cell.  A click on an empty cell the renderer pads a short row with lands at
+/// the row's end (trailing whitespace excluded): past a closing pipe, where typing adds that
+/// cell, and the cursor shows in the clicked one; without one, typing there extends the last
+/// cell, where the cursor shows ([`table_layout::drawn_cell_at`]).
+///
 /// `sub` is the wrap-chunk index of the clicked sub-line within its logical row.  `None` when
-/// the line isn't a table row (separator, border); the caller falls back to the char-by-char
+/// the line isn't a row of cells (separator, border); the caller falls back to the char-by-char
 /// map.
 fn table_click_to_raw_col(
     raw_line: &str,
+    content_col: usize,
     rendered_line: &Line<'_>,
     rendered_col: usize,
     sub: usize,
     labels: &crate::markdown::RefLabels,
 ) -> Option<usize> {
-    let raw_pipes = table_layout::raw_pipe_positions(raw_line);
     let rendered_pipes = table_layout::rendered_pipe_cells(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
-        return None;
-    }
-    let col_count = rendered_pipes.len() - 1;
+    let col_count = rendered_pipes.len().saturating_sub(1);
+    let raw_cells = table_layout::paired_raw_cells(raw_line, content_col, col_count)?;
 
     let cell_idx = (0..col_count)
         .find(|&i| rendered_col < rendered_pipes[i + 1])
         .unwrap_or(col_count - 1);
+    let Some(raw_range) = raw_cells.get(cell_idx) else {
+        return Some(raw_line.trim_end().chars().count());
+    };
     let rend_cell_start = rendered_pipes[cell_idx] + 1;
     let rend_cell_end = rendered_pipes[cell_idx + 1];
-    let raw_cell_start = raw_pipes[cell_idx] + 1;
+    let raw_cell_start = raw_range.start;
     let raw_chars: Vec<char> = raw_line.chars().collect();
-    let raw_cell = &raw_chars[raw_cell_start..raw_pipes[cell_idx + 1]];
+    let raw_cell = &raw_chars[raw_range.clone()];
 
     let rend_offset_in_cell = rendered_col
         .max(rend_cell_start)
@@ -805,12 +814,14 @@ pub(super) fn table_cell_char_range_at(
     // only on the heavy rule, which is chrome.
     let row = row_map::row_for_line(&state.parsed, block, line);
     row_map::table_row(&state.parsed, block, row).filter(|h| h.cells && h.line == line)?;
-    let line_start = rope.line_to_byte(line_idx);
-    let raw = rope.line(line_idx).to_string();
-    let cell = table_edit::cell_at(raw.trim_end_matches(['\n', '\r']), byte - line_start)?;
+    let info = table_edit_ops::locate_table(state, byte)?;
+    // The last row starting at or before `byte`: `byte` is on one of the table's lines, and a
+    // last row with no newline ends at the buffer's end, which `start..end` would exclude.
+    let row = info.rows.iter().rev().find(|r| r.start <= byte)?;
+    let cell = row.cell_at(byte - row.start)?;
     Some((
-        rope.byte_to_char(line_start + cell.content_start),
-        rope.byte_to_char(line_start + cell.content_end),
+        rope.byte_to_char(row.start + cell.content_start),
+        rope.byte_to_char(row.start + cell.content_end),
     ))
 }
 
@@ -934,19 +945,19 @@ mod tests {
         let line = Line::from("│ 日本 │ ab │");
         let raw_col = |c: char| raw.chars().position(|x| x == c).unwrap();
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 10, 0, &RefLabels::default()),
+            table_click_to_raw_col(raw, 0, &line, 10, 0, &RefLabels::default()),
             Some(raw_col('b'))
         );
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 9, 0, &RefLabels::default()),
+            table_click_to_raw_col(raw, 0, &line, 9, 0, &RefLabels::default()),
             Some(raw_col('a'))
         );
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 2, 0, &RefLabels::default()),
+            table_click_to_raw_col(raw, 0, &line, 2, 0, &RefLabels::default()),
             Some(raw_col('日'))
         );
         assert_eq!(
-            table_click_to_raw_col(raw, &line, 3, 0, &RefLabels::default()),
+            table_click_to_raw_col(raw, 0, &line, 3, 0, &RefLabels::default()),
             Some(raw_col('本'))
         );
     }

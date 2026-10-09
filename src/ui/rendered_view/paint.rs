@@ -193,6 +193,7 @@ pub(super) fn paint_byte_range_overlay(
         // keeps the highlight off sub-lines that don't show the matched text.
         for (rs, re) in crate::markdown::table_layout::table_raw_col_range_to_rendered_segments(
             &raw_line,
+            hit.raw_col,
             line,
             col_at(line_sel_start),
             col_at(line_sel_end),

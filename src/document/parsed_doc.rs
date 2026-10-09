@@ -528,6 +528,20 @@ impl ParsedDoc {
         }
     }
 
+    /// The post-processed [`Block`] holding source `line`, and the line its original range
+    /// starts on, which its block-relative positions ([`SrcLines`](crate::markdown::SrcLines))
+    /// count from.  `None` on a blank line, as [`Self::real_block_for_byte`].
+    pub fn real_block_at_line(&self, line: usize) -> Option<(&Block, usize)> {
+        let byte = self.line_start_byte(line);
+        let idx = self.real_ranges.partition_point(|r| r.end <= byte);
+        let range = self.real_ranges.get(idx)?;
+        let first = self.byte_to_line(range.start);
+        if first > line || byte > content_end_of_block(&self.source, range) {
+            return None;
+        }
+        Some((self.blocks.get(idx)?, first))
+    }
+
     /// True for a synthetic `Block::ImageBlock` promoted from a mermaid fence.  These
     /// share the fenced-code "reveal the entire raw source on cursor entry" affordance,
     /// which several call sites special-case; the rule lives here.

@@ -20,7 +20,7 @@ use std::time::Duration;
 use crate::document::wrap;
 use crate::document::{row_map, Selection, VisualSelection};
 use crate::editor::list_edit;
-use crate::editor::table_edit;
+use crate::editor::table_edit_ops;
 use crate::editor::{EditorState, Mode};
 use crate::input::MouseAction;
 use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
@@ -393,8 +393,7 @@ fn dispatch_table_click(
         TableHit::ColumnBorder { col_idx } => {
             // Interior borders and the rightmost outer border (resizes the last column).
             if col_idx > 0 && col_idx <= snap.col_count {
-                let source = state.buffer.contents();
-                if let Some(info) = table_edit::find_table_at(&source, snap.table_byte_start) {
+                if let Some(info) = table_edit_ops::locate_table(state, snap.table_byte_start) {
                     let (start_widths, start_user_widths) = current_widths_for_table(state, &info);
                     *drag_target = Some(DragTarget::TableColumnBorder {
                         table_byte_start: info.start,

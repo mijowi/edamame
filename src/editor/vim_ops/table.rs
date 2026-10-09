@@ -157,7 +157,7 @@ pub fn range_breaks_a_table(state: &EditorState, start: usize, end: usize) -> Op
     let start = start.min(len);
     let end = end.min(len).max(start);
 
-    // Table by table: an ordinary-prose probe costs one `is_table_line` test and a
+    // Table by table: an ordinary-prose probe costs one parse lookup and a
     // table probe jumps past the table, so a whole-document selection stays linear.
     let mut probe = start;
     loop {
@@ -535,7 +535,7 @@ pub fn table_paste_plan(
     }
     if !text
         .lines()
-        .all(|l| l.trim().is_empty() || table_edit::is_table_line(l))
+        .all(|l| l.trim().is_empty() || table_edit::has_cell_pipe(l))
     {
         return TablePaste::Refused;
     }

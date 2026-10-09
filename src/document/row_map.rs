@@ -937,6 +937,19 @@ pub fn raw_to_rendered_col_near(
 
 // ── Tables ────────────────────────────────────────────────────────────────
 
+/// The table holding source `line` (counted in the parse's text), at any nesting depth: the
+/// line its header is on and, per line of the table, the char column its content starts at, past
+/// any container prefix and a footnote's label.  The delimiter row's is `None`, recorded as
+/// chrome.  What the editing path (`table_edit`) splits a table's rows from; `None` off a table.
+pub fn table_lines(parsed: &ParsedDoc, line: usize) -> Option<(usize, Vec<Option<usize>>)> {
+    let (block, first) = parsed.real_block_at_line(line)?;
+    let Some(Block::Table { src, .. }) = leaf_at(block, to_u32(line - first)) else {
+        return None;
+    };
+    let cols = src.cols().map(|c| c.map(|c| c as usize)).collect();
+    Some((first + src.first as usize, cols))
+}
+
 /// The table row a row of a block belongs to, from the origins: what a click, an overlay and
 /// the cursor indicator need to find before `table_layout`'s cell geometry maps the columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -951,6 +964,9 @@ pub struct TableRowHit {
     pub cells: bool,
     /// The block's rows showing the table row's cells, one per wrap chunk.
     pub rows: Range<usize>,
+    /// The table row's content column on its line (its origin's `raw_col`): where the row
+    /// starts past any container prefix, so its pipes are counted from there.
+    pub raw_col: usize,
 }
 
 /// The table row that row `row` of `block` belongs to; `None` outside a table.  A row of cells
@@ -964,12 +980,18 @@ pub fn table_row(parsed: &ParsedDoc, block: usize, row: usize) -> Option<TableRo
     let origin = origins.get(r)?;
     let cells_of = |o: &RowOrigin| match o.cols {
         ColOrigin::Content {
+            raw_col,
             kind: ContentKind::TableRow { row, sub },
             ..
-        } => Some((o.first_line()? as usize, row, sub as usize)),
+        } => Some((
+            o.first_line()? as usize,
+            row,
+            sub as usize,
+            raw_col as usize,
+        )),
         _ => None,
     };
-    let (at, (line, index, sub)) = if let Some(hit) = cells_of(origin) {
+    let (at, (line, index, sub, raw_col)) = if let Some(hit) = cells_of(origin) {
         (r, hit)
     } else {
         if origin.cols != ColOrigin::Chrome {
@@ -992,10 +1014,10 @@ pub fn table_row(parsed: &ParsedDoc, block: usize, row: usize) -> Option<TableRo
             .rposition(shows)
             .or_else(|| origins.get(r + 1).and_then(cells_of).map(|_| r + 1))
             .or_else(|| origins[..r].iter().rposition(|o| cells_of(o).is_some()))?;
-        let (line, index, _) = cells_of(&origins[at])?;
-        (at, (line, index, 0))
+        let (line, index, _, raw_col) = cells_of(&origins[at])?;
+        (at, (line, index, 0, raw_col))
     };
-    let same = |o: &RowOrigin| cells_of(o).is_some_and(|(l, i, _)| l == line && i == index);
+    let same = |o: &RowOrigin| cells_of(o).is_some_and(|(l, i, ..)| l == line && i == index);
     let first = origins[..at]
         .iter()
         .rposition(|o| !same(o))
@@ -1010,6 +1032,7 @@ pub fn table_row(parsed: &ParsedDoc, block: usize, row: usize) -> Option<TableRo
         sub,
         cells: at == r,
         rows: first + band..end + band,
+        raw_col,
     })
 }
 

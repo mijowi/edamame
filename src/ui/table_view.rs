@@ -18,7 +18,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 
 use crate::config::Theme;
-use crate::editor::{table_edit, EditorState};
+use crate::editor::{table_edit_ops, EditorState};
 use crate::markdown::table_layout;
 
 /// Reorder-handle glyph, for both row-reorder (in the external left gutter) and column-reorder
@@ -314,7 +314,6 @@ pub fn build_snapshots(
     if area.height == 0 {
         return out;
     }
-    let source = state.buffer.contents();
     let lines = &state.parsed.lines;
     let total = lines.len();
     let width = area.width as usize;
@@ -352,12 +351,11 @@ pub fn build_snapshots(
         let mut sub_kind: Option<TableSubLineKind> = None;
         if let Some(bb) = block_byte {
             if let Some(range) = state.parsed.source_map.original_range_for_byte(bb) {
-                let end = range.end.min(source.len());
-                // `get` rather than indexing: while `parsed_dirty` is set the source-map ranges
-                // can land mid-UTF-8-sequence.  Falling back to `""` skips this block's snapshot
-                // for the one frame until the parse flush, rather than panicking.
-                let block_text = source.get(range.start..end).unwrap_or("");
-                if table_edit::is_table_block(block_text) {
+                // A top-level table, by the parse: nested tables get no handles.
+                if matches!(
+                    state.parsed.real_block_for_byte(range.start),
+                    Some(crate::markdown::Block::Table { .. })
+                ) {
                     current_block = Some(range.start);
                     let own = state.parsed.source_map.rendered_lines_for_byte(range.start);
                     let sub_in_block = virtual_idx.saturating_sub(own.start);
@@ -383,7 +381,11 @@ pub fn build_snapshots(
         if let Some(table_start) = current_block {
             // Open a new snapshot if we aren't already tracking this table.
             if open_table.is_none() {
-                if let Some(info) = table_edit::find_table_at(&source, table_start) {
+                // By line: the parse's bytes drift from the buffer's while an in-line edit
+                // defers the re-parse, its lines don't.
+                let rope = state.buffer.rope();
+                let line = state.parsed.byte_to_line(table_start).min(rope.len_lines());
+                if let Some(info) = table_edit_ops::locate_table(state, rope.line_to_byte(line)) {
                     open_table = Some(TableLayoutSnapshot {
                         table_byte_start: info.start,
                         table_byte_end: info.end,

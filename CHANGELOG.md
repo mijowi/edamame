@@ -18,6 +18,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Fixed several layout bugs in lists, blockquotes and footnotes: misplaced clicks, cursor and line numbers; missing or extra blank rows; misaligned indentation of later paragraphs; and text disappearing from the start of some list items.
 - Tables inside list items and blockquotes now edit one cell at a time like any other table.
 - Fixed misplaced clicks, cursor, search matches and selection highlights in table cells containing formatting or wrapped text.
+- Clicks in tables without edge pipes, or in rows with more or fewer cells than the header, now land in the clicked cell.
+- Tab, the table hints and the row and column commands now work in tables without edge pipes (`a | b`), in tables inside blockquotes and footnotes, and past a row with fewer cells than the header. Row and column edits keep each row's pipes as you wrote them, and Tab no longer gets stuck on a short row.
 - Fixed the cursor and vim yank highlight going missing or landing on the wrong spot in several places, including multi-line setext headings, lines exactly as wide as the window, and Mermaid or math blocks being edited.
 - Line breaks inside bold, italic or link text are now respected, and clicking a link that spans a line break opens the right URL.
 - Editing a line that shows on a row together with others, such as a heading written over several lines, a link definition inside a quote, or a bare `-` list marker, now shows all of those lines instead of hiding some or drawing over the next.

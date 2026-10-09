@@ -2,8 +2,8 @@ use ratatui::text::Line;
 
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{
-    cells_of, hard_wrap_ranges, last_cluster_start, raw_pipe_positions, rendered_pipe_cells,
-    str_cells, wrap_cell_with_indices, CellOverlay,
+    cells_of, drawn_cell_at, hard_wrap_ranges, last_cluster_start, rendered_pipe_cells, str_cells,
+    unpadded_cell_shift, wrap_cell_with_indices, CellOverlay,
 };
 
 /// Overlay for a cell whose raw markdown is wider than its rendered cell: hard-wraps the
@@ -11,33 +11,26 @@ use crate::markdown::table_layout::{
 /// the cell scrolls horizontally as the user types (Raw mode shows the whole cell).
 ///
 /// Hard-wrap ([`hard_wrap_ranges`]) rather than word-wrap so chunk boundaries depend only on
-/// glyph widths and the cursor never jumps chunks mid-word.
+/// glyph widths and the cursor never jumps chunks mid-word.  The cell is [`drawn_cell_at`]'s,
+/// from `content_col`.
 pub(super) fn compute_cell_chunk_overlay(
     raw_row: &str,
+    content_col: usize,
     rendered_line: &Line<'_>,
     cursor_col_raw: usize,
 ) -> Option<CellOverlay> {
-    let raw_pipes = raw_pipe_positions(raw_row);
     let rendered_pipes = rendered_pipe_cells(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
-        return None;
-    }
+    let drawn = rendered_pipes.len().saturating_sub(1);
+    let (cell_idx, raw_cell) = drawn_cell_at(raw_row, content_col, drawn, cursor_col_raw)?;
 
-    let col_count = raw_pipes.len() - 1;
-    let preceding = raw_pipes
-        .iter()
-        .take_while(|&&p| p < cursor_col_raw)
-        .count();
-    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
-
-    let raw_cell_start = raw_pipes[cell_idx] + 1;
-    let raw_cell_end = raw_pipes[cell_idx + 1];
+    let raw_cell_start = raw_cell.start;
+    let raw_cell_end = raw_cell.end;
     let raw_cell_text: String = raw_row
         .chars()
         .skip(raw_cell_start)
         .take(raw_cell_end - raw_cell_start)
         .collect();
-    let rendered_start = rendered_pipes[cell_idx] + 1;
+    let rendered_start = rendered_pipes[cell_idx] + 1 + unpadded_cell_shift(&raw_cell_text);
     let rendered_end = rendered_pipes[cell_idx + 1];
     let cell_width = rendered_end.saturating_sub(rendered_start);
     if cell_width == 0 {
@@ -100,8 +93,8 @@ pub(super) struct WrappedCellOverlay {
 /// `compute_cell_overlay` / `compute_cell_chunk_overlay` handle.
 ///
 /// `row_lines` are the rows of `editor.parsed.lines` showing the table row's cells (its
-/// origins' [`row_map::table_row`](crate::document::row_map::table_row)), and `raw_row` its
-/// source line.
+/// origins' [`row_map::table_row`](crate::document::row_map::table_row)), `raw_row` its
+/// source line, and `content_col` the row's content column there (the hit's `raw_col`).
 ///
 /// Raw text is wider than rendered (markers the renderer drops), so it routinely wraps to more
 /// chunks than the row has sub-lines; the overlay then scrolls a `row_height`-chunk window
@@ -110,6 +103,7 @@ pub(super) fn compute_wrapped_cell_overlay(
     editor: &EditorState,
     row_lines: std::ops::Range<usize>,
     raw_row: &str,
+    content_col: usize,
     cursor_col_raw: usize,
 ) -> Option<WrappedCellOverlay> {
     let row_height = row_lines.len();
@@ -119,20 +113,11 @@ pub(super) fn compute_wrapped_cell_overlay(
     // char positions differ per sub-line once a wide glyph sits left of the cell.
     let first_line = block_lines.first()?;
     let rendered_pipes = rendered_pipe_cells(first_line);
-    let raw_pipes = raw_pipe_positions(raw_row);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
-        return None;
-    }
+    let drawn = rendered_pipes.len().saturating_sub(1);
+    let (cell_idx, raw_cell) = drawn_cell_at(raw_row, content_col, drawn, cursor_col_raw)?;
 
-    let col_count = raw_pipes.len() - 1;
-    let preceding = raw_pipes
-        .iter()
-        .take_while(|&&p| p < cursor_col_raw)
-        .count();
-    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
-
-    let raw_cell_start_char = raw_pipes[cell_idx] + 1;
-    let raw_cell_end_char = raw_pipes[cell_idx + 1];
+    let raw_cell_start_char = raw_cell.start;
+    let raw_cell_end_char = raw_cell.end;
     let raw_cell_text: String = raw_row
         .chars()
         .skip(raw_cell_start_char)
@@ -281,19 +266,29 @@ mod tests {
             .unwrap()
             .0;
         let cursor = raw[..second_go].chars().count();
-        let ov = compute_cell_chunk_overlay(raw, &line, cursor).expect("wider than the cell");
+        let ov = compute_cell_chunk_overlay(raw, 0, &line, cursor).expect("wider than the cell");
         assert_eq!(ov.raw_text, "語 ");
         assert_eq!(ov.cursor_in_cell, Some(0));
         assert_eq!((ov.rendered_start, ov.rendered_end), (1, 7));
         assert_eq!(ov.raw_cell_byte_start, second_go);
 
         for cursor in 1..raw.chars().count() {
-            let ov = compute_cell_chunk_overlay(raw, &line, cursor).unwrap();
+            let ov = compute_cell_chunk_overlay(raw, 0, &line, cursor).unwrap();
             assert!(str_cells(&ov.raw_text) <= 6, "{:?}", ov.raw_text);
             let col = ov.cursor_in_cell.unwrap();
             let before: String = ov.raw_text.chars().take(col).collect();
             assert!(str_cells(&before) < 6, "cursor cell inside the overlay");
         }
+    }
+
+    /// A cursor in a cell GFM drops gets no chunk overlay either, so the row reveals whole; the
+    /// last drawn cell, too wide for its rendered cell, still scrolls.
+    #[test]
+    fn chunk_overlay_skips_a_dropped_cell() {
+        let line = Line::from("│ ab │");
+        let raw = "| abcdefgh | x |";
+        assert!(compute_cell_chunk_overlay(raw, 0, &line, raw.find('x').unwrap()).is_none());
+        assert!(compute_cell_chunk_overlay(raw, 0, &line, raw.find('f').unwrap()).is_some());
     }
 
     /// A cluster that straddles a chunk boundary moves whole into the next chunk: every chunk
@@ -305,7 +300,8 @@ mod tests {
         let raw = format!("| ab{family}xyzw |");
         let mut texts = Vec::new();
         for cursor in 1..raw.chars().count() {
-            let ov = compute_cell_chunk_overlay(&raw, &line, cursor).expect("wider than the cell");
+            let ov =
+                compute_cell_chunk_overlay(&raw, 0, &line, cursor).expect("wider than the cell");
             assert!(
                 str_cells(&ov.raw_text) <= 6 || ov.raw_text == family,
                 "{:?}",
@@ -326,7 +322,7 @@ mod tests {
         // Cell text ` abcdefghije\u{301}` chunks as ` abcde` | `fghije\u{301}` (six cells each).
         let raw = "| abcdefghije\u{301}|";
         let closing = raw.chars().count() - 1;
-        let ov = compute_cell_chunk_overlay(raw, &line, closing).expect("wider than the cell");
+        let ov = compute_cell_chunk_overlay(raw, 0, &line, closing).expect("wider than the cell");
         assert_eq!(ov.raw_text, "fghije\u{301}");
         assert_eq!(ov.cursor_in_cell, Some(5));
     }
@@ -343,8 +339,9 @@ mod tests {
         let raw_row = "| x | `aa` `bb` `cc` `dd` `ee` |";
         let cursor_col = raw_row.find("cc").unwrap(); // ASCII: byte == char col
 
-        let overlay = compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, cursor_col)
-            .expect("multi-sub row must use the wrapped-cell overlay, not the chunk fallback");
+        let overlay =
+            compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, 0, cursor_col)
+                .expect("multi-sub row must use the wrapped-cell overlay, not the chunk fallback");
 
         assert!(overlay.subs.len() >= 2, "fixture row must wrap");
         assert!(
@@ -373,8 +370,9 @@ mod tests {
         // 'a' of "appender" renders on the row's second wrap sub-line.
         let cursor_col = raw_row.find("appender").unwrap(); // ASCII: byte == char col
 
-        let overlay = compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, cursor_col)
-            .expect("wrapped code-span cell must use the multi-sub overlay");
+        let overlay =
+            compute_wrapped_cell_overlay(&state, data_row(&state), raw_row, 0, cursor_col)
+                .expect("wrapped code-span cell must use the multi-sub overlay");
 
         assert_eq!(overlay.subs.len(), 2, "fixture row wraps to two sub-lines");
         assert!(

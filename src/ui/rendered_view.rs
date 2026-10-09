@@ -208,6 +208,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let cursor_table =
             crate::document::row_map::table_row(&editor.parsed, cursor_block_idx, cursor_in_block);
         let is_table = cursor_table.is_some();
+        // Where the cursor's table row starts past its container prefix; its cells count from
+        // there.
+        let table_content_col = cursor_table.as_ref().map_or(0, |t| t.raw_col);
         // Data-row cell in a row that wraps: one raw chunk per rendered sub. `None` for
         // non-data and single-sub rows, which the single-line overlays handle.  The row must
         // show the cursor's own line, which `cursor_col` counts along (a stale parse can name
@@ -220,6 +223,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     editor,
                     cursor_block_lines.start + t.rows.start..cursor_block_lines.start + t.rows.end,
                     raw_lines.get(cursor_raw_line).copied().unwrap_or(""),
+                    t.raw_col,
                     cursor_col,
                 )
             });
@@ -269,6 +273,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     cursor_block_lines.start + t.rows.start..cursor_block_lines.start + t.rows.end;
                 let (sub, col) = table_raw_col_to_rendered(
                     raw_lines.get(cursor_raw_line).copied().unwrap_or(""),
+                    t.raw_col,
                     editor.parsed.lines.get(rows.clone())?,
                     cursor_col,
                     editor.parsed.ref_labels(),
@@ -634,12 +639,16 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 // `compute_cell_chunk_overlay`, which scrolls the cell horizontally.
                 let line_opt = editor.parsed.lines.get(virtual_idx);
                 let cell_overlay = if is_table {
-                    line_opt.and_then(|line| compute_cell_overlay(raw_text, line, cursor_col))
+                    line_opt.and_then(|line| {
+                        compute_cell_overlay(raw_text, table_content_col, line, cursor_col)
+                    })
                 } else {
                     None
                 };
                 let chunk_overlay = if is_table && cell_overlay.is_none() {
-                    line_opt.and_then(|line| compute_cell_chunk_overlay(raw_text, line, cursor_col))
+                    line_opt.and_then(|line| {
+                        compute_cell_chunk_overlay(raw_text, table_content_col, line, cursor_col)
+                    })
                 } else {
                     None
                 };

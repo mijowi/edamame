@@ -3463,6 +3463,64 @@ fn table_cursor_keeps_its_column_when_a_plain_cell_reveals() {
     }
 }
 
+/// A cursor in a cell GFM drops (past the header's count) has no drawn cell to reveal into, so
+/// the row reveals whole, its dropped cells included, with the cursor on its char; the last
+/// drawn cell still reveals on its own.
+#[test]
+fn table_cursor_in_a_dropped_cell_reveals_the_whole_row() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| a | b |\n|---|---|\n| 1 | 2 | 3 | 4 |\n";
+    let draw = |at: usize| {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.set_viewport_width(30);
+        state.cursor.offset = state.buffer.rope().byte_to_char(at);
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None;
+        let mut terminal = Terminal::new(TestBackend::new(30, 6)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: &state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let row_with = |buf: &ratatui::buffer::Buffer, needle: char| {
+        (0..6u16)
+            .map(|y| (0..30u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .find(|row| row.contains(needle))
+    };
+    let cursor_symbols = |buf: &ratatui::buffer::Buffer| -> Vec<String> {
+        (0..6u16)
+            .flat_map(|y| (0..30u16).map(move |x| (x, y)))
+            .filter(|&p| buf[p].style().bg == theme.status_mode_rendered.bg)
+            .map(|p| buf[p].symbol().to_owned())
+            .collect()
+    };
+
+    let buf = draw(src.rfind('4').unwrap());
+    let row = row_with(&buf, '4').expect("the dropped cells show");
+    assert!(row.starts_with("| 1 | 2 | 3 | 4 |"), "raw row: {row:?}");
+    assert_eq!(cursor_symbols(&buf), ["4"]);
+
+    let buf = draw(src.rfind('2').unwrap());
+    assert!(row_with(&buf, '4').is_none(), "a drawn cell reveals alone");
+    assert_eq!(cursor_symbols(&buf), ["2"]);
+}
+
 /// While a table row is drawn formatted (before its cell reveals, or for as
 /// long as search holds the reveal off), the cursor shows on the glyph it is
 /// on, past any markers the cell hides, and on the right sub-line of a wrapped

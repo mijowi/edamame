@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crate::document::EditDelta;
 use crate::editor::table_edit;
+use crate::editor::table_edit_ops;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{self, MIN_COL_WIDTH, PER_COL_OVERHEAD, ROW_END_OVERHEAD};
 
@@ -170,19 +171,24 @@ fn commit_swap_chain(
     dst_idx: usize,
     swap: fn(&table_edit::TableInfo, usize, usize) -> Option<EditDelta>,
 ) {
+    let Some(mut info) = table_edit_ops::locate_table(state, table_byte_start) else {
+        return;
+    };
     let original = state.buffer.contents();
     let mut composed = original.clone();
     let mut cur = src_idx;
     while cur != dst_idx {
         let step = if cur < dst_idx { cur + 1 } else { cur - 1 };
-        let Some(info) = table_edit::find_table_at(&composed, table_byte_start) else {
-            break;
-        };
         let Some(delta) = swap(&info, cur, step) else {
             break;
         };
         composed = delta.apply_to_string(&composed);
         cur = step;
+        // A swap keeps every row's line and prefix, so the composed text re-splits by them.
+        let Some(next) = info.reparse(&composed) else {
+            break;
+        };
+        info = next;
     }
 
     let Some(byte_delta) = EditDelta::diff(&original, &composed) else {
@@ -232,8 +238,7 @@ pub(super) fn delete_table_row_at(
     viewport_height: usize,
     viewport_width: usize,
 ) {
-    let source = state.buffer.contents();
-    let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+    let Some(info) = table_edit_ops::locate_table(state, table_byte_start) else {
         return;
     };
     let Some(delta) = table_edit::delete_row(&info, row_idx) else {
@@ -261,8 +266,7 @@ pub(super) fn delete_table_column_at(
     viewport_height: usize,
     viewport_width: usize,
 ) {
-    let source = state.buffer.contents();
-    let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+    let Some(info) = table_edit_ops::locate_table(state, table_byte_start) else {
         return;
     };
     let Some(delta) = table_edit::delete_column(&info, col_idx) else {

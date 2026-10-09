@@ -631,8 +631,7 @@ fn cursor_in_table(state: &EditorState) -> bool {
         return false;
     }
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
-    let source = state.buffer.contents();
-    crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
+    crate::editor::table_edit_ops::locate_table(state, cursor_byte).is_some()
 }
 
 /// True when the cursor is on a *task* list item; plain bullets have no checkbox to toggle.
@@ -1071,6 +1070,23 @@ mod tests {
         let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert_eq!(set.chords[0].chord, "^Space");
         assert_eq!(set.chords[0].label, "Toggle");
+    }
+
+    /// The table hints show in any table the parse finds, whatever its rows' pipes or
+    /// container, and not in prose holding a `|`.
+    #[test]
+    fn table_hints_show_in_tables_without_edge_pipes_and_nested_ones() {
+        let has_cell_hint = |source: &str, at: &str| {
+            let mut st = state(source);
+            st.mode = Mode::Rendered;
+            st.cursor.offset = source[..source.find(at).unwrap()].chars().count();
+            let set = hint_line_for(&st, &keymap(), HintCtx::default());
+            set.chords.iter().any(|c| c.label.contains("cell"))
+        };
+        assert!(has_cell_hint("a | b\n--|--\n1 | 2\n", "2"));
+        assert!(has_cell_hint("> a | b\n> --|--\n> 1 | 2\n", "2"));
+        assert!(has_cell_hint("| a | b |\n|---|---|\n| 1\n", "1"));
+        assert!(!has_cell_hint("a | b is prose\n", "b"));
     }
 
     #[test]

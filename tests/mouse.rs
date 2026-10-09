@@ -382,6 +382,60 @@ fn click_on_a_table_inside_a_list_item_lands_in_the_clicked_cell() {
     assert_eq!(st.cursor.offset, src.rfind('2').unwrap());
 }
 
+/// Clicks pair each rendered cell with its raw cell as GFM splits the row, not by counting pipes
+/// (issue #70): edge pipes are optional, a row's cells past the header's count are dropped, and
+/// a pipe in a container prefix (a footnote label) is no cell boundary.
+#[test]
+fn a_click_lands_on_the_clicked_char_whatever_the_rows_pipes() {
+    let cases = [
+        ("a | b\n--|--\n1 | 2\n", "ab12"),
+        ("| a | b |\n|---|---|\n1 | 2 |\n", "ab12"),
+        ("| a | b |\n|---|---|\n| 1 | 2\n", "ab12"),
+        (
+            "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 | 4 | 5 |\n",
+            "abc123",
+        ),
+        ("> a | b\n> --|--\n> 1 | 2\n", "ab12"),
+        (
+            "x[^a|b]\n\n[^a|b]: | p | q |\n    |---|---|\n    | 1 | 2 |\n",
+            "pq12",
+        ),
+    ];
+    for (src, chars) in cases {
+        for ch in chars.chars() {
+            let mut st = state(src);
+            st.mode = Mode::Rendered;
+            let (col, row) = rendered_cell_of(&st, ch);
+            mouse_ops::apply(&mut st, click(col, row), &mut None, &[], VP, VW);
+            assert_eq!(
+                st.buffer.contents().chars().nth(st.cursor.offset),
+                Some(ch),
+                "clicking {ch:?} in {src:?}",
+            );
+        }
+    }
+}
+
+/// A row with fewer cells than the header renders empty cells for the rest; a click in one lands
+/// at the row's end, trailing whitespace excluded: past a closing pipe, where typing adds that
+/// cell, or after the last cell's text without one, where typing extends it.
+#[test]
+fn a_click_in_a_cell_a_short_row_lacks_lands_at_the_rows_end() {
+    for src in [
+        "| a | b | c |\n|---|---|---|\n| 1 |\n",
+        "| a | b | c |\n|---|---|---|\n| 1 |   \n",
+        "| a | b | c |\n|---|---|---|\n| 1\n",
+        "| a | b | c |\n|---|---|---|\n| 1   \n",
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let (col, row) = rendered_cell_of(&st, '1');
+        // Past `1`, its pad and the pipe, into the second (empty) cell's content.
+        mouse_ops::apply(&mut st, click(col + 4, row), &mut None, &[], VP, VW);
+        assert_eq!(st.cursor.offset, src.trim_end().len(), "in {src:?}");
+    }
+}
+
 /// A click into a nested table's cell on the cursor's own line still suppresses the reveal, so
 /// the active cell can swap, as `same_line_click_inside_table_still_sets_drag_in_progress`
 /// requires of a top-level one.
@@ -430,24 +484,37 @@ fn a_drag_from_a_table_cell_is_clamped_to_it_at_any_depth() {
     }
 }
 
-/// A row with no leading pipe parses its first column as prefix, so a drag from it must not be
-/// clamped to the next cell, a range that excludes its own anchor.
+/// A drag is clamped to the cell it starts in whatever the row's edge pipes or container: a
+/// first cell with no leading pipe, a last one with no closing pipe, and a table on a footnote
+/// leader whose label holds a `|`.
 #[test]
-fn a_drag_from_a_leading_pipe_less_tables_first_cell_is_never_clamped_elsewhere() {
-    let src = "a | b |\n--|--|\n1 | 2 |\n";
-    let mut st = state(src);
-    st.mode = Mode::Rendered;
-    let (col, row) = rendered_cell_of(&st, '1');
-    let mut anchor: Option<mouse_ops::DragTarget> = None;
-    mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
+fn a_drag_from_a_cell_without_edge_pipes_is_clamped_to_it() {
+    for (src, ch, cell) in [
+        ("a | b |\n--|--|\n1 | 2 |\n", '1', (0, 2)),
+        ("a | b\n--|--\n1 | 2\n", '2', (-1, 1)),
+        (
+            "x[^a|b]\n\n[^a|b]: | p | q |\n    |---|---|\n    | 1 | 2 |\n",
+            '2',
+            (-1, 2),
+        ),
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let (col, row) = rendered_cell_of(&st, ch);
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        mouse_ops::apply(&mut st, click(col, row), &mut anchor, &[], VP, VW);
 
-    let Some(mouse_ops::DragTarget::TextSelection { anchor, cell }) = anchor else {
-        panic!("a click arms a text selection: {anchor:?}");
-    };
-    assert!(
-        cell.is_none_or(|(s, e)| (s..=e).contains(&anchor)),
-        "the clamp {cell:?} excludes its anchor {anchor}"
-    );
+        let at = src.rfind(ch).unwrap();
+        let (from, to) = cell;
+        assert_eq!(
+            anchor,
+            Some(mouse_ops::DragTarget::TextSelection {
+                anchor: at,
+                cell: Some(((at as isize + from) as usize, (at as isize + to) as usize)),
+            }),
+            "{src:?}"
+        );
+    }
 }
 
 /// A click on a border or separator lands in the cell in the same column of the table row it

@@ -574,6 +574,11 @@ fn check(src: &str) -> Result<(), String> {
 /// The sources of the behavioral tests the row-provenance work was written against, plus the
 /// two sample fixtures and the smoke-test one.
 const CORPUS: &[&str] = &[
+    "a | b\n--|--\n1 | 2\n",
+    "| a | b | c |\n|---|---|---|\n1 | 2 |\n| 1 | 2 | 3 | 4 |\n",
+    "> x\n>\n> a | b\n> --|--\n> 1 | 2 |\n",
+    "| a | b |\n|---|---|\n| 1 |\n| 1\n| 1 | 2 | 3 | 4 | 5 | 6 |\n",
+    "x[^a|b]\n\n[^a|b]: | p | q |\n    |---|---|\n    | 1 | 2 |\n",
     "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n",
     "8. Tag it.\n\n    ```bash\n    git tag\n    gh run watch\n    ```\n",
     "- ```bash\n  code\n  ```\n- next item\n\n- third\n",
@@ -1000,14 +1005,20 @@ fn clicking_where_the_cursor_shows_keeps_it_there() {
 }
 
 /// Corpus entries [`clicking_around_a_revealed_row_keeps_the_cursor_where_it_shows`] skips at
-/// 12 cells, each a known bug outside row provenance.  A quoted table too wide to shrink into 12
-/// cells wraps its rows in `line_render`; with a cell revealed, the cursor after `b` paints on
-/// the wrapped row, and a click there lands on `b`, one char left (issue #69).  A revealed line
+/// 12 cells, each a known bug outside row provenance.  A table too wide to shrink into 12 cells
+/// (quoted, behind a footnote leader, or three columns) wraps its rows in `line_render`; with a
+/// cell revealed, the cursor past a cell's text paints on the wrapped row, and a click there
+/// lands one char left, or nowhere (issue #69).  Their fully piped equivalents, and the footnote
+/// table under a label without a `|`, miss identically, so pairing cells plays no part.  A
+/// revealed line
 /// exactly as wide as the viewport (`[^1]: a note`) has no blank cell for a cursor at its end,
 /// so the painter draws that cursor over the last char, and a click there lands on that char
 /// (`paint_row`; accepted, since an extra row for it would change every row count).
 const KNOWN_REVEALED_MISSES: &[&str] = &[
     "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+    "| a | b | c |\n|---|---|---|\n1 | 2 |\n| 1 | 2 | 3 | 4 |\n",
+    "> x\n>\n> a | b\n> --|--\n> 1 | 2 |\n",
+    "x[^a|b]\n\n[^a|b]: | p | q |\n    |---|---|\n    | 1 | 2 |\n",
     "[^1]: a note\n    more\n\nref[^1]\n",
 ];
 

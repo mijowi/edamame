@@ -3,9 +3,12 @@
 //!
 //! Every structure edit is a single `EditDelta`, so it undoes as one step.
 //!
-//! The parser is byte-oriented and does not go through `pulldown-cmark` — it scans lines for the
-//! `| cell | cell |` shape with an alignment row second.  That keeps navigation cheap and avoids
-//! reconciling a parsed AST back to exact byte offsets.
+//! Which lines form a table, and where each row's content starts past its container prefix, come
+//! from the parse ([`row_map::table_lines`](crate::document::row_map::table_lines)), so a table in
+//! a quote, a list item or a footnote edits as a top-level one does.  The rows themselves are split
+//! here, from the buffer's text, as GFM splits them ([`table_layout::raw_cells`]): edge pipes
+//! optional, a row's cell count free to differ from the header's.  Rewriting a row keeps its
+//! prefix and its edge pipes ([`rebuild_row`]).
 
 use crate::document::EditDelta;
 use crate::markdown::table_layout;
@@ -23,6 +26,9 @@ pub struct TableInfo {
     pub rows: Vec<TableRow>,
     /// Number of columns (from the alignment row).
     pub col_count: usize,
+    /// Per row, the char column its content starts at, as [`table_from_lines`] took it; kept so
+    /// [`Self::reparse`] can re-split the same rows after an edit that leaves their prefixes be.
+    content_cols: Vec<Option<usize>>,
 }
 
 /// A single physical line of a table (one row).
@@ -35,18 +41,28 @@ pub struct TableRow {
     pub end: usize,
     /// Raw text of the row, excluding the trailing newline.
     pub raw: String,
-    /// Per-cell information — `cells.len() == col_count` for well-formed rows.
+    /// Per-cell information, as GFM splits the row: `cells.len() == col_count` for a full row,
+    /// fewer or more for a short or long one.
     pub cells: Vec<TableCell>,
     pub kind: RowKind,
+    /// Byte length of the text before the row's cells: its container prefix (an item's indent,
+    /// a quote's `> `, a footnote's label), then any space up to the opening `|` or, without
+    /// one, the first cell.
+    prefix_len: usize,
+    /// Whether the row has an opening and a closing `|`; GFM makes both optional.
+    lead_pipe: bool,
+    trail_pipe: bool,
 }
 
 /// A single cell's content range, relative to the start of the row's `raw` string (not the
 /// buffer) and inclusive of padding spaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableCell {
-    /// Byte offset within `raw` of the char immediately after the leading `|`.
+    /// Byte offset within `raw` of the cell's first char: just past its opening `|`, or for a
+    /// first cell without one, its first non-blank char.
     pub content_start: usize,
-    /// Byte offset within `raw` of the char immediately before the trailing `|`.
+    /// Byte offset within `raw` just past the cell: its closing `|`, or for a last cell without
+    /// one, the end of the row's text.
     pub content_end: usize,
     /// The cell as it appears in the raw line, padding and escaped `\|` included.
     pub raw: String,
@@ -69,122 +85,84 @@ pub enum RowKind {
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 
-/// True when `block_source` is a GFM table block.  `RenderedView` uses it to shift the
-/// raw→rendered line mapping by one, for the top border the renderer prepends.
-pub fn is_table_block(block_source: &str) -> bool {
-    let mut lines = block_source.split('\n');
-    match (lines.next(), lines.next()) {
-        (Some(first), Some(second)) => is_table_line(first) && is_alignment_row(second),
-        _ => false,
-    }
-}
-
-/// Find the GFM table containing `cursor_byte`.  A run of `|`-delimited lines qualifies when it
-/// has at least two lines and the second is a valid alignment row (cells matching `:?-+:?`).
-pub fn find_table_at(source: &str, cursor_byte: usize) -> Option<TableInfo> {
-    if source.is_empty() {
-        return None;
-    }
-
+/// The table whose lines start at byte `start` of `source`, one line per entry of
+/// `content_cols`: the header, the delimiter row, then the data rows, each with the char column
+/// its content starts at ([`row_map::table_lines`](crate::document::row_map::table_lines)).  A
+/// `None` column (the delimiter row, which the parse records as chrome) is read off the line: a
+/// continuation line's prefix is only quote markers and indent.  `None` when the lines no longer
+/// read as a table, as after an in-line edit to the delimiter row the parse hasn't caught up with.
+pub fn table_from_lines(
+    source: &str,
+    start: usize,
+    content_cols: &[Option<usize>],
+) -> Option<TableInfo> {
     let bytes = source.as_bytes();
-    let clamped = cursor_byte.min(source.len());
-    let line_start = line_start_byte(bytes, clamped);
-    let line_end = line_end_byte(bytes, line_start);
-
-    let cursor_line = &source[line_start..line_end];
-    if !is_table_line(cursor_line) {
-        return None;
-    }
-
-    // Scan upward for consecutive table lines.
-    let mut first_start = line_start;
-    loop {
-        if first_start == 0 {
-            break;
+    let mut rows = Vec::with_capacity(content_cols.len());
+    let mut at = start;
+    for (i, &col) in content_cols.iter().enumerate() {
+        if at > source.len() || (i > 0 && at == source.len()) {
+            return None; // fewer lines than the parse saw
         }
-        let prev_end = first_start - 1;
-        let prev_start = line_start_byte(bytes, prev_end);
-        let prev = &source[prev_start..prev_end];
-        if is_table_line(prev) {
-            first_start = prev_start;
+        let line_end = line_end_byte(bytes, at);
+        let end = if line_end < source.len() {
+            line_end + 1
         } else {
-            break;
-        }
-    }
-
-    // Scan downward for consecutive table lines.
-    let mut last_end = line_end;
-    loop {
-        if last_end >= source.len() {
-            break;
-        }
-        if bytes[last_end] != b'\n' {
-            break;
-        }
-        let next_start = last_end + 1;
-        if next_start >= source.len() {
-            break;
-        }
-        let next_end = line_end_byte(bytes, next_start);
-        let next = &source[next_start..next_end];
-        if is_table_line(next) {
-            last_end = next_end;
-        } else {
-            break;
-        }
-    }
-
-    // Parse every line of the run.
-    let mut rows: Vec<TableRow> = Vec::new();
-    let mut cursor = first_start;
-    while cursor < last_end {
-        let row_start = cursor;
-        let row_end_content = line_end_byte(bytes, row_start);
-        let raw = source[row_start..row_end_content].to_owned();
-        let row_end_incl_nl = if row_end_content < source.len() && bytes[row_end_content] == b'\n' {
-            row_end_content + 1
-        } else {
-            row_end_content
+            line_end
         };
-
-        let cells = parse_cells(&raw);
-        rows.push(TableRow {
-            start: row_start,
-            end: row_end_incl_nl,
-            raw,
-            cells,
-            kind: RowKind::Data, // placeholder, fixed after we know alignment row
+        let raw = &source[at..line_end];
+        let kind = match i {
+            0 => RowKind::Header,
+            1 => RowKind::Alignment,
+            _ => RowKind::Data,
+        };
+        let col = col.unwrap_or_else(|| {
+            raw.chars()
+                .take_while(|c| matches!(c, ' ' | '\t' | '>'))
+                .count()
         });
-        cursor = row_end_incl_nl;
-        if cursor == row_end_content {
-            break; // EOF without trailing newline
-        }
+        rows.push(parse_row(raw, at, end, col, kind));
+        at = end;
     }
-
-    if rows.len() < 2 {
+    if rows.len() < 2 || !is_alignment_row(&rows[1]) {
         return None;
-    }
-    if !is_alignment_row(&rows[1].raw) {
-        return None;
-    }
-
-    rows[0].kind = RowKind::Header;
-    rows[1].kind = RowKind::Alignment;
-    for r in rows.iter_mut().skip(2) {
-        r.kind = RowKind::Data;
     }
     let col_count = rows[1].cells.len();
-
-    // Short rows get padded to `col_count`; excess cells are kept rather than dropping content.
-    let overall_start = rows.first().map(|r| r.start).unwrap_or(first_start);
-    let overall_end = rows.last().map(|r| r.end).unwrap_or(last_end);
-
     Some(TableInfo {
-        start: overall_start,
-        end: overall_end,
+        start,
+        end: at,
         rows,
         col_count,
+        content_cols: content_cols.to_vec(),
     })
+}
+
+/// The GFM table containing `cursor_byte` of `source`, located by parsing `source` whole.  The
+/// editor locates through its live parse instead
+/// ([`table_edit_ops::locate_table`](crate::editor::table_edit_ops::locate_table)).
+#[cfg(test)]
+pub(crate) fn find_table_at(source: &str, cursor_byte: usize) -> Option<TableInfo> {
+    use crate::document::{row_map, ParsedDoc};
+    let parsed = ParsedDoc::build(source, &crate::config::Theme::default(), false, 10);
+    let line = parsed.byte_to_line(cursor_byte);
+    let (first, cols) = row_map::table_lines(&parsed, line)?;
+    table_from_lines(source, parsed.line_start_byte(first), &cols)
+}
+
+impl TableInfo {
+    /// The same rows re-split from `source`, an edit of the text this table was found in that
+    /// kept every row's line and prefix: a column swap.  `None` when they no longer read as a
+    /// table.
+    pub fn reparse(&self, source: &str) -> Option<TableInfo> {
+        table_from_lines(source, self.start, &self.content_cols)
+    }
+
+    /// The last column a cursor can reach on row `row_idx`: the row's last cell, short of the
+    /// table's column count.  A short row's missing cells hold no text, so Tab skips them.
+    pub fn last_col(&self, row_idx: usize) -> usize {
+        self.rows.get(row_idx).map_or(0, |row| {
+            row.cells.len().min(self.col_count).saturating_sub(1)
+        })
+    }
 }
 
 /// The cursor's `(row_idx, col_idx)` within a table, or `None` when `cursor_byte` falls outside
@@ -192,9 +170,7 @@ pub fn find_table_at(source: &str, cursor_byte: usize) -> Option<TableInfo> {
 pub fn cursor_cell(info: &TableInfo, cursor_byte: usize) -> Option<(usize, usize)> {
     for (i, row) in info.rows.iter().enumerate() {
         if cursor_byte >= row.start && cursor_byte < row.end {
-            let rel = cursor_byte - row.start;
-            let col = column_for_offset(&row.raw, rel);
-            return Some((i, col));
+            return Some((i, row.column_at(cursor_byte - row.start, info.col_count)));
         }
     }
     // Cursor may be at the very end of the table (past the final newline).
@@ -217,7 +193,7 @@ pub fn cursor_cell(info: &TableInfo, cursor_byte: usize) -> Option<(usize, usize
 /// leading padding space.
 pub fn cell_cursor_offset(info: &TableInfo, row_idx: usize, col_idx: usize) -> Option<usize> {
     let row = info.rows.get(row_idx)?;
-    let col = col_idx.min(row.cells.len().saturating_sub(1));
+    let col = col_idx.min(info.last_col(row_idx));
     let cell = row.cells.get(col)?;
     let mut offset_in_raw = cell.content_start;
     if row.raw.as_bytes().get(offset_in_raw) == Some(&b' ') {
@@ -230,7 +206,7 @@ pub fn cell_cursor_offset(info: &TableInfo, row_idx: usize, col_idx: usize) -> O
 /// non-whitespace character, falling back to [`cell_cursor_offset`] for an empty cell.
 pub fn cell_end_cursor_offset(info: &TableInfo, row_idx: usize, col_idx: usize) -> Option<usize> {
     let row = info.rows.get(row_idx)?;
-    let col = col_idx.min(row.cells.len().saturating_sub(1));
+    let col = col_idx.min(info.last_col(row_idx));
     let cell = row.cells.get(col)?;
     let trimmed_len = cell.raw.trim_end().len();
     let offset_in_raw = if trimmed_len > 0 {
@@ -344,9 +320,8 @@ pub fn insert_column(info: &TableInfo, col_idx: usize, right: bool) -> EditDelta
     let mut inserted = String::with_capacity(removed.len() + 16);
 
     for row in &info.rows {
-        let new_cells = insert_blank_cell(&row.cells, target_col, row.kind);
-        inserted.push_str(row.prefix());
-        inserted.push_str(&rebuild_row(&new_cells));
+        let new_cells = insert_blank_cell(&row.padded_cells(), target_col, row.kind);
+        inserted.push_str(&rebuild_row(row, &new_cells));
         if row.raw_ends_with_newline_or_next_exists(info) {
             inserted.push('\n');
         }
@@ -372,12 +347,11 @@ pub fn delete_column(info: &TableInfo, col_idx: usize) -> Option<EditDelta> {
     let mut inserted = String::with_capacity(removed.len());
 
     for row in &info.rows {
-        let mut new_cells = row.cells.clone();
+        let mut new_cells = row.padded_cells();
         if col_idx < new_cells.len() {
             new_cells.remove(col_idx);
         }
-        inserted.push_str(row.prefix());
-        inserted.push_str(&rebuild_row(&new_cells));
+        inserted.push_str(&rebuild_row(row, &new_cells));
         if row.raw_ends_with_newline_or_next_exists(info) {
             inserted.push('\n');
         }
@@ -407,12 +381,16 @@ pub fn swap_columns(info: &TableInfo, a: usize, b: usize) -> Option<EditDelta> {
     let mut inserted = String::with_capacity(removed.len());
 
     for row in &info.rows {
-        let mut new_cells = row.cells.clone();
-        if lo < new_cells.len() && hi < new_cells.len() {
+        let mut new_cells = row.padded_cells();
+        if lo < new_cells.len() {
+            // A short row lacking column `hi` gets it, blank, so its `lo` cell moves with
+            // the header rather than staying under the column that moved in.
+            if hi == new_cells.len() {
+                new_cells = insert_blank_cell(&new_cells, hi, row.kind);
+            }
             new_cells.swap(lo, hi);
         }
-        inserted.push_str(row.prefix());
-        inserted.push_str(&rebuild_row(&new_cells));
+        inserted.push_str(&rebuild_row(row, &new_cells));
         if row.raw_ends_with_newline_or_next_exists(info) {
             inserted.push('\n');
         }
@@ -430,10 +408,11 @@ pub fn swap_columns(info: &TableInfo, a: usize, b: usize) -> Option<EditDelta> {
 /// Insert or replace the `<!-- tui-columns: [..] -->` comment row immediately after the table,
 /// as one `EditDelta` so the resize and the comment update undo together.
 pub fn write_column_widths(source: &str, info: &TableInfo, widths: &[Option<usize>]) -> EditDelta {
-    // Indented like the table, so a table inside a list item keeps its comment in the item.
+    // Indented like the table's last row, so a table inside a list item keeps its comment in the
+    // item.  Not the header's: its prefix may hold the item's marker or a footnote's label.
     let mut comment = format!(
         "{}{}",
-        info.rows.first().map_or("", TableRow::prefix),
+        info.rows.last().map_or("", TableRow::prefix),
         table_layout::format_column_widths_comment(widths)
     );
     comment.push('\n');
@@ -490,11 +469,57 @@ fn advance_past_one_newline(source: &str, pos: usize) -> usize {
 // ─── Row text helpers ────────────────────────────────────────────────────────
 
 impl TableRow {
-    /// The text before the row's first `|`: a list item's indent.  [`find_table_at`] accepts a
-    /// row only when it starts with whitespace and `|`, so this is never more than whitespace.
-    /// Every writer re-emits it, or an edit would move the row out of its list item (issue #75).
+    /// The text before the row's cells ([`Self::prefix_len`]).  Every writer re-emits it, or an
+    /// edit would move the row out of its list item or quote (issue #75).
     fn prefix(&self) -> &str {
-        &self.raw[..self.raw.find('|').unwrap_or(0)]
+        &self.raw[..self.prefix_len]
+    }
+
+    /// The column byte `rel` (relative to the row's `raw`) belongs to in a table of `col_count`
+    /// columns: the cell holding it, a pipe belonging to the cell before it and the prefix to the
+    /// first.  Past the closing pipe of a row with fewer cells than `col_count`, the first cell it
+    /// lacks; past a full row's, its last cell: both where the cursor shows
+    /// ([`table_layout::drawn_cell_at`]).
+    fn column_at(&self, rel: usize, col_count: usize) -> usize {
+        let i = self
+            .cells
+            .iter()
+            .take_while(|c| c.content_start <= rel)
+            .count()
+            .saturating_sub(1);
+        match self.cells.last() {
+            Some(last)
+                if self.trail_pipe && rel > last.content_end && self.cells.len() < col_count =>
+            {
+                self.cells.len()
+            }
+            _ => i,
+        }
+    }
+
+    /// The cell holding byte `rel` (relative to the row's `raw`), its pipes included; `None` in
+    /// the prefix or past the row's cells.
+    pub fn cell_at(&self, rel: usize) -> Option<&TableCell> {
+        self.cells
+            .iter()
+            .find(|c| (c.content_start..=c.content_end).contains(&rel))
+    }
+
+    /// The row's cells for a rewrite that may move them: an edge cell without its pipe gets the
+    /// padding space a pipe-side cell has, which [`rebuild_row`] drops again wherever it ends up
+    /// on an edge without one.  `a | b` swaps to `b | a`, not ` b|a `.
+    fn padded_cells(&self) -> Vec<TableCell> {
+        let mut cells = self.cells.clone();
+        let last = cells.len().saturating_sub(1);
+        for (i, cell) in cells.iter_mut().enumerate() {
+            if i == 0 && !self.lead_pipe && !cell.raw.starts_with(char::is_whitespace) {
+                cell.raw.insert(0, ' ');
+            }
+            if i == last && !self.trail_pipe && !cell.raw.ends_with(char::is_whitespace) {
+                cell.raw.push(' ');
+            }
+        }
+        cells
     }
 
     fn raw_ends_with_newline(&self) -> bool {
@@ -514,131 +539,59 @@ impl TableRow {
     }
 }
 
-/// Split a row's raw text into cells: the text between unescaped `|` characters, excluding the
-/// outer `|`s (which this implementation requires).
-fn parse_cells(raw: &str) -> Vec<TableCell> {
-    let mut cells = Vec::new();
-    let bytes = raw.as_bytes();
-    let len = bytes.len();
-    if len == 0 {
-        return cells;
-    }
-
-    // Find the first `|`.
-    let mut i = 0;
-    while i < len && bytes[i] != b'|' {
-        i += 1;
-    }
-    if i >= len {
-        return cells;
-    }
-    let mut content_start = i + 1;
-    i = content_start;
-
-    while i <= len {
-        if i == len {
-            break; // unterminated row — no trailing |
+/// Split row `raw` (a line of the buffer from byte `start` to `end`, its newline included) into
+/// cells as GFM does, from char column `content_col`, where its content starts past any prefix.
+fn parse_row(raw: &str, start: usize, end: usize, content_col: usize, kind: RowKind) -> TableRow {
+    let chars: Vec<char> = raw.chars().collect();
+    let byte_at: Vec<usize> = raw
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(raw.len()))
+        .collect();
+    let ranges = table_layout::raw_cells(raw, content_col);
+    let cells = ranges
+        .iter()
+        .map(|r| TableCell {
+            content_start: byte_at[r.start],
+            content_end: byte_at[r.end],
+            raw: raw[byte_at[r.start]..byte_at[r.end]].to_owned(),
+        })
+        .collect();
+    let (prefix_len, lead_pipe, trail_pipe) = match (ranges.first(), ranges.last()) {
+        (Some(first), Some(last)) => {
+            let lead = first.start > content_col && chars[first.start - 1] == '|';
+            let trail = chars.get(last.end) == Some(&'|');
+            (byte_at[first.start - usize::from(lead)], lead, trail)
         }
-        if bytes[i] == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
-            // Cell content is [content_start..i).
-            let raw_cell = raw[content_start..i].to_owned();
-            cells.push(TableCell {
-                content_start,
-                content_end: i,
-                raw: raw_cell,
-            });
-            content_start = i + 1;
-        }
-        i += 1;
+        _ => (raw.len(), false, false),
+    };
+    TableRow {
+        start,
+        end,
+        raw: raw.to_owned(),
+        cells,
+        kind,
+        prefix_len,
+        lead_pipe,
+        trail_pipe,
     }
-
-    cells
 }
 
-/// The cell of raw table line `raw` holding byte `rel_byte`, or `None` outside every cell.  The
-/// line may carry a container prefix (an item's indent, a quote's `> `) before its first `|`.
-/// Text before the first `|` is taken for prefix, so a row with no leading pipe (`1 | 2 |`) has
-/// no cell for its first column's bytes rather than the second column's.
-pub fn cell_at(raw: &str, rel_byte: usize) -> Option<TableCell> {
-    parse_cells(raw)
-        .into_iter()
-        .nth(column_for_offset(raw, rel_byte))
-        .filter(|c| (c.content_start..=c.content_end).contains(&rel_byte))
+/// True when `line` carries an unescaped `|`: the least a line needs to paste in as a table row.
+pub fn has_cell_pipe(line: &str) -> bool {
+    !table_layout::raw_pipe_positions(line).is_empty()
 }
 
-/// Which column the byte at `rel_byte` (relative to the row's raw string) belongs to.  Bytes
-/// before the first `|` count as column 0, those past the last as the final column.
-fn column_for_offset(raw: &str, rel_byte: usize) -> usize {
-    let bytes = raw.as_bytes();
-    let len = bytes.len();
-    let rel_byte = rel_byte.min(len);
-    let mut col = 0usize;
-    let mut seen_first = false;
-    for i in 0..rel_byte {
-        if bytes[i] == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
-            if !seen_first {
-                seen_first = true; // leading `|` establishes column 0
-            } else {
-                col += 1;
-            }
-        }
-    }
-    col
-}
-
-/// True when a line looks like a table row (starts and ends with `|` after
-/// trimming whitespace, and contains at least one additional `|`).
-pub fn is_table_line(line: &str) -> bool {
-    let t = line.trim();
-    if !t.starts_with('|') || !t.ends_with('|') {
-        return false;
-    }
-    let unescaped_pipes = count_unescaped_pipes(t);
-    unescaped_pipes >= 2
-}
-
-fn count_unescaped_pipes(s: &str) -> usize {
-    let bytes = s.as_bytes();
-    let mut n = 0;
-    for i in 0..bytes.len() {
-        if bytes[i] == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
-            n += 1;
-        }
-    }
-    n
-}
-
-/// True when a line is a valid GFM alignment row, e.g. `|---|:-:|---:|`.
-fn is_alignment_row(line: &str) -> bool {
-    let t = line.trim();
-    // At least `|x|`: a lone `|` (which a user leaves mid-edit) satisfies both `starts_with`
-    // and `ends_with` and would panic on the `[1..len-1]` slice below.
-    if t.len() < 3 || !t.starts_with('|') || !t.ends_with('|') {
-        return false;
-    }
-    let inner = &t[1..t.len() - 1];
-    for cell in inner.split('|') {
-        let c = cell.trim();
-        if c.is_empty() {
-            return false;
-        }
-        let bytes = c.as_bytes();
-        let mut start = 0;
-        let mut end = bytes.len();
-        if bytes[start] == b':' {
-            start += 1;
-        }
-        if end > start && bytes[end - 1] == b':' {
-            end -= 1;
-        }
-        if end <= start {
-            return false;
-        }
-        if !bytes[start..end].iter().all(|&b| b == b'-') {
-            return false;
-        }
-    }
-    true
+/// True when `row` is a valid GFM alignment row: every cell matches `:?-+:?`, e.g. `|---|:-:|`
+/// or `--|--`.
+fn is_alignment_row(row: &TableRow) -> bool {
+    !row.cells.is_empty()
+        && row.cells.iter().all(|cell| {
+            let c = cell.raw.trim();
+            let c = c.strip_prefix(':').unwrap_or(c);
+            let c = c.strip_suffix(':').unwrap_or(c);
+            !c.is_empty() && c.bytes().all(|b| b == b'-')
+        })
 }
 
 fn line_start_byte(bytes: &[u8], pos: usize) -> usize {
@@ -700,15 +653,65 @@ fn insert_blank_cell(cells: &[TableCell], col_idx: usize, kind: RowKind) -> Vec<
     out
 }
 
-/// Rebuild a row's raw text from a cell list, re-inserting `|` separators.
-fn rebuild_row(cells: &[TableCell]) -> String {
-    let mut s = String::new();
-    s.push('|');
-    for cell in cells {
-        s.push_str(&cell.raw);
+/// Rebuild `row`'s text from `cells` (its [`TableRow::padded_cells`], edited), behind its
+/// prefix and with its own edge pipes.  An edge pipe is added where GFM would misread the row
+/// without one: a blank edge cell (`   | b` reads as `| b`), a single cell (`a` alone is no
+/// row), or a first cell moved in that [`may_open_block`] (`- x | 1` is a list item, ending the
+/// table), padded as a written pipe is.  An edge cell without its pipe drops its padding there.
+fn rebuild_row(row: &TableRow, cells: &[TableCell]) -> String {
+    let blank = |c: Option<&TableCell>| c.is_some_and(|c| c.raw.trim().is_empty());
+    // The row's own first cell read as a row already; only a newcomer can open a block, and a
+    // delimiter row's cells never do.
+    let opens_block = row.kind != RowKind::Alignment
+        && cells.first().is_some_and(|c| {
+            row.cells
+                .first()
+                .is_none_or(|own| own.raw.trim() != c.raw.trim())
+                && may_open_block(&c.raw)
+        });
+    let lead = row.lead_pipe || cells.len() < 2 || blank(cells.first()) || opens_block;
+    let trail = row.trail_pipe || cells.len() < 2 || blank(cells.last());
+    let last = cells.len().saturating_sub(1);
+    let mut s = String::from(row.prefix());
+    if lead {
         s.push('|');
     }
+    for (i, cell) in cells.iter().enumerate() {
+        let mut text = cell.raw.as_str();
+        if i == 0 && !lead {
+            text = text.trim_start();
+        }
+        if i == last && !trail {
+            text = text.trim_end();
+        }
+        // A pipe the row didn't have gets the padding space beside it a written one has.
+        if i == 0 && lead && !row.lead_pipe && !text.starts_with(char::is_whitespace) {
+            s.push(' ');
+        }
+        s.push_str(text);
+        if i == last && trail && !row.trail_pipe && !text.ends_with(char::is_whitespace) {
+            s.push(' ');
+        }
+        if i < last || trail {
+            s.push('|');
+        }
+    }
     s
+}
+
+/// Whether `cell`, at the start of a line, might open a block that ends the table (a list
+/// item, heading, quote, fence, HTML block, thematic break, …).  Deliberately broad: anything
+/// but text starting with a letter, or with digits not followed by an ordered-list `.` / `)`.
+/// A false positive costs only a leading pipe the row didn't strictly need.
+fn may_open_block(cell: &str) -> bool {
+    let text = cell.trim_start();
+    match text.chars().next() {
+        None => false,
+        Some(c) if c.is_ascii_digit() => text
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .starts_with(['.', ')']),
+        Some(c) => !c.is_alphanumeric(),
+    }
 }
 
 /// Concatenate every row's raw text, trailing newlines included.
@@ -801,75 +804,109 @@ mod tests {
         src.find(needle).expect("needle not found")
     }
 
+    /// `raw` split as a data row (or, for `kind`, another) whose content starts at char `col`.
+    fn row_at(raw: &str, col: usize, kind: RowKind) -> TableRow {
+        parse_row(raw, 0, raw.len(), col, kind)
+    }
+
+    fn raws(row: &TableRow) -> Vec<&str> {
+        row.cells.iter().map(|c| c.raw.as_str()).collect()
+    }
+
     #[test]
     fn is_alignment_row_basic() {
-        assert!(is_alignment_row("| --- | --- |"));
-        assert!(is_alignment_row("|---|---|"));
-        assert!(is_alignment_row("| :--- | ---: | :---: |"));
-        assert!(!is_alignment_row("| abc | def |"));
-        assert!(!is_alignment_row("|  |  |"));
+        let align = |raw: &str| is_alignment_row(&row_at(raw, 0, RowKind::Alignment));
+        assert!(align("| --- | --- |"));
+        assert!(align("|---|---|"));
+        assert!(align("| :--- | ---: | :---: |"));
+        assert!(align("--|--"), "edge pipes are optional");
+        assert!(align(":-: | -"));
+        assert!(!align("| abc | def |"));
+        assert!(!align("|  |  |"));
     }
 
-    /// Regression: a single `|` (which a user can leave for one
-    /// keystroke while editing the alignment row) used to panic on the
-    /// `[1..len-1]` slice.
+    /// A lone `|`, which a user can leave for one keystroke while editing the alignment row,
+    /// is no alignment row, and nothing panics on it.
     #[test]
     fn is_alignment_row_single_pipe_does_not_panic() {
-        assert!(!is_alignment_row("|"));
-        assert!(!is_alignment_row(" | "));
-        assert!(!is_alignment_row(""));
+        let align = |raw: &str| is_alignment_row(&row_at(raw, 0, RowKind::Alignment));
+        assert!(!align("|"));
+        assert!(!align(" | "));
+        assert!(!align(""));
     }
 
     #[test]
-    fn is_table_block_basic() {
-        assert!(is_table_block("| a | b |\n|---|---|\n| 1 | 2 |\n"));
-        assert!(is_table_block("| a |\n|---|\n"));
-        assert!(!is_table_block("paragraph\n"));
-        assert!(!is_table_block("| a | b |\n"));
-        assert!(!is_table_block("| a | b |\n| c | d |\n")); // second row not alignment
-        assert!(!is_table_block(""));
+    fn has_cell_pipe_basic() {
+        assert!(has_cell_pipe("| a | b |"));
+        assert!(has_cell_pipe("a | b"));
+        assert!(!has_cell_pipe(r"a \| b"));
+        assert!(
+            has_cell_pipe(r"a \\| b"),
+            "an escaped backslash leaves the pipe a pipe"
+        );
+        assert!(!has_cell_pipe("hello world"));
     }
 
+    /// Rows split as GFM splits them, from their content column: edge pipes optional, escaped
+    /// pipes inside a cell, a container prefix (even one holding a `|`) never a cell.
     #[test]
-    fn is_table_line_basic() {
-        assert!(is_table_line("| a | b |"));
-        assert!(is_table_line("|---|---|"));
-        assert!(!is_table_line("hello world"));
-        assert!(!is_table_line("| a"));
+    fn parse_row_splits_as_gfm_does() {
+        let piped = row_at("| a | b | c |", 0, RowKind::Data);
+        assert_eq!(raws(&piped), [" a ", " b ", " c "]);
+        assert_eq!(
+            (piped.prefix(), piped.lead_pipe, piped.trail_pipe),
+            ("", true, true)
+        );
+
+        let escaped = row_at(r"| a \| x | b |", 0, RowKind::Data);
+        assert_eq!(raws(&escaped), [r" a \| x ", " b "]);
+
+        let bare = row_at("a | b", 0, RowKind::Data);
+        assert_eq!(raws(&bare), ["a ", " b"]);
+        assert_eq!(
+            (bare.prefix(), bare.lead_pipe, bare.trail_pipe),
+            ("", false, false)
+        );
+
+        let half = row_at("  1 | 2 |", 2, RowKind::Data);
+        assert_eq!(raws(&half), ["1 ", " 2 "]);
+        assert_eq!(
+            (half.prefix(), half.lead_pipe, half.trail_pipe),
+            ("  ", false, true)
+        );
+
+        let quoted = row_at("> | a | b |", 2, RowKind::Data);
+        assert_eq!(raws(&quoted), [" a ", " b "]);
+        assert_eq!(quoted.prefix(), "> ");
+
+        let footnote = row_at("[^a|b]: | x | y |", 8, RowKind::Header);
+        assert_eq!(raws(&footnote), [" x ", " y "]);
+        assert_eq!(footnote.prefix(), "[^a|b]: ");
     }
 
+    /// A pipe belongs to the cell before it and the prefix to the first; past a short row's
+    /// closing pipe is the first cell it lacks, past a full row's its last cell.
     #[test]
-    fn parse_cells_basic() {
-        let row = "| a | b | c |";
-        let cells = parse_cells(row);
-        assert_eq!(cells.len(), 3);
-        assert_eq!(cells[0].raw, " a ");
-        assert_eq!(cells[1].raw, " b ");
-        assert_eq!(cells[2].raw, " c ");
-    }
+    fn column_at_and_cell_at_find_the_cell_holding_a_byte() {
+        let row = row_at(r"| a \| x | b |", 0, RowKind::Data);
+        assert_eq!(row.column_at(4, 2), 0, "inside the first cell");
+        assert_eq!(row.column_at(9, 2), 0, "on the pipe after it");
+        assert_eq!(row.column_at(11, 2), 1);
 
-    #[test]
-    fn parse_cells_escaped_pipe() {
-        let row = r"| a \| x | b |";
-        let cells = parse_cells(row);
-        assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].raw, r" a \| x ");
-        assert_eq!(cells[1].raw, " b ");
-    }
+        let quoted = row_at("> | a | b |", 2, RowKind::Data);
+        let b = quoted.raw.find('b').unwrap();
+        assert_eq!(quoted.column_at(0, 2), 0, "the quote's `>`");
+        assert_eq!(quoted.cell_at(b).map(|c| c.raw.as_str()), Some(" b "));
+        assert_eq!(quoted.cell_at(0), None, "the quote's `>` is in no cell");
 
-    /// A container prefix before the first `|` is skipped; a first column with no leading pipe
-    /// is no cell, not the next column's.
-    #[test]
-    fn cell_at_skips_a_prefix_and_never_answers_another_cell() {
-        let quoted = "> | a | b |";
-        let b = quoted.find('b').unwrap();
-        assert_eq!(cell_at(quoted, b).map(|c| c.raw), Some(" b ".to_owned()));
-        assert_eq!(cell_at(quoted, 0), None, "the quote's `>`");
+        let bare = row_at("1 | 2 |", 0, RowKind::Data);
+        assert_eq!(bare.cell_at(0).map(|c| c.raw.as_str()), Some("1 "));
 
-        let bare = "1 | 2 |";
-        assert_eq!(cell_at(bare, 0), None, "the leading-pipe-less first column");
-        let two = bare.find('2').unwrap();
-        assert_eq!(cell_at(bare, two).map(|c| c.raw), Some(" 2 ".to_owned()));
+        let short = row_at("| 1 |", 0, RowKind::Data);
+        assert_eq!(short.column_at(4, 3), 0, "the closing pipe");
+        assert_eq!(short.column_at(5, 3), 1, "past it");
+        assert_eq!(short.column_at(5, 1), 0, "past a full row's, its last cell");
+        assert_eq!(row_at("| 1", 0, RowKind::Data).column_at(3, 3), 0);
     }
 
     #[test]
@@ -1070,14 +1107,6 @@ mod tests {
         let info = find_table_at(src, 0).unwrap();
         let delta = write_column_widths(src, &info, &[Some(8), None, Some(12)]);
         assert_eq!(delta.inserted, "<!-- tui-columns: [8, _, 12] -->\n");
-    }
-
-    #[test]
-    fn column_for_offset_respects_escaped_pipes() {
-        // col 0 = " a \| x " (offsets 1..9), col 1 = " b " (10..13)
-        let row = r"| a \| x | b |";
-        assert_eq!(column_for_offset(row, 4), 0); // inside first cell
-        assert_eq!(column_for_offset(row, 10), 1); // inside second cell
     }
 
     // ── `insert_table` and `cursor_line_is_blank` ───────────────────────────
@@ -1299,6 +1328,68 @@ mod tests {
                 cells(&[&["b", "a"], &["2", "1"], &["4", "3"]])
             );
         }
+    }
+
+    /// A table opening on its item's marker line or a footnote's leader line indents its widths
+    /// comment like its last row, not behind the header's marker or label.
+    #[test]
+    fn a_widths_comment_never_copies_the_headers_marker_or_label() {
+        for (src, indent) in [
+            ("- | a |\n  |---|\n  | 1 |\n", "  "),
+            ("x[^n]\n\n[^n]: | a |\n    |---|\n    | 1 |\n", "    "),
+        ] {
+            let info = find_table_at(src, src.find('1').unwrap()).expect("a table");
+            let delta = write_column_widths(src, &info, &[Some(5)]);
+            assert_eq!(
+                delta.inserted,
+                format!("{indent}<!-- tui-columns: [5] -->\n")
+            );
+        }
+    }
+
+    /// `reparse` re-splits the same rows from edited text, as a column-swap chain needs.
+    #[test]
+    fn reparse_follows_a_column_swap() {
+        let src = "> a | b\n> --|--\n> 1 | 2\n";
+        let info = find_table_at(src, 0).unwrap();
+        let swapped = apply(src, &swap_columns(&info, 0, 1).unwrap());
+        let again = info.reparse(&swapped).expect("still a table");
+        assert_eq!(raws(&again.rows[2]), ["2 ", " 1"]);
+        assert_eq!(again.rows[2].prefix(), "> ");
+    }
+
+    /// A short row lacking the column a swap moves its cell into gets it, blank, so its cell
+    /// moves with its header.
+    #[test]
+    fn swap_columns_moves_a_short_rows_cell_with_its_header() {
+        let src = "| a | b | c |\n|---|---|---|\n| 1 | 2 |\n";
+        let info = find_table_at(src, 0).unwrap();
+        let swapped = apply(src, &swap_columns(&info, 1, 2).unwrap());
+        assert_eq!(swapped, "| a | c | b |\n|---|---|---|\n| 1 |   | 2 |\n");
+    }
+
+    #[test]
+    fn may_open_block_flags_anything_but_plain_text() {
+        for cell in [
+            " - x", "# h", "> q", "```", "<div>", "1. x", "2) x", "***", "+ x",
+        ] {
+            assert!(may_open_block(cell), "{cell:?}");
+        }
+        for cell in [" x ", "word", "12", "1x", "日本", ""] {
+            assert!(!may_open_block(cell), "{cell:?}");
+        }
+    }
+
+    /// A short row's last reachable column is its last cell; a long row's, the table's last.
+    #[test]
+    fn last_col_stops_at_a_short_rows_last_cell() {
+        let src = "| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |\n";
+        let info = find_table_at(src, 0).unwrap();
+        assert_eq!(info.col_count, 3);
+        assert_eq!(
+            (info.last_col(0), info.last_col(2), info.last_col(3)),
+            (2, 0, 2)
+        );
     }
 
     /// The widths comment is written at the table's indent, so it stays in the item, gives the

@@ -514,6 +514,101 @@ pub fn raw_pipe_positions(row: &str) -> Vec<usize> {
     positions
 }
 
+/// The cells of raw table row `row` as GFM splits them: the char ranges between its unescaped
+/// pipes, pipes excluded.  Counting starts at `content_col`, the row's content column (its
+/// origin's `raw_col`), so a container prefix never contributes a pipe: a quote's `> `, an
+/// item's indent, a footnote's `[^a|b]: `.  Edge pipes are optional, as in GFM: without a
+/// leading one the first cell starts at the content, without a trailing one the last runs to
+/// the line's end.  Empty for a blank row.
+pub fn raw_cells(row: &str, content_col: usize) -> Vec<Range<usize>> {
+    let chars: Vec<char> = row.chars().collect();
+    let mut end = chars.len();
+    while end > content_col && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let mut start = content_col.min(end);
+    while start < end && chars[start].is_whitespace() {
+        start += 1;
+    }
+    if start >= end {
+        return Vec::new();
+    }
+    let mut pipes: Vec<usize> = raw_pipe_positions(row)
+        .into_iter()
+        .filter(|p| (start..end).contains(p))
+        .collect();
+    let open = if pipes.first() == Some(&start) {
+        pipes.remove(0);
+        start + 1
+    } else {
+        start
+    };
+    let close = if end > open && pipes.last() == Some(&(end - 1)) {
+        pipes.pop();
+        end - 1
+    } else {
+        end
+    };
+    let mut cells = Vec::with_capacity(pipes.len() + 1);
+    let mut from = open;
+    for p in pipes {
+        cells.push(from..p);
+        from = p + 1;
+    }
+    cells.push(from..close.max(from));
+    cells
+}
+
+/// The raw cells to pair with the `drawn` cells a rendered row of cells shows: the first `drawn`
+/// of [`raw_cells`].  GFM drops a row's cells past the header's count, and the renderer draws
+/// none for them; a row with fewer cells keeps them all, and the empty cells the renderer pads
+/// it with have no raw cell.  `None` off a row of cells (nothing drawn, or a blank raw row).
+pub fn paired_raw_cells(row: &str, content_col: usize, drawn: usize) -> Option<Vec<Range<usize>>> {
+    let mut cells = raw_cells(row, content_col);
+    cells.truncate(drawn);
+    (!cells.is_empty()).then_some(cells)
+}
+
+/// The index of the cell in non-empty `cells` holding raw column `col`.  A column on a pipe
+/// belongs to the cell before it, and one in the prefix to the first.
+fn raw_cell_at(cells: &[Range<usize>], col: usize) -> usize {
+    cells
+        .iter()
+        .take_while(|c| c.start <= col)
+        .count()
+        .saturating_sub(1)
+}
+
+/// The drawn cell that raw column `col` of `row` shows in, and that cell's raw range, the cells
+/// paired as [`paired_raw_cells`] pairs them.  Usually [`raw_cell_at`]'s.  On a row with fewer
+/// cells than the `drawn` ones, a column past its closing pipe (the row's end, where typing adds
+/// a cell, and where a click in a missing cell lands) shows in the first cell it lacks, as an
+/// empty range at `col`; without a closing pipe, typing there extends the last cell, which keeps
+/// it.  `None` off a row of cells, and for a column in a cell GFM drops (past the header's
+/// count): no drawn cell shows it, so the caller reveals the whole line instead.
+pub fn drawn_cell_at(
+    row: &str,
+    content_col: usize,
+    drawn: usize,
+    col: usize,
+) -> Option<(usize, Range<usize>)> {
+    let mut cells = raw_cells(row, content_col);
+    let dropped = cells.len() > drawn;
+    cells.truncate(drawn);
+    let last = cells.last()?;
+    if col > last.end {
+        if dropped {
+            return None;
+        }
+        // `raw_cells` ends the last cell on the closing pipe when there is one.
+        if cells.len() < drawn && row.chars().nth(last.end) == Some('|') {
+            return Some((cells.len(), col..col));
+        }
+    }
+    let i = raw_cell_at(&cells, col);
+    Some((i, cells[i].clone()))
+}
+
 /// Char positions of `│` box-drawing pipe characters in a rendered line.
 pub fn rendered_pipe_positions(line: &Line<'_>) -> Vec<usize> {
     let mut positions = Vec::new();
@@ -552,31 +647,24 @@ pub fn rendered_pipe_cells(line: &Line<'_>) -> Vec<usize> {
 /// after hidden markers (`**b** x`) lands on its glyph, as a click there lands on the char.  A
 /// column in a cell's leading whitespace lands on the pad space; one past the content, past its
 /// last glyph, never beyond the cell's trailing pad.  The cell is found as the cell reveal finds
-/// it (`compute_cell_overlay`): a column on a pipe belongs to the cell before it.  `None` when
-/// the pipe counts disagree (alignment row, border).
+/// it, by [`drawn_cell_at`] from `content_col`.  `None` off a row of cells (alignment row,
+/// border) and in a cell GFM drops, which no drawn cell shows.
 pub fn table_raw_col_to_rendered(
     raw_row: &str,
+    content_col: usize,
     row_lines: &[Line<'_>],
     raw_col: usize,
     labels: &RefLabels,
 ) -> Option<(usize, usize)> {
     let first = row_lines.first()?;
-    let raw_pipes = raw_pipe_positions(raw_row);
     let pipe_cells = rendered_pipe_cells(first);
-    if raw_pipes.len() < 2 || pipe_cells.len() != raw_pipes.len() {
-        return None;
-    }
-    let col_count = raw_pipes.len() - 1;
-    let preceding = raw_pipes.iter().take_while(|&&p| p < raw_col).count();
-    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
-    let raw_cell_start = raw_pipes[cell_idx] + 1;
+    let drawn = pipe_cells.len().saturating_sub(1);
     let raw_chars: Vec<char> = raw_row.chars().collect();
+    let (cell_idx, raw_cell) =
+        drawn_cell_at(raw_row, content_col, drawn, raw_col.min(raw_chars.len()))?;
+    let raw_cell_start = raw_cell.start;
     let width = pipe_cells[cell_idx + 1].saturating_sub(pipe_cells[cell_idx] + 3);
-    let cell = CellContent::new(
-        &raw_chars[raw_cell_start..raw_pipes[cell_idx + 1]],
-        width,
-        labels,
-    );
+    let cell = CellContent::new(&raw_chars[raw_cell], width, labels);
 
     let offset = raw_col.saturating_sub(raw_cell_start);
     // `None` for the pad space, else the char index into the sub-line's chunk.
@@ -608,6 +696,14 @@ pub fn table_raw_col_to_rendered(
     let (open, close) = (*pipes.get(cell_idx)?, *pipes.get(cell_idx + 1)?);
     let col = in_chunk.map_or(open + 1, |pos| open + 2 + pos);
     Some((sub, col.min(close.saturating_sub(1))))
+}
+
+/// Cells to paint a revealed raw cell right of its cell's left edge: 1 for a cell with no
+/// whitespace after its opening pipe (`a | b`'s first cell, an empty one a short row lacks), so
+/// its text lands on the rendered text it replaces rather than on the pad cell, where a click
+/// maps it; 0 for a cell whose leading space fills the pad.
+pub fn unpadded_cell_shift(raw_cell: &str) -> usize {
+    usize::from(!raw_cell.starts_with(char::is_whitespace))
 }
 
 /// One table cell's content as `render_table_row` lays it out: the raw cell (the chars between
@@ -656,28 +752,30 @@ impl CellContent {
 /// Map a raw char-column range to the rendered segments visible on wrap-chunk `sub`, in char
 /// columns of `rendered_line`.  Cells wrap independently, so each contributes at most one
 /// segment, mapped through the cell's [`CellContent`].  Used by the selection / search overlay
-/// painter.  Empty when the pipe sequences don't match.
+/// painter.  Cells are [`paired_raw_cells`] from `content_col`; empty off a row of cells.
 pub fn table_raw_col_range_to_rendered_segments(
     raw_row: &str,
+    content_col: usize,
     rendered_line: &Line<'_>,
     raw_start: usize,
     raw_end: usize,
     sub: usize,
     labels: &RefLabels,
 ) -> Vec<(usize, usize)> {
-    let raw_pipes = raw_pipe_positions(raw_row);
     let rendered_pipes = rendered_pipe_positions(rendered_line);
     let rendered_cells = rendered_pipe_cells(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+    let Some(cells) =
+        paired_raw_cells(raw_row, content_col, rendered_pipes.len().saturating_sub(1))
+    else {
         return Vec::new();
-    }
+    };
     let raw_chars: Vec<char> = raw_row.chars().collect();
     let mut out = Vec::new();
-    for i in 0..raw_pipes.len() - 1 {
-        let raw_cell_start = raw_pipes[i] + 1;
+    for (i, raw_cell) in cells.into_iter().enumerate() {
+        let raw_cell_start = raw_cell.start;
         // Wrap at the cell's width in cells, as the renderer did; the segment is char columns.
         let width = rendered_cells[i + 1].saturating_sub(rendered_cells[i] + 3);
-        let cell = CellContent::new(&raw_chars[raw_cell_start..raw_pipes[i + 1]], width, labels);
+        let cell = CellContent::new(&raw_chars[raw_cell], width, labels);
         let Some((chunk_start, chunk_text)) = cell.chunks.get(sub) else {
             continue;
         };
@@ -719,27 +817,22 @@ pub struct CellOverlay {
 
 /// A cell-scoped overlay for the cursor's active cell.
 ///
-/// `None` when the row isn't a table row, when the pipe counts disagree (the alignment row
-/// renders as `├─┼─┤`), or when the raw cell text is wider (in cells) than the rendered
+/// The cell is [`drawn_cell_at`]'s, from `content_col`.  `None` when the row isn't a row of
+/// cells (the alignment row renders as `├─┼─┤`) or the cursor is in a cell GFM drops, both of
+/// which reveal the whole line, or when the raw cell text is wider (in cells) than the rendered
 /// area — the caller then falls back to the horizontally scrolling chunk overlay.
 pub fn compute_cell_overlay(
     raw_row: &str,
+    content_col: usize,
     rendered_line: &Line<'_>,
     cursor_col: usize,
 ) -> Option<CellOverlay> {
-    let raw_pipes = raw_pipe_positions(raw_row);
     let rendered_pipes = rendered_pipe_cells(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
-        return None;
-    }
+    let drawn = rendered_pipes.len().saturating_sub(1);
+    let (cell_idx, raw_cell) = drawn_cell_at(raw_row, content_col, drawn, cursor_col)?;
 
-    // Pipes at or before the cursor, minus one (pipe 0 begins cell 0).
-    let col_count = raw_pipes.len() - 1;
-    let preceding = raw_pipes.iter().take_while(|&&p| p < cursor_col).count();
-    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
-
-    let raw_cell_start = raw_pipes[cell_idx] + 1;
-    let raw_cell_end = raw_pipes[cell_idx + 1];
+    let raw_cell_start = raw_cell.start;
+    let raw_cell_end = raw_cell.end;
     let raw_text: String = raw_row
         .chars()
         .skip(raw_cell_start)
@@ -752,7 +845,7 @@ pub fn compute_cell_overlay(
         .map(|(b, _)| b)
         .unwrap_or(raw_row.len());
 
-    let rendered_start = rendered_pipes[cell_idx] + 1;
+    let rendered_start = rendered_pipes[cell_idx] + 1 + unpadded_cell_shift(&raw_text);
     let rendered_end = rendered_pipes[cell_idx + 1];
     let rendered_width = rendered_end.saturating_sub(rendered_start);
 
@@ -1134,6 +1227,103 @@ mod tests {
         assert_eq!(pipes, vec![0, 9, 13]);
     }
 
+    /// Raw cells as GFM splits a row: edge pipes optional, the content column skipping a prefix
+    /// (even one holding a pipe), escaped pipes inside a cell, trailing whitespace ignored.
+    #[test]
+    fn raw_cells_split_as_gfm_does() {
+        let text = |row: &str, col: usize| -> Vec<String> {
+            let chars: Vec<char> = row.chars().collect();
+            raw_cells(row, col)
+                .into_iter()
+                .map(|r| chars[r].iter().collect())
+                .collect()
+        };
+        assert_eq!(text("| a | b |", 0), [" a ", " b "]);
+        assert_eq!(text("a | b", 0), ["a ", " b"]);
+        assert_eq!(text("| a | b", 0), [" a ", " b"]);
+        assert_eq!(text("a | b |  \n", 0), ["a ", " b "]);
+        assert_eq!(text("> | a | b |", 2), [" a ", " b "]);
+        assert_eq!(text("[^a|b]: | x | y |", 8), [" x ", " y "]);
+        assert_eq!(text(r"| a \| x | b |", 0), [r" a \| x ", " b "]);
+        assert_eq!(text("| |", 0), [" "]);
+        assert!(raw_cells("   ", 0).is_empty());
+        assert!(raw_cells("> ", 2).is_empty());
+    }
+
+    /// Pairing keeps the first `drawn` raw cells, and a prefix or pipe column belongs to the cell
+    /// before it.
+    #[test]
+    fn paired_raw_cells_drop_the_excess_and_find_a_columns_cell() {
+        let row = "| 1 | 2 | 3 | 4 |";
+        let cells = paired_raw_cells(row, 0, 2).unwrap();
+        assert_eq!(cells, vec![1..4, 5..8]);
+        assert_eq!(raw_cell_at(&cells, 0), 0, "the leading pipe");
+        assert_eq!(
+            raw_cell_at(&cells, 4),
+            0,
+            "a pipe belongs to the cell before it"
+        );
+        assert_eq!(raw_cell_at(&cells, 5), 1);
+        assert_eq!(raw_cell_at(&cells, 16), 1, "past the drawn cells");
+        assert!(
+            paired_raw_cells(row, 0, 0).is_none(),
+            "a border draws no cell"
+        );
+    }
+
+    /// The drawn cell a raw column shows in: a short row's missing cell past its closing pipe,
+    /// the last cell without one (typing there extends it), and nothing in a dropped cell.
+    #[test]
+    fn drawn_cell_at_pairs_short_and_long_rows() {
+        // Three drawn cells over a row with one.
+        let short = "| 1 |";
+        assert_eq!(drawn_cell_at(short, 0, 3, 2), Some((0, 1..4)));
+        assert_eq!(
+            drawn_cell_at(short, 0, 3, 4),
+            Some((0, 1..4)),
+            "the closing pipe belongs to the cell before it"
+        );
+        assert_eq!(
+            drawn_cell_at(short, 0, 3, 5),
+            Some((1, 5..5)),
+            "the row's end, past the closing pipe, is the first missing cell"
+        );
+        assert_eq!(drawn_cell_at("| 1 |  ", 0, 3, 5), Some((1, 5..5)));
+        assert_eq!(
+            drawn_cell_at("| 1", 0, 3, 3),
+            Some((0, 1..3)),
+            "without a closing pipe the row's end stays in the last cell"
+        );
+        assert_eq!(drawn_cell_at("| 1  ", 0, 3, 5), Some((0, 1..3)));
+        assert_eq!(
+            drawn_cell_at("> | 1 |", 2, 3, 7),
+            Some((1, 7..7)),
+            "behind a prefix"
+        );
+
+        // Two drawn cells over a row with four.
+        let long = "| 1 | 2 | 3 | 4 |";
+        assert_eq!(drawn_cell_at(long, 0, 2, 6), Some((1, 5..8)));
+        assert_eq!(
+            drawn_cell_at(long, 0, 2, 8),
+            Some((1, 5..8)),
+            "the pipe closing the last drawn cell"
+        );
+        assert_eq!(drawn_cell_at(long, 0, 2, 10), None, "in a dropped cell");
+        assert_eq!(drawn_cell_at(long, 0, 2, 17), None, "the row's end");
+
+        assert_eq!(drawn_cell_at(long, 0, 0, 2), None, "a border draws no cell");
+        assert_eq!(drawn_cell_at("  ", 0, 2, 0), None, "a blank row");
+    }
+
+    #[test]
+    fn unpadded_cell_shift_skips_the_pad_only_without_leading_whitespace() {
+        assert_eq!(unpadded_cell_shift(" a "), 0);
+        assert_eq!(unpadded_cell_shift("\ta"), 0);
+        assert_eq!(unpadded_cell_shift("a "), 1);
+        assert_eq!(unpadded_cell_shift(""), 1, "a short row's missing cell");
+    }
+
     #[test]
     fn rendered_pipe_cells_count_wide_glyphs_as_two() {
         let line = line_with("│ 日 │ b │");
@@ -1149,7 +1339,7 @@ mod tests {
         let line = line_with("│ 日本 │ ab │");
         let raw = "| 日本 | ab |";
         let cursor = raw.chars().position(|c| c == 'a').unwrap();
-        let ov = compute_cell_overlay(raw, &line, cursor).expect("fits");
+        let ov = compute_cell_overlay(raw, 0, &line, cursor).expect("fits");
         assert_eq!((ov.rendered_start, ov.rendered_end), (8, 12));
         assert_eq!(ov.raw_text, " ab ");
         assert_eq!(ov.cursor_in_cell, Some(1));
@@ -1159,8 +1349,8 @@ mod tests {
     fn compute_cell_overlay_measures_the_raw_text_in_cells() {
         // Content area of 6 cells: ` 日本 ` (6) fits, ` 日本語 ` (8) does not.
         let line = line_with("│ abcd │");
-        assert!(compute_cell_overlay("| 日本 |", &line, 2).is_some());
-        assert!(compute_cell_overlay("| 日本語 |", &line, 2).is_none());
+        assert!(compute_cell_overlay("| 日本 |", 0, &line, 2).is_some());
+        assert!(compute_cell_overlay("| 日本語 |", 0, &line, 2).is_none());
     }
 
     /// On the closing pipe of a cell the raw text fills exactly, the cursor shows on the last
@@ -1170,7 +1360,7 @@ mod tests {
         let line = line_with("│ abcd │");
         let raw = "| 日本 |";
         let closing = raw.chars().count() - 1;
-        let ov = compute_cell_overlay(raw, &line, closing).expect("fits");
+        let ov = compute_cell_overlay(raw, 0, &line, closing).expect("fits");
         assert_eq!(ov.cursor_in_cell, Some(3), "on the trailing pad char");
     }
 
@@ -1182,7 +1372,7 @@ mod tests {
         let line = line_with("│ abcd │");
         let raw = "|  abce\u{301}|";
         let closing = raw.chars().count() - 1;
-        let ov = compute_cell_overlay(raw, &line, closing).expect("fits");
+        let ov = compute_cell_overlay(raw, 0, &line, closing).expect("fits");
         assert_eq!(ov.cursor_in_cell, Some(5), "on the `e`, not the accent");
     }
 
@@ -1208,7 +1398,7 @@ mod tests {
         let raw = "| a | b |";
         let rendered = [line_with("│ a │ b │")];
         let labels = RefLabels::default();
-        let at = |col| table_raw_col_to_rendered(raw, &rendered, col, &labels);
+        let at = |col| table_raw_col_to_rendered(raw, 0, &rendered, col, &labels);
         assert_eq!(at(2), Some((0, 2)));
         assert_eq!(at(1), Some((0, 1)));
         assert_eq!(at(6), Some((0, 6)));
@@ -1222,7 +1412,8 @@ mod tests {
         let raw = "| a | **b** x |";
         let rendered = [line_with("│ a │ b x │")];
         let labels = RefLabels::default();
-        let at = |c: &str| table_raw_col_to_rendered(raw, &rendered, raw.find(c).unwrap(), &labels);
+        let at =
+            |c: &str| table_raw_col_to_rendered(raw, 0, &rendered, raw.find(c).unwrap(), &labels);
         assert_eq!(at("x"), Some((0, 8)));
         assert_eq!(at("b*"), Some((0, 6)));
         // On an opening marker: the glyph it opens.
@@ -1235,7 +1426,8 @@ mod tests {
         let raw = "| x | **alpha** bravo |";
         let rendered = [line_with("│ x │ alpha │"), line_with("│   │ bravo │")];
         let labels = RefLabels::default();
-        let at = |c: &str| table_raw_col_to_rendered(raw, &rendered, raw.find(c).unwrap(), &labels);
+        let at =
+            |c: &str| table_raw_col_to_rendered(raw, 0, &rendered, raw.find(c).unwrap(), &labels);
         assert_eq!(at("bravo"), Some((1, 6)));
         assert_eq!(at("avo"), Some((1, 8)));
         assert_eq!(at("alpha"), Some((0, 6)));
@@ -1249,7 +1441,7 @@ mod tests {
         let rendered = [line_with("│ 日本 │ ab │")];
         let col = raw.find('b').map(|b| raw[..b].chars().count()).unwrap();
         let (sub, at) =
-            table_raw_col_to_rendered(raw, &rendered, col, &RefLabels::default()).unwrap();
+            table_raw_col_to_rendered(raw, 0, &rendered, col, &RefLabels::default()).unwrap();
         assert_eq!(sub, 0);
         assert_eq!(rendered[0].spans[0].content.chars().nth(at), Some('b'));
     }
@@ -1260,13 +1452,15 @@ mod tests {
         let raw = "| x | alpha bravo |";
         let rendered = line_with("│   │ bravo │");
         let labels = RefLabels::default();
-        let segs = table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 1, &labels);
+        let segs = table_raw_col_range_to_rendered_segments(raw, 0, &rendered, 13, 16, 1, &labels);
         assert_eq!(segs, vec![(7, 10)]);
         assert!(
-            table_raw_col_range_to_rendered_segments(raw, &rendered, 2, 3, 1, &labels).is_empty()
+            table_raw_col_range_to_rendered_segments(raw, 0, &rendered, 2, 3, 1, &labels)
+                .is_empty()
         );
         assert!(
-            table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 2, &labels).is_empty()
+            table_raw_col_range_to_rendered_segments(raw, 0, &rendered, 13, 16, 2, &labels)
+                .is_empty()
         );
     }
 
@@ -1279,13 +1473,13 @@ mod tests {
         let labels = RefLabels::default();
         let x = raw.find('x').unwrap();
         assert_eq!(
-            table_raw_col_range_to_rendered_segments(raw, &rendered, x, x + 1, 0, &labels),
+            table_raw_col_range_to_rendered_segments(raw, 0, &rendered, x, x + 1, 0, &labels),
             vec![(8, 9)]
         );
         // A range over the whole of `*b*` covers just the `b`.
         let b = raw.find('*').unwrap();
         assert_eq!(
-            table_raw_col_range_to_rendered_segments(raw, &rendered, b, b + 3, 0, &labels),
+            table_raw_col_range_to_rendered_segments(raw, 0, &rendered, b, b + 3, 0, &labels),
             vec![(6, 7)]
         );
         // A cell reading `2. a` is inline text, not a list item.
@@ -1293,7 +1487,7 @@ mod tests {
         let rendered = line_with("│ 2. a │");
         let a = raw.find('a').unwrap();
         assert_eq!(
-            table_raw_col_range_to_rendered_segments(raw, &rendered, a, a + 1, 0, &labels),
+            table_raw_col_range_to_rendered_segments(raw, 0, &rendered, a, a + 1, 0, &labels),
             vec![(5, 6)]
         );
     }
@@ -1304,6 +1498,7 @@ mod tests {
         let rendered = line_with("├───┼───┤");
         assert!(table_raw_col_range_to_rendered_segments(
             raw,
+            0,
             &rendered,
             2,
             3,
@@ -1317,23 +1512,74 @@ mod tests {
     fn table_raw_col_to_rendered_returns_none_on_pipe_mismatch() {
         let raw = "| a | b |";
         let rendered = [line_with("├───┼───┤")];
-        assert!(table_raw_col_to_rendered(raw, &rendered, 2, &RefLabels::default()).is_none());
+        assert!(table_raw_col_to_rendered(raw, 0, &rendered, 2, &RefLabels::default()).is_none());
     }
 
     #[test]
     fn compute_cell_overlay_none_when_raw_exceeds_rendered_width() {
         let raw = "| supercalifragilistic | b |";
         let rendered = line_with("│ a │ b │");
-        assert!(compute_cell_overlay(raw, &rendered, 3).is_none());
+        assert!(compute_cell_overlay(raw, 0, &rendered, 3).is_none());
     }
 
     #[test]
     fn compute_cell_overlay_returns_metadata_when_fits() {
         let raw = "| a | b |";
         let rendered = line_with("│ a │ b │");
-        let overlay = compute_cell_overlay(raw, &rendered, 2).expect("overlay fits");
+        let overlay = compute_cell_overlay(raw, 0, &rendered, 2).expect("overlay fits");
         assert_eq!(overlay.raw_text, " a ");
         assert_eq!(overlay.rendered_start, 1);
         assert_eq!(overlay.rendered_end, 4);
+    }
+
+    /// A row without edge pipes reveals cell by cell, its unpadded first cell one cell in so
+    /// its text covers the rendered text, not the pad.
+    #[test]
+    fn compute_cell_overlay_pairs_cells_without_edge_pipes() {
+        let rendered = line_with("│ a │ b │");
+        let a = compute_cell_overlay("a | b", 0, &rendered, 0).expect("fits");
+        assert_eq!(a.raw_text, "a ");
+        assert_eq!((a.rendered_start, a.rendered_end), (2, 4));
+        assert_eq!(a.cursor_in_cell, Some(0));
+        let b = compute_cell_overlay("a | b", 0, &rendered, 4).expect("fits");
+        assert_eq!(b.raw_text, " b");
+        assert_eq!((b.rendered_start, b.rendered_end), (5, 8));
+        assert_eq!(b.cursor_in_cell, Some(1));
+    }
+
+    /// A cursor past a short row's closing pipe reveals the first missing cell, empty, with the
+    /// cursor on its first content cell, where the indicator before the reveal shows it too.
+    #[test]
+    fn a_cursor_past_a_short_rows_closing_pipe_shows_in_the_missing_cell() {
+        let raw = "| 1 |";
+        let rendered = line_with("│ 1 │   │   │");
+        let ov = compute_cell_overlay(raw, 0, &rendered, 5).expect("fits");
+        assert_eq!(ov.raw_text, "");
+        assert_eq!((ov.rendered_start, ov.rendered_end), (6, 8));
+        assert_eq!(ov.cursor_in_cell, Some(0));
+        assert_eq!(ov.raw_cell_byte_start, 5);
+        let labels = RefLabels::default();
+        assert_eq!(
+            table_raw_col_to_rendered(raw, 0, &[rendered], 5, &labels),
+            Some((0, 6))
+        );
+    }
+
+    /// A cursor in a cell GFM drops has no drawn cell: no cell overlay and no indicator, so the
+    /// row reveals whole and the cursor shows on its raw text.
+    #[test]
+    fn a_cursor_in_a_dropped_cell_has_no_cell_overlay() {
+        let raw = "| 1 | 2 | 3 | 4 | 5 |";
+        let rendered = line_with("│ 1 │ 2 │ 3 │");
+        let five = raw.find('5').unwrap();
+        assert!(compute_cell_overlay(raw, 0, &rendered, five).is_none());
+        let labels = RefLabels::default();
+        assert!(
+            table_raw_col_to_rendered(raw, 0, std::slice::from_ref(&rendered), five, &labels)
+                .is_none()
+        );
+        // The last drawn cell, up to its closing pipe, still pairs.
+        let three = raw.find('3').unwrap();
+        assert!(compute_cell_overlay(raw, 0, &rendered, three).is_some());
     }
 }

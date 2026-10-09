@@ -273,8 +273,7 @@ pub(super) fn cursor_in_table(state: &EditorState) -> bool {
         return false;
     }
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
-    let source = state.buffer.contents();
-    crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
+    crate::editor::table_edit_ops::locate_table(state, cursor_byte).is_some()
 }
 
 /// Reshape `clipboard` into the payload replacing a vim VisualLine selection over `range`: made

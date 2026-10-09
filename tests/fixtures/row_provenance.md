@@ -275,11 +275,33 @@ A table inside a list item:
   |---|---|
   | 1 | 2 |
 
-Missing edge pipes: known to fall back to a whole-line reveal and one-for-one columns (#70).
+Missing edge pipes (#70): each cell reveals on its own, a click lands on the char clicked, and a revealed first cell's text covers its rendered text rather than shifting left onto the pad. Tab and Shift+Tab visit every cell, the hint line shows the table chords, and a drag from `1` stays in its cell. Move a column with `Alt-→`: rows without edge pipes stay without them (`b | a`), and the row with a closing pipe keeps it.
 
 a | b
 --|--
 1 | 2
+3 | 4 |
+| 5 | 6
+
+Rows with fewer or more cells than the header. Click an empty cell: on `| 1 |` the cursor lands at the row's end and shows in the clicked cell, where typing adds it; on `| 1` it shows after `1`, since typing extends that cell. On the last row, move the cursor into the cells past `c` with the arrow keys: the whole row reveals, extra cells included, with the cursor on its char; back in `a`–`c`, the row reveals cell by cell again. Tab runs `x y z 1 1 a b c` and Shift+Tab back, skipping the short rows' empty cells without sticking, and every row stays in the table.
+
+| x | y | z |
+|---|---|---|
+| 1 |
+| 1
+| a | b | c | d | e |
+
+A table in a quote without edge pipes, and one on a footnote leader whose label holds a `|`: a click on the label follows the back-link, and one in a cell lands in that cell, not one over. Tab and the table chords work in both; a column move keeps the quote's `>` and the footnote's label, and `Alt-Shift-↓` adds a row inside the quote or footnote. Neither grows mouse handles (top-level tables only). Below about 16 columns these overflow and wrap, and a click near a wrapped cell's end can land one char left (#69).
+
+> a | b
+> --|--
+> 1 | 2 |
+
+Pipe in a label[^a|b].
+
+[^a|b]: | p | q |
+    |---|---|
+    | 1 | 2 |
 
 ## 8. Images and diagrams
 

@@ -614,3 +614,97 @@ fn column_hit_ranges_are_measured_in_cells() {
     let snap = snaps.first().expect("a table snapshot");
     assert_eq!(snap.col_ranges, vec![1..7, 8..13]);
 }
+
+// ── Tables without edge pipes, nested, or with short and long rows ──────────
+
+/// The char just before the cursor: a cell's last content char when Tab lands at its end.
+fn char_before_cursor(st: &EditorState) -> char {
+    let byte = st.buffer.rope().char_to_byte(st.cursor.offset);
+    st.contents()[..byte].chars().last().unwrap()
+}
+
+/// Tab visits every cell holding text, in order, and Shift+Tab walks back, whatever the rows'
+/// pipes or container: GFM's optional edge pipes, a quote, a list item, a footnote whose label
+/// holds a `|`, and rows with fewer or more cells than the header (a short row's missing cells
+/// hold no text to land in; a long row's extra cells are not the table's).
+#[test]
+fn tab_visits_every_cell_whatever_the_rows_pipes_or_container() {
+    let cases = [
+        ("a | b\n--|--\n1 | 2\n", "ab12"),
+        ("| a | b |\n|---|---|\n1 | 2 |\n| 3 | 4\n", "ab1234"),
+        ("> a | b\n> --|--\n> 1 | 2 |\n", "ab12"),
+        ("- item\n\n  a | b\n  --|--\n  1 | 2\n", "ab12"),
+        (
+            "x[^a|b]\n\n[^a|b]: | p | q |\n    |---|---|\n    | 1 | 2 |\n",
+            "pq12",
+        ),
+        (
+            "| x | y | z |\n|---|---|---|\n| 1 |\n| 2\n| a | b | c | d |\n",
+            "xyz12abc",
+        ),
+    ];
+    for (src, cells) in cases {
+        let first = cells.chars().next().unwrap();
+        let mut st = editor_at(src, &first.to_string());
+        assert!(st.cursor_in_table(), "in a table: {src:?}");
+        let mut seen = String::from(first);
+        for _ in 1..cells.chars().count() {
+            apply(&mut st, Action::InsertTab);
+            seen.push(char_before_cursor(&st));
+        }
+        assert_eq!(seen, cells, "Tab in {src:?}");
+        assert_eq!(st.contents(), src, "Tab edited nothing in {src:?}");
+
+        let mut back = String::from(char_before_cursor(&st));
+        for _ in 1..cells.chars().count() {
+            apply(&mut st, Action::TablePrevCell);
+            back.push(char_before_cursor(&st));
+        }
+        let reversed: String = cells.chars().rev().collect();
+        assert_eq!(back, reversed, "Shift+Tab in {src:?}");
+    }
+}
+
+/// Column edits keep each row's own edge pipes and prefix: a pipe-less table stays pipe-less,
+/// adding a pipe only where GFM would misread the row without it.
+#[test]
+fn column_edits_keep_each_rows_pipes() {
+    let src = "a | b\n--|--\n1 | 2 |\n";
+    let cases = [
+        (Action::TableMoveColumnRight, "b | a\n-- | --\n2 | 1 |\n"),
+        (
+            Action::TableInsertColumnRight,
+            "a |   | b\n--| --- |--\n1 |   | 2 |\n",
+        ),
+        (Action::TableDeleteColumn, "| b |\n| -- |\n| 2 |\n"),
+    ];
+    for (action, want) in cases {
+        let mut st = editor_at(src, "a");
+        apply(&mut st, action.clone());
+        assert_eq!(st.contents(), want, "{action:?}");
+    }
+
+    // A blank last cell needs a closing pipe, or the row would read one cell short.
+    let mut st = editor_at(src, "b");
+    apply(&mut st, Action::TableInsertColumnRight);
+    assert_eq!(st.contents(), "a | b |   |\n--|-- | ---\n1 | 2 |   |\n");
+
+    // A cell moved to the front of a row that would open a block there (`- x | 1` is a list
+    // item, ending the table) gets a leading pipe; the rows whose first cell is plain text don't.
+    let src = "a | b\n--|--\n1 | - x\n";
+    let mut st = editor_at(src, "a");
+    apply(&mut st, Action::TableMoveColumnRight);
+    assert_eq!(st.contents(), "b | a\n-- | --\n| - x | 1\n");
+}
+
+/// A quoted table's rows keep their `> ` through a column edit, and a new row takes it from the
+/// row above.
+#[test]
+fn edits_in_a_quoted_table_keep_the_quote() {
+    let src = "> a | b\n> --|--\n> 1 | 2\n";
+    let mut st = editor_at(src, "1");
+    apply(&mut st, Action::TableMoveColumnRight);
+    assert_eq!(st.contents(), "> b | a\n> -- | --\n> 2 | 1\n");
+    apply(&mut st, Action::TableInsertRowBelow);
+    assert_eq!(st.contents(), "> b | a\n> -- | --\n> 2 | 1\n> |   |   |\n");
+}

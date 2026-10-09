@@ -99,6 +99,8 @@ Completed items dim and get struck through. This is configurable in the theme.
 
 Tables render as a drawn grid, and edit a cell at a time. In Edit mode the cell you're in shows its raw text in place; everything else stays formatted.
 
+Any GitHub table works this way: with or without pipes at the ends of its rows, and inside a list item, blockquote, or footnote. Rows may have fewer or more cells than the header, as GitHub allows: missing cells show empty, and extra cells are hidden, as GitHub hides them.
+
 ### Creating one
 
 `Ctrl-Shift-T`, or "Insert table" in the palette. You'll be asked for rows and columns. **The cursor has to be on a blank line** — otherwise you get an error flash instead of a table.
@@ -111,7 +113,7 @@ Tables render as a drawn grid, and edit a cell at a time. In Edit mode the cell 
 | `Enter` | Next row |
 | `Shift-Enter` | Insert a literal `<br>` |
 
-Outside a table these keys do their normal thing, so nothing is taken away from you.
+Outside a table these keys do their normal thing, so nothing is taken away from you. `Tab` skips the empty cells of a row with fewer cells than the header, since there's no text there to land in; click one to type into it.
 
 > `Shift-Enter` inserts `<br>`, which is how GitHub-flavored Markdown writes a multi-line cell. Be aware that edamame's own renderer currently shows it as literal `<br>` text rather than breaking the line, and HTML export strips it.
 
@@ -130,9 +132,11 @@ The arrow points the direction; `Shift` turns "move" into "insert".
 
 All ten are in the palette as `Table: …` — worth knowing, because the `Alt-Shift` chords need a modern terminal.
 
+Each row keeps the style you wrote it in: a table without pipes at its row ends stays that way. The exception is a row that needs those pipes to stay part of the table, so edamame adds them: one whose first or last cell is empty, one with a single cell, or one whose new first cell would otherwise start something else, such as a list item (`- x`) or a heading (`# x`).
+
 ### With a mouse
 
-When your terminal supports a mouse, the table your cursor is in grows handles:
+When your terminal supports a mouse, the table your cursor is in grows handles (top-level tables only, not ones inside a list, quote, or footnote):
 
 - **`⠿`** at the left of a row, or on top of a column — drag to reorder
 - **`⇔`** on the header row's dividers — drag to resize a column

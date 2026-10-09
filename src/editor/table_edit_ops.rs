@@ -6,8 +6,7 @@
 use crate::document::{next_grapheme_offset, prev_grapheme_offset};
 use crate::editor::edit_ops::{apply_byte_delta, cursor_byte, set_cursor_byte};
 use crate::editor::table_edit::{
-    self, cell_cursor_offset, cell_end_cursor_offset, cursor_cell, find_table_at, RowKind,
-    TableInfo,
+    self, cell_cursor_offset, cell_end_cursor_offset, cursor_cell, RowKind, TableInfo,
 };
 use crate::editor::{EditorState, Mode};
 
@@ -23,19 +22,35 @@ pub(super) fn current_table(state: &EditorState) -> Option<TableInfo> {
 /// Look up the table containing byte offset `byte`, for callers asking about a
 /// position other than the cursor's (the vim range guards sweep a selection).
 /// Same `Mode::Raw` suppression as [`current_table`].
-///
-/// **Only the table's own lines are copied out of the rope.**  This sits on the
-/// per-keystroke motion path, where `Buffer::contents()` would copy the whole
-/// document on every `w` / `$` / `f`.  `find_table_at` only looks at the
-/// contiguous run of table-looking lines anyway, so handing it exactly that run
-/// — and shifting the offsets back into document space — is the same answer at a
-/// cost proportional to the table.
 pub(super) fn table_at(state: &EditorState, byte: usize) -> Option<TableInfo> {
     if state.mode == Mode::Raw {
         return None;
     }
-    let (base, run) = table_line_run(state, byte)?;
-    let mut info = find_table_at(&run, byte - base)?;
+    locate_table(state, byte)
+}
+
+/// The table containing byte offset `byte`, in any mode: which lines it spans and where each
+/// row's content starts come from the parse
+/// ([`row_map::table_lines`](crate::document::row_map::table_lines)), its cells from the live
+/// buffer.  For the hint line and the mouse, which ask about tables whatever the mode.
+///
+/// **Located by line, so a stale parse is safe.**  An in-line edit defers the re-parse
+/// (`EditorState::parsed_dirty`) but never moves a line, so the parse still names the table's
+/// lines; a table the edit just made or broke waits for the re-parse.  **Only the table's own
+/// lines are copied out of the rope**: the vim motions ask on every keystroke, where
+/// `Buffer::contents()` would copy the whole document.
+pub fn locate_table(state: &EditorState, byte: usize) -> Option<TableInfo> {
+    let rope = state.buffer.rope();
+    let line = rope.byte_to_line(byte.min(rope.len_bytes()));
+    let (first, cols) = crate::document::row_map::table_lines(&state.parsed, line)?;
+    let last = first + cols.len();
+    if last > rope.len_lines() {
+        return None;
+    }
+    let base = rope.line_to_byte(first);
+    let end = rope.line_to_byte(last);
+    let text = rope.byte_slice(base..end).to_string();
+    let mut info = table_edit::table_from_lines(&text, 0, &cols)?;
     info.start += base;
     info.end += base;
     for row in &mut info.rows {
@@ -43,48 +58,6 @@ pub(super) fn table_at(state: &EditorState, byte: usize) -> Option<TableInfo> {
         row.end += base;
     }
     Some(info)
-}
-
-/// The contiguous run of table-looking lines around `byte`, as
-/// `(base_byte, text)`.  `None` when `byte`'s own line isn't one — the same test
-/// [`find_table_at`] makes first, so this never hides a table it would find.
-fn table_line_run(state: &EditorState, byte: usize) -> Option<(usize, String)> {
-    let rope = state.buffer.rope();
-    let len_bytes = rope.len_bytes();
-    let byte = byte.min(len_bytes);
-    let line = rope.byte_to_line(byte);
-    if !line_is_table_line(state, line) {
-        return None;
-    }
-    let mut first = line;
-    while first > 0 && line_is_table_line(state, first - 1) {
-        first -= 1;
-    }
-    let last_line = rope.len_lines().saturating_sub(1);
-    let mut last = line;
-    while last < last_line && line_is_table_line(state, last + 1) {
-        last += 1;
-    }
-    let start = rope.line_to_byte(first);
-    let end = if last >= last_line {
-        len_bytes
-    } else {
-        rope.line_to_byte(last + 1)
-    };
-    Some((start, rope.byte_slice(start..end).to_string()))
-}
-
-/// Does buffer line `idx` look like a table row?
-fn line_is_table_line(state: &EditorState, idx: usize) -> bool {
-    let rope = state.buffer.rope();
-    if idx >= rope.len_lines() {
-        return false;
-    }
-    let line = rope.line(idx);
-    match line.as_str() {
-        Some(s) => table_edit::is_table_line(s),
-        None => table_edit::is_table_line(&line.to_string()),
-    }
 }
 
 /// Is the cursor currently inside a GFM table?
@@ -183,7 +156,7 @@ fn adjacent_cell(
     forward: bool,
 ) -> Option<(usize, usize)> {
     if forward {
-        if col + 1 < info.col_count {
+        if col < info.last_col(row) {
             return Some((row, col + 1));
         }
         let nr = skip_alignment_row(row + 1);
@@ -203,7 +176,7 @@ fn adjacent_cell(
         if pr == 1 {
             return None;
         }
-        Some((pr, info.col_count.saturating_sub(1)))
+        Some((pr, info.last_col(pr)))
     }
 }
 
@@ -255,9 +228,7 @@ pub(super) fn jump_to_cell(
     viewport_height: usize,
     viewport_width: usize,
 ) {
-    let source = state.buffer.contents();
-    let byte = cursor_byte(state);
-    if let Some(info) = find_table_at(&source, byte) {
+    if let Some(info) = current_table(state) {
         let row = row_idx.min(info.rows.len().saturating_sub(1));
         let col = col_idx.min(info.col_count.saturating_sub(1));
         if let Some(target_byte) = cell_end_cursor_offset(&info, row, col) {
@@ -281,9 +252,9 @@ pub(super) fn table_next_cell(
         return;
     };
 
-    let next_col = col + 1;
-    if next_col < info.col_count {
-        jump_to_cell(state, row, next_col, viewport_height, viewport_width);
+    // A short row's missing cells hold no text to land in, so Tab skips them.
+    if col < info.last_col(row) {
+        jump_to_cell(state, row, col + 1, viewport_height, viewport_width);
         return;
     }
     // Advance to the next data row, which Tab never lands on the alignment
@@ -318,7 +289,7 @@ pub(super) fn table_prev_cell(
     let prev_row = row.saturating_sub(1);
     let prev_row = if prev_row == 1 { 0 } else { prev_row };
     if prev_row < info.rows.len() && prev_row != row {
-        let last_col = info.col_count.saturating_sub(1);
+        let last_col = info.last_col(prev_row);
         jump_to_cell(state, prev_row, last_col, viewport_height, viewport_width);
     }
 }

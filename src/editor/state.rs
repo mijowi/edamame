@@ -945,11 +945,11 @@ impl EditorState {
             self.refresh_parsed();
             return;
         };
-        let source = self.buffer.contents();
-        let Some(info) = crate::editor::table_edit::find_table_at(&source, table_byte_start) else {
+        let Some(info) = crate::editor::table_edit_ops::locate_table(self, table_byte_start) else {
             self.refresh_parsed();
             return;
         };
+        let source = self.buffer.contents();
         let byte_delta = crate::editor::table_edit::write_column_widths(&source, &info, &widths);
         let rope = self.buffer.rope();
         let char_delta = EditDelta {
@@ -976,10 +976,10 @@ impl EditorState {
     /// Whether that table already carries a `tui-columns` comment, in which case the App skips
     /// the width-injection warning — the user accepted the injection on an earlier drag.
     pub fn table_has_tui_columns_comment(&self, table_byte_start: usize) -> bool {
-        let source = self.buffer.contents();
-        let Some(info) = crate::editor::table_edit::find_table_at(&source, table_byte_start) else {
+        let Some(info) = crate::editor::table_edit_ops::locate_table(self, table_byte_start) else {
             return false;
         };
+        let source = self.buffer.contents();
         if info.end >= source.len() {
             return false;
         }
