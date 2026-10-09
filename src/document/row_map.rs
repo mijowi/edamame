@@ -14,7 +14,7 @@ use std::ops::Range;
 
 use crate::document::wrap::Indent;
 use crate::document::ParsedDoc;
-use crate::markdown::ast::to_u32;
+use crate::markdown::ast::{to_u32, ListItem};
 use crate::markdown::table_layout::char_cells;
 use crate::markdown::{
     strip_atx_closing, Block, ColOrigin, ContentKind, InlineColMap, RowOrigin, SrcLines,
@@ -936,6 +936,36 @@ pub fn raw_to_rendered_col_near(
     }
 }
 
+// ── Lists ─────────────────────────────────────────────────────────────────
+
+/// The content columns of the list items holding source `line` (counted in the parse's text),
+/// outermost first: the column a line written into each item starts at.  What places a table
+/// inserted on a blank line below an item inside that item.
+///
+/// Empty when no item holds the line, and when a quote or a footnote does: a quote's lines carry
+/// a `>` a blank line lacks, and a footnote's first line puts its items' content past the label,
+/// further right than on its later lines.  An item whose column can't be read off a leaf (one
+/// holding only code, a quote or a nested list) is left out.
+pub fn item_content_cols(parsed: &ParsedDoc, line: usize) -> Vec<usize> {
+    let Some((block, first)) = parsed.real_block_at_line(line) else {
+        return Vec::new();
+    };
+    block
+        .items_holding(to_u32(line - first))
+        .map(|items| items.into_iter().filter_map(item_content_col).collect())
+        .unwrap_or_default()
+}
+
+/// Where `item`'s content starts: the column of its first leaf other than code, whose column
+/// sits past an indented block's code indent.
+fn item_content_col(item: &ListItem) -> Option<usize> {
+    item.blocks
+        .iter()
+        .filter(|b| !matches!(b, Block::CodeBlock { .. }))
+        .find_map(|b| b.src()?.cols().flatten().next())
+        .map(|c| c as usize)
+}
+
 // ── Tables ────────────────────────────────────────────────────────────────
 
 /// The table holding source `line` (counted in the parse's text), at any nesting depth: the
@@ -1160,13 +1190,13 @@ mod tests {
                 indent: Indent::hanging(2)
             }
         );
-        // `    x` in a list item: the item's 2 columns hidden (its code renders flush), the pad
-        // cell first, and the code's own 2-space indent joining the hang.
+        // `    x` in a list item: the item's 2 columns hidden, then the 2 cells the block renders
+        // in by and its pad cell, and the code's own 2-space indent joining the hang.
         assert_eq!(
             at(5),
             LineLayout {
                 skip: 2,
-                indent: Indent { lead: 1, hang: 3 }
+                indent: Indent { lead: 3, hang: 5 }
             }
         );
     }
@@ -1457,21 +1487,27 @@ mod tests {
     /// on the pad lands on the first content char, one in the fill past the line on its end.
     #[test]
     fn a_code_row_maps_past_its_pad_cell() {
-        // Inside a list item: the item indent is stripped too.
+        // Inside a list item: the item indent is stripped too, and the block renders under the
+        // item's text, two cells in.
         let d = doc("- a\n\n  ```\n  let x = 1;\n  ```\n");
         let b = block_at(&d, 0);
         let row = row_with(&d, b, "let x");
         let eq = 2 + "let x ".len();
-        assert_eq!(rendered_to_raw_col(&d, b, row, 7), pos(3, eq));
-        assert_eq!(raw_to_rendered_col(&d, b, row, pos(3, eq)), Some(7));
+        assert_eq!(rendered_to_raw_col(&d, b, row, 9), pos(3, eq));
+        assert_eq!(raw_to_rendered_col(&d, b, row, pos(3, eq)), Some(9));
         assert_eq!(
-            rendered_to_raw_col(&d, b, row, 0),
+            rendered_to_raw_col(&d, b, row, 2),
             pos(3, 2),
             "the pad cell"
         );
+        assert_eq!(
+            rendered_to_raw_col(&d, b, row, 0),
+            pos(3, 2),
+            "the item's indent"
+        );
         assert_eq!(rendered_to_raw_col(&d, b, row, 60), pos(3, 12), "the fill");
         // A column in the stripped indent shows on the first content cell.
-        assert_eq!(raw_to_rendered_col(&d, b, row, pos(3, 0)), Some(1));
+        assert_eq!(raw_to_rendered_col(&d, b, row, pos(3, 0)), Some(3));
     }
 
     /// A click on a chrome row whose line is all chrome (a fence, a setext underline) lands past
@@ -1759,5 +1795,28 @@ mod tests {
         let second: Vec<_> = parts.iter().flatten().filter(|(h, _)| *h == 4).collect();
         assert_eq!(second.first(), Some(&&(4, TopBorder)));
         assert_eq!(second.last(), Some(&&(4, BottomBorder)));
+    }
+
+    /// The items holding a line, outermost first, each at its content column; none in a quote
+    /// or a footnote, or outside a list.
+    #[test]
+    fn item_content_cols_name_each_item_holding_a_line() {
+        let cases: [(&str, usize, &[usize]); 8] = [
+            ("- foo\n", 0, &[2]),
+            ("10. foo\n", 0, &[4]),
+            ("-   foo\n  bar\n", 1, &[4]),
+            ("- outer\n  - inner\n", 1, &[2, 4]),
+            ("- outer\n  - inner\n\n  more\n", 3, &[2]),
+            ("> - foo\n", 0, &[]),
+            ("x[^n]\n\n[^n]: - foo\n", 2, &[]),
+            ("para\n", 0, &[]),
+        ];
+        for (src, line, want) in cases {
+            assert_eq!(
+                item_content_cols(&doc(src), line),
+                want,
+                "{src:?} line {line}"
+            );
+        }
     }
 }

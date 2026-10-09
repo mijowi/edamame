@@ -1,4 +1,5 @@
 use crate::config::Action;
+use crate::document::row_map;
 use crate::document::{next_grapheme_offset, prev_grapheme_offset, Buffer, EditDelta, Selection};
 use crate::editor::footnote_edit;
 use crate::editor::list_edit::{self, ListInfo};
@@ -1021,7 +1022,7 @@ pub fn paste_text(
 }
 
 /// [`table_edit::insert_table`] applied to `EditorState`, landing the cursor in the new table's
-/// first header cell.  Inserts unconditionally: the App-level handler runs the blank-line
+/// first header cell.  Inserts unconditionally: the App-level handler runs the location
 /// pre-flight before opening the modal.
 pub fn insert_table_at_cursor(
     state: &mut EditorState,
@@ -1033,7 +1034,14 @@ pub fn insert_table_at_cursor(
     enter_edit_if_preview(state, viewport_height);
     let source = state.buffer.contents();
     let cursor_byte = cursor_byte(state);
-    let (byte_delta, cursor_target) = table_edit::insert_table(&source, cursor_byte, rows, cols);
+    // A typing burst defers the re-parse; the item columns come from a fresh one.
+    state.flush_parsed_if_dirty();
+    let parsed = &state.parsed;
+    let indent = table_edit::blank_line_indent(&source, cursor_byte, |above| {
+        row_map::item_content_cols(parsed, parsed.byte_to_line(above))
+    });
+    let (byte_delta, cursor_target) =
+        table_edit::insert_table(&source, cursor_byte, rows, cols, indent);
     apply_byte_delta(state, byte_delta, cursor_target);
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }

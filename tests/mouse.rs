@@ -2340,18 +2340,19 @@ fn click_on_a_nested_items_continuation_lands_on_clicked_char() {
     }
 }
 
-/// A code body row nested in a list item is painted without the item's indent, so a click
-/// must add back the indent pulldown-cmark stripped, as for an indented code block.
+/// A code body row nested in a list item is painted under the item's text, behind its pad cell,
+/// so a click must add back the indent pulldown-cmark stripped, as for an indented code block.
 #[test]
 fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
-    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash ", 3 = " gh run watch",
-    // 4 = blank code row, 5 = "   indented".  Screen col c shows the body char c - 1.
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = "    bash ", 3 = "    gh run watch",
+    // 4 = blank code row, 5 = "      indented".  Screen col c shows the body char c - 4: the
+    // item's 3 cells, then the pad cell.
     for (screen_col, row, target) in [
-        (1u16, 3u16, "gh run watch"),
-        (4, 3, "run watch"),
-        (8, 3, "watch"),
-        (3, 5, "indented"),
+        (4u16, 3u16, "gh run watch"),
+        (7, 3, "run watch"),
+        (11, 3, "watch"),
+        (6, 5, "indented"),
     ] {
         let mut st = state(src);
         st.mode = Mode::Rendered;
@@ -2378,11 +2379,12 @@ fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
 #[test]
 fn click_below_a_fence_on_a_list_marker_line_lands_on_clicked_line() {
     let src = "- ```bash\n  gh run watch\n  ```\n- next item\n";
-    // Rendered rows: 0 = "•", 1 = " bash " label, 2 = " gh run watch", 3 = closing fence,
-    // 4 = "• next item".  Screen col c of the body row shows body char c - 1.
+    // Rendered rows: 0 = "•", 1 = "   bash " label, 2 = "   gh run watch", 3 = closing fence,
+    // 4 = "• next item".  Screen col c of the body row shows body char c - 3: the item's 2
+    // cells, then the pad cell.
     for (screen_col, row, target) in [
         (0u16, 1u16, "- ```bash"),
-        (4, 2, "run watch"),
+        (6, 2, "run watch"),
         (2, 4, "next item"),
     ] {
         let mut st = state(src);
@@ -4165,7 +4167,8 @@ fn gesture(
     mouse_ops::apply(st, MouseAction::Release, &mut target, &snapshots, VP, VW);
 }
 
-/// A nested table grows the same handles a top-level one does, each placed on its own rows.
+/// A nested table grows the same handles a top-level one does, each placed on its own rows, and
+/// the row handles on its outer borders as at the top level, not in the container's prefix.
 #[test]
 fn a_nested_table_gets_every_handle() {
     for (src, _) in NESTED_TABLES {
@@ -4178,8 +4181,14 @@ fn a_nested_table_gets_every_handle() {
         assert!(snap.top_border_row.is_some(), "{src:?}");
         assert!(snap.header_row.is_some(), "{src:?}");
         assert!(snap.bottom_border_row.is_some(), "{src:?}");
-        assert!(snap.row_handle_col.is_some(), "{src:?}");
-        assert!(snap.delete_row_handle_col.is_some(), "{src:?}");
+        let outer_left = snap.col_ranges[0].start - 1;
+        assert!(outer_left > 0, "the table sits behind its prefix: {src:?}");
+        assert_eq!(snap.row_handle_col, Some(outer_left), "{src:?}");
+        assert_eq!(
+            snap.delete_row_handle_col,
+            Some(snap.col_ranges[1].end),
+            "{src:?}"
+        );
         assert_eq!(
             snap.hit_test(snap.col_ranges[0].start + 1, snap.row_ranges[1].start),
             Some(table_view::TableHit::Cell {

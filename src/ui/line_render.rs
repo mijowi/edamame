@@ -271,7 +271,7 @@ fn paint_row(
     let mut cursor_cell = None;
     let mut x = area.x;
     let area_end = area.x + area.width;
-    // Repaint the blockquote bar(s) so the gutter persists, then blank-fill the rest of
+    // Repaint the leading bars and indent (`leading_bar_prefix`), then blank-fill the rest of
     // the indent with the surrounding background.
     let mut prefix_iter = cont_prefix.iter();
     for _ in 0..row_indent {
@@ -406,18 +406,21 @@ pub fn patch_char_cols(
     }
 }
 
-/// The leading run of rendered `▎ ` bar units, repainted into each continuation row's
-/// indent zone so the quote gutter survives the wrap.  Only the rendered glyph is
-/// captured: a raw-revealed `> ` is literal source and gets plain blank padding.
+/// The leading run of rendered `▎ ` bar units and spaces, repainted into each continuation
+/// row's indent zone in their own styles: the quote gutter survives the wrap, and an indent
+/// ahead of a surface (a list item's, before a quote or a code block) keeps the background
+/// around the item rather than taking the line's.  Only the rendered glyph is captured: a
+/// raw-revealed `> ` is literal source and gets plain blank padding.
 fn leading_bar_prefix(chars: &[(char, Style)]) -> Vec<(char, Style)> {
-    let mut out = Vec::new();
     let mut i = 0;
-    while i + 1 < chars.len() && chars[i].0 == '▎' && chars[i + 1].0 == ' ' {
-        out.push(chars[i]);
-        out.push(chars[i + 1]);
-        i += 2;
+    while i < chars.len() {
+        match chars[i].0 {
+            ' ' => i += 1,
+            '▎' if chars.get(i + 1).is_some_and(|c| c.0 == ' ') => i += 2,
+            _ => break,
+        }
     }
-    out
+    chars[..i].to_vec()
 }
 
 #[cfg(test)]
@@ -483,6 +486,22 @@ mod tests {
         // Raw `> ` is literal source, never repainted on continuation rows.
         let raw: Vec<(char, Style)> = "> quoted".chars().map(|c| (c, Style::default())).collect();
         assert!(leading_bar_prefix(&raw).is_empty());
+        // A list item's indent ahead of a bar, or of a code block's pad cell, is kept too.
+        let nested: Vec<(char, Style)> = "  ▎ q".chars().map(|c| (c, Style::default())).collect();
+        assert_eq!(leading_bar_prefix(&nested).len(), 4);
+    }
+
+    /// A quote in a list item sits behind the item's indent; its continuation rows repaint
+    /// the indent and the bar both.
+    #[test]
+    fn wrapped_quote_in_a_list_item_repaints_indent_and_bar() {
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = TuiBuf::empty(area);
+        let line = Line::from(vec![Span::raw("  ▎ "), Span::raw("alpha beta gamma")]);
+        let rows = render_line(&line, Indent::hanging(4), area, &mut buf, 0, true);
+        assert!(rows >= 2, "expected the quote to wrap, got {rows} row(s)");
+        let row1: String = (0..4).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        assert_eq!(row1, "  ▎ ");
     }
 
     #[test]

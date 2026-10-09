@@ -266,6 +266,27 @@ impl Block {
             leaf => leaf.src().map(SrcLines::span).unwrap_or_default(),
         }
     }
+
+    /// The list items holding block-relative `line`, outermost first; `None` when a quote or a
+    /// footnote holds it, as its lines carry a prefix (`>`, the label) a list's don't.
+    pub fn items_holding(&self, line: u32) -> Option<Vec<&ListItem>> {
+        let mut items = Vec::new();
+        let mut blocks = std::slice::from_ref(self);
+        while let Some(holder) = blocks.iter().find(|b| b.span().contains(&line)) {
+            match holder {
+                Block::List { items: list, .. } => {
+                    let Some(item) = list.iter().find(|i| i.span.contains(&line)) else {
+                        break;
+                    };
+                    items.push(item);
+                    blocks = &item.blocks;
+                }
+                Block::BlockQuote { .. } | Block::FootnoteDefinition { .. } => return None,
+                _ => break,
+            }
+        }
+        Some(items)
+    }
 }
 
 /// Which delimiter style opened a [`Block::MetadataBlock`].

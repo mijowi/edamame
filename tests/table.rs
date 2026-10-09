@@ -708,3 +708,61 @@ fn edits_in_a_quoted_table_keep_the_quote() {
     apply(&mut st, Action::TableInsertRowBelow);
     assert_eq!(st.contents(), "> b | a\n> -- | --\n> 2 | 1\n> |   |   |\n");
 }
+
+// ── Insert Table below a list item ──────────────────────────────────────────
+
+/// A 1×2 table inserted on the blank line at byte `cursor` of `src`.
+fn insert_table_on_blank(src: &str, cursor: usize) -> String {
+    let mut st = EditorState::new(Buffer::from_str(src), theme());
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src[..cursor].chars().count();
+    edit_ops::insert_table_at_cursor(&mut st, 1, 2, VP, VW);
+    st.contents()
+}
+
+/// The table rows `insert_table_on_blank` writes, each after `prefix`.
+fn table_rows(prefix: &str) -> String {
+    format!("{prefix}|   |   |\n{prefix}| --- | --- |\n{prefix}|   |   |\n")
+}
+
+/// On the blank line below an item, the table goes into the item text there would belong to:
+/// the innermost one directly below, the one the line's indentation reaches further down.
+#[test]
+fn insert_table_on_a_blank_line_below_an_item_goes_into_the_item() {
+    let cases = [
+        ("- foo\n", 6, "  "),
+        ("- foo\n\n- bar\n", 6, "  "),
+        ("1. foo\n\n2. bar\n", 7, "   "),
+        ("- outer\n  - inner\n\n", 18, "    "),
+        ("- outer\n  - inner\n\n  \n", 19, "  "),
+        ("- foo\n\n  more\n", 14, "  "), // below the item's second paragraph
+        ("- foo\n\n  more\n\n\n", 15, ""), // past a blank line, unindented
+        ("- foo\n\n\n", 7, ""),          // where leaving the list puts the cursor
+        ("> - foo\n\n", 8, ""),          // a quote's item needs a `>`
+        ("para\n\n", 5, ""),
+    ];
+    for (src, cursor, prefix) in cases {
+        let post = insert_table_on_blank(src, cursor);
+        let want = format!(
+            "{}\n{}{}",
+            &src[..cursor],
+            table_rows(prefix),
+            &src[cursor..]
+        );
+        assert_eq!(post, want, "{src:?} at {cursor}");
+        let blocks = edamame::markdown::parser::parse(&post);
+        let in_item = blocks
+            .iter()
+            .any(|b| matches!(b, edamame::markdown::Block::List { .. }) && contains_table(b));
+        assert_eq!(in_item, !prefix.is_empty(), "{post:?}");
+    }
+}
+
+fn contains_table(block: &edamame::markdown::Block) -> bool {
+    use edamame::markdown::Block;
+    match block {
+        Block::Table { .. } => true,
+        Block::List { items, .. } => items.iter().flat_map(|i| &i.blocks).any(contains_table),
+        _ => false,
+    }
+}

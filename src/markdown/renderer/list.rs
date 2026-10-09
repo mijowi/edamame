@@ -86,18 +86,15 @@ impl<'t> Renderer<'t> {
                 Style::default()
             };
 
-            // Blocks after the first indent to the item's text, behind the marker and any task box
-            // (of the blocks that take an indent, paragraphs and raw HTML).  A nested list instead
-            // takes `child_indent_prefix`, the 4-space nesting.
+            // Blocks after the first indent to the item's text, behind the marker and any task box.
+            // A nested list instead takes `child_indent_prefix`, the 4-space nesting.
             let text_indent = " ".repeat(
                 str_cells(&marker) + task_prefix.as_ref().map_or(0, |tp| str_cells(&tp.content)),
             );
-            let indent_for = |block: &Block| {
-                if matches!(block, Block::List { .. }) {
-                    child_indent_prefix.as_str()
-                } else {
-                    text_indent.as_str()
-                }
+            let render_nested = |block: &Block, out: &mut RowSink| match block {
+                Block::List { .. } => self.render_block(block, out, &child_indent_prefix, false),
+                _ if renders_flush(block) => self.render_under_indent(block, &text_indent, out),
+                _ => self.render_block(block, out, &text_indent, false),
             };
 
             // The marker row shows the item's first line; a marker-only row is chrome.
@@ -158,13 +155,49 @@ impl<'t> Renderer<'t> {
                                 spans.push(tp);
                             }
                             out.push(Line::from(spans), marker_row.clone());
-                            self.render_block(other, out, indent_for(other), false);
+                            render_nested(other, out);
                         }
                     }
                 } else {
-                    self.render_block(block, out, indent_for(block), false);
+                    render_nested(block, out);
                 }
             });
         }
+    }
+
+    /// Render `block`, which draws no indent of its own, under an item's text: inset by
+    /// `indent`'s cells, each row behind it, as a quote's children sit behind its bar
+    /// (`render_blockquote`).  A row keeps its line style, so a surface (a quote's wash, a code
+    /// block's) still fills its trailing cells; the indent gets the background around the item
+    /// instead ([`Renderer::surface_bg`]), so the surface starts where the block does.
+    fn render_under_indent(&self, block: &Block, indent: &str, out: &mut RowSink) {
+        let cells = str_cells(indent);
+        let mut inner = RowSink::default();
+        self.inset_by(cells, || self.render_block(block, &mut inner, "", false));
+        for (line, origin) in inner.into_rows() {
+            let indent_style = match line.style.bg {
+                Some(_) => Style::default().bg(self.surface_bg()),
+                None => Style::default(),
+            };
+            let mut spans = vec![Span::styled(indent.to_owned(), indent_style)];
+            spans.extend(line.spans);
+            out.push(Line::from(spans).style(line.style), origin.shifted(cells));
+        }
+    }
+}
+
+/// Whether `block` renders flush left, ignoring an `indent_prefix`, so an item indents it with
+/// [`Renderer::render_under_indent`]: everything but a paragraph, raw HTML and a list.  An image
+/// is left flush too, since its overlay paints from the view's left edge whatever the row's text.
+fn renders_flush(block: &Block) -> bool {
+    match block {
+        Block::Paragraph { .. } => {
+            crate::markdown::parser::post_pass::display_math_block_body(block).is_some()
+        }
+        Block::Html(..)
+        | Block::HtmlComment(..)
+        | Block::ImageBlock { .. }
+        | Block::List { .. } => false,
+        _ => true,
     }
 }

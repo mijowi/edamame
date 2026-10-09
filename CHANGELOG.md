@@ -12,6 +12,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - Paragraphs inside list items, blockquotes and footnotes now reflow to the window width like top-level paragraphs. With reflow off, every paragraph keeps your line breaks.
 - Blank `>` lines in a blockquote now show as empty quoted rows, as many as you wrote.
+- Tables, code blocks, math, rules, headings and quotes inside a list item now line up under the item's text instead of at the left edge, so it's clear they belong to the item.
+- Insert table now puts the table inside a list item when used on an empty item or on the blank line below one.
 
 ### Fixed
 

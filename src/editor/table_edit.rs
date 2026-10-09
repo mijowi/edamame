@@ -11,6 +11,9 @@
 //! prefix and its edge pipes ([`rebuild_row`]).
 
 use crate::document::EditDelta;
+use crate::editor::list_edit;
+use crate::markdown::ast::{to_u32, Block};
+use crate::markdown::parser::parse_document;
 use crate::markdown::table_layout;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -732,19 +735,134 @@ pub fn cursor_line_is_blank(source: &str, cursor_byte: usize) -> bool {
     source[start..end].trim().is_empty()
 }
 
-/// Emit a fresh GFM pipe table at the cursor, which the pre-flight has verified is on a blank
-/// line.  Returns the delta plus the post-edit byte offset of the first header cell's content.
+/// True when Insert Table can go at `cursor_byte`: on a blank line, or on an empty list item's
+/// marker line ([`empty_item_at`]) where the table would fill the item ([`table_fills_item`]).
+pub fn can_insert_table(source: &str, cursor_byte: usize) -> bool {
+    cursor_line_is_blank(source, cursor_byte)
+        || (empty_item_at(source, cursor_byte).is_some() && table_fills_item(source, cursor_byte))
+}
+
+/// Whether the table [`insert_table`] puts on the empty item at `cursor_byte` parses as that
+/// item's content.  The text alone can't tell: a `- ` in a code block is code, and a `2. ` below
+/// a paragraph line continues the paragraph, table or not.  The check is on the text after the
+/// insertion because the line before it can mislead the other way: an empty item can't
+/// interrupt a paragraph, so `text⏎- ` reads as a setext heading, but `- | a |` can.
+fn table_fills_item(source: &str, cursor_byte: usize) -> bool {
+    let (delta, _) = insert_table(source, cursor_byte, 0, 1, 0);
+    let mut post = source.to_owned();
+    post.replace_range(
+        delta.offset..delta.offset + delta.removed.len(),
+        &delta.inserted,
+    );
+    let doc = parse_document(&post);
+    let line_of = |byte: usize| doc.line_starts.partition_point(|&s| s <= byte) - 1;
+    let Some(i) = doc.ranges.iter().position(|r| r.contains(&delta.offset)) else {
+        return false;
+    };
+    let line = to_u32(line_of(delta.offset) - line_of(doc.ranges[i].start));
+    doc.blocks[i]
+        .items_holding(line)
+        .and_then(|items| items.last().copied())
+        .is_some_and(|item| {
+            item.span.start == line && matches!(item.blocks.first(), Some(Block::Table { .. }))
+        })
+}
+
+/// The empty, non-task list item whose marker line holds `cursor_byte`, as the range past its
+/// marker to its line end and the prefix that puts a continuation line at its content column.
+/// A task item is left out: GFM reads `[ ]` as a checkbox only before a paragraph.
+fn empty_item_at(source: &str, cursor_byte: usize) -> Option<(std::ops::Range<usize>, String)> {
+    let info = list_edit::find_list_at(source, cursor_byte)?;
+    let item = &info.items[list_edit::cursor_item_idx(&info, cursor_byte)?];
+    if cursor_byte > item.line_end || item.task.is_some() || !item.content_is_empty(source) {
+        return None;
+    }
+    let prefix = format!(
+        "{}{}",
+        info.indent,
+        " ".repeat(item.marker_end - item.marker_start)
+    );
+    Some((item.marker_end..item.line_end, prefix))
+}
+
+/// The column a table inserted on the blank line at `cursor_byte` starts at: the content
+/// column of the list item text typed there would belong to, else 0.  `item_cols` gives the
+/// content columns of the items holding the line starting at a byte, outermost first
+/// (`row_map::item_content_cols`).
 ///
-/// CommonMark needs a blank line either side.  The cursor's own blank line, preserved after the
-/// insertion at `line_start`, always supplies the trailing one; only the leading `\n` may be
-/// missing, and is prepended when the line above carries content.
+/// Directly below an item's last line, text continues that line, so the innermost item takes
+/// the table.  Past a blank line, text belongs to an item only when indented to its content
+/// column, so the line's own indentation picks the deepest item it reaches; an unindented line
+/// there (where `Enter` leaves the cursor on leaving a list) stays top-level.
+pub fn blank_line_indent(
+    source: &str,
+    cursor_byte: usize,
+    item_cols: impl FnOnce(usize) -> Vec<usize>,
+) -> usize {
+    let bytes = source.as_bytes();
+    let line_start = line_start_byte(bytes, cursor_byte.min(bytes.len()));
+    let indent = source[line_start..]
+        .chars()
+        .map_while(|c| match c {
+            ' ' => Some(1),
+            '\t' => Some(4),
+            _ => None,
+        })
+        .sum::<usize>();
+    // The nearest line above with text, and whether any blank line lies between.
+    let mut end = line_start;
+    let mut directly_below = true;
+    let above = loop {
+        if end == 0 {
+            return 0;
+        }
+        let start = line_start_byte(bytes, end - 1);
+        if !source[start..end - 1].trim().is_empty() {
+            break start;
+        }
+        directly_below = false;
+        end = start;
+    };
+    let cols = item_cols(above);
+    let chosen = if directly_below {
+        cols.last()
+    } else {
+        cols.iter().rev().find(|&&c| c <= indent)
+    };
+    chosen.copied().unwrap_or(0)
+}
+
+/// Emit a fresh GFM pipe table at the cursor, which the pre-flight ([`can_insert_table`]) has
+/// verified is on a blank line or an empty list item.  Returns the delta plus the post-edit byte
+/// offset of the first header cell's content.
+///
+/// On an empty item the table opens on the marker line, its other rows at the item's content
+/// column, so the item holds it; the marker line's own `\n` ends it.
+///
+/// On a blank line every row starts at column `indent` ([`blank_line_indent`]), and CommonMark
+/// needs a blank line either side.  The cursor's own blank line, preserved after the insertion
+/// at `line_start`, always supplies the trailing one; only the leading `\n` may be missing, and
+/// is prepended when the line above carries content.
 pub fn insert_table(
     source: &str,
     cursor_byte: usize,
     rows: usize,
     cols: usize,
+    indent: usize,
 ) -> (EditDelta, usize) {
     debug_assert!(cols >= 1, "table must have at least one column");
+    if let Some((after_marker, prefix)) = empty_item_at(source, cursor_byte) {
+        let mut inserted = table_text(rows, cols, &prefix);
+        inserted.drain(..prefix.len()); // the marker line holds the header
+        inserted.pop(); // the marker line's `\n` stays
+        let cursor_target = after_marker.start + 2;
+        let delta = EditDelta {
+            offset: after_marker.start,
+            removed: source[after_marker].to_owned(),
+            inserted,
+        };
+        return (delta, cursor_target);
+    }
     let bytes = source.as_bytes();
     let pos = cursor_byte.min(bytes.len());
     let line_start = line_start_byte(bytes, pos);
@@ -757,21 +875,15 @@ pub fn insert_table(
         !source[prev_start..prev_end].trim().is_empty()
     };
 
-    let header = empty_row_text(cols);
-    let alignment = alignment_row_text(cols);
-    let body = empty_row_text(cols).repeat(rows);
-    let table_text = format!("{header}{alignment}{body}");
-
-    let mut inserted = String::with_capacity(table_text.len() + 1);
+    let mut inserted = String::new();
     if need_prefix {
         inserted.push('\n');
     }
-    inserted.push_str(&table_text);
+    inserted.push_str(&table_text(rows, cols, &" ".repeat(indent)));
 
     // First header cell content: `empty_row_text` lays out `|   |   |…`, so +1 for the `|` and
     // +1 to skip the leading padding space.
-    let prefix_len = if need_prefix { 1 } else { 0 };
-    let cursor_target = line_start + prefix_len + 2;
+    let cursor_target = line_start + usize::from(need_prefix) + indent + 2;
 
     let delta = EditDelta {
         offset: line_start,
@@ -779,6 +891,17 @@ pub fn insert_table(
         inserted,
     };
     (delta, cursor_target)
+}
+
+/// An empty table's text, header through its `rows` data rows, each line after `prefix`.
+fn table_text(rows: usize, cols: usize, prefix: &str) -> String {
+    let lines = [empty_row_text(cols), alignment_row_text(cols)];
+    let mut text = String::new();
+    for line in lines.iter().chain(std::iter::repeat_n(&lines[0], rows)) {
+        text.push_str(prefix);
+        text.push_str(line);
+    }
+    text
 }
 
 /// Build the alignment row text with neutral `---` cells: `| --- | --- |\n`.
@@ -1137,7 +1260,7 @@ mod tests {
         // Byte 9 starts the blank line between the paragraphs.
         let cursor = 9usize;
         assert!(cursor_line_is_blank(src, cursor));
-        let (delta, cursor_target) = insert_table(src, cursor, 2, 3);
+        let (delta, cursor_target) = insert_table(src, cursor, 2, 3, 0);
 
         let mut post = String::new();
         post.push_str(&src[..delta.offset]);
@@ -1168,7 +1291,7 @@ mod tests {
         let src = "\nparagraph\n";
         let cursor = 0;
         assert!(cursor_line_is_blank(src, cursor));
-        let (delta, _cursor_target) = insert_table(src, cursor, 1, 2);
+        let (delta, _cursor_target) = insert_table(src, cursor, 1, 2, 0);
         assert_eq!(delta.offset, 0);
         // No `\n` prefix at the top of the buffer; the cursor's blank line still supplies the
         // trailing separator before "paragraph".
@@ -1188,7 +1311,7 @@ mod tests {
         let src = "para\n\n";
         let cursor = src.len();
         assert!(cursor_line_is_blank(src, cursor));
-        let (delta, _) = insert_table(src, cursor, 1, 1);
+        let (delta, _) = insert_table(src, cursor, 1, 1, 0);
         // The leading `\n` is needed because `para` is non-blank.
         assert!(
             delta.inserted.starts_with('\n'),
@@ -1212,7 +1335,7 @@ mod tests {
     #[test]
     fn insert_table_emits_alignment_row_with_dashes() {
         let src = "\n";
-        let (delta, _) = insert_table(src, 0, 0, 3);
+        let (delta, _) = insert_table(src, 0, 0, 3, 0);
         assert!(
             delta.inserted.contains("| --- | --- | --- |"),
             "alignment row missing dashes, got {:?}",
@@ -1415,5 +1538,117 @@ mod tests {
             let twice = apply(&once, &write_column_widths(&once, &info, &[Some(7), None]));
             assert_eq!(twice, once.replace("[5, _]", "[7, _]"));
         }
+    }
+
+    // ── `insert_table` on an empty list item ─────────────────────────────────
+
+    /// The table opens on the empty item's marker line, its other rows at the item's content
+    /// column, and parses inside that item, whatever surrounds it.
+    #[test]
+    fn insert_table_fills_an_empty_list_item() {
+        // (source, the empty item's marker, the continuation prefix)
+        let cases = [
+            ("- \n", "- ", "  "),
+            ("- one\n- \n- three\n", "- \n", "  "),
+            ("1. one\n10. \n", "10. ", "    "),
+            ("- outer\n  - inner\n  - \n", "  - \n", "    "),
+            // Empty, the item reads as a setext underline; holding the table, it's an item.
+            ("- outer\n  - \n", "  - \n", "    "),
+            ("- ", "- ", "  "),
+        ];
+        for (src, marker, prefix) in cases {
+            let cursor = src.rfind(marker).unwrap() + marker.trim_end().len() + 1;
+            assert!(can_insert_table(src, cursor), "{src:?}");
+            let (delta, target) = insert_table(src, cursor, 1, 2, 0);
+            let post = apply(src, &delta);
+            let head = format!(
+                "{}|   |   |\n{prefix}| --- | --- |\n{prefix}|   |   |",
+                marker.trim_end_matches('\n')
+            );
+            assert!(post.contains(&head), "{src:?} became {post:?}");
+            assert_eq!(&post[target - 2..target], "| ", "{src:?}");
+            assert_eq!(
+                nested_table_cells(&post),
+                vec![vec![String::new(); 2]; 2],
+                "{post:?}"
+            );
+        }
+    }
+
+    /// Text around the list stays out of the table: a paragraph the item's list interrupts, and
+    /// one that follows it.
+    #[test]
+    fn a_table_in_an_empty_item_leaves_the_surrounding_paragraphs_alone() {
+        for src in ["text\n- \n", "- \nafter\n"] {
+            let cursor = src.find("- ").unwrap() + 2;
+            assert!(can_insert_table(src, cursor), "{src:?}");
+            let (delta, _) = insert_table(src, cursor, 1, 1, 0);
+            let blocks = parse(&apply(src, &delta));
+            let kinds: Vec<_> = blocks
+                .iter()
+                .map(|b| match b {
+                    Block::Paragraph { .. } => "paragraph",
+                    Block::List { items, .. }
+                        if matches!(items[0].blocks.as_slice(), [Block::Table { .. }]) =>
+                    {
+                        "list(table)"
+                    }
+                    _ => "other",
+                })
+                .collect();
+            let want = if src.starts_with("text") {
+                ["paragraph", "list(table)"]
+            } else {
+                ["list(table)", "paragraph"]
+            };
+            assert_eq!(kinds, want, "{src:?}");
+        }
+    }
+
+    /// Only an empty, non-task item's marker line qualifies.
+    #[test]
+    fn insert_table_rejects_other_list_lines() {
+        for (src, at) in [
+            ("- one\n", "one"),        // an item with text
+            ("- [ ] \n", "] "),        // a task item
+            ("- \n  more\n", "- "),    // empty first line, text below
+            ("- one\n  two\n", "two"), // a continuation line
+            ("```\n- \n```\n", "- "),  // code
+            ("text\n2. \n", "2. "),    // continues the paragraph, table or not
+        ] {
+            let cursor = src.find(at).unwrap() + at.len();
+            assert!(!can_insert_table(src, cursor), "{src:?}");
+        }
+    }
+
+    /// Directly below a line the innermost item holding it takes the table; past a blank line,
+    /// the deepest item the line's own indentation reaches, else none.
+    #[test]
+    fn blank_line_indent_follows_where_text_would_belong() {
+        let nested = |_| vec![2, 4];
+        // (source, cursor, want)
+        let cases = [
+            ("- a\n\n", 4, 4),        // directly below
+            ("- a\n  \n", 4, 4),      // directly below, indentation ignored
+            ("- a\n\n\n", 5, 0),      // past a blank line, unindented
+            ("- a\n\n  \n", 5, 2),    // past a blank line, at the outer column
+            ("- a\n\n     \n", 5, 4), // past a blank line, beyond the inner column
+            ("- a\n\n\t\n", 5, 4),    // a tab counts four columns
+            ("\n", 0, 0),             // nothing above
+        ];
+        for (src, cursor, want) in cases {
+            assert_eq!(
+                blank_line_indent(src, cursor, nested),
+                want,
+                "{src:?} at {cursor}"
+            );
+        }
+        // The line above is what the columns are asked for.
+        let asked = std::cell::Cell::new(None);
+        blank_line_indent("p\n- a\n\n\n", 8, |at| {
+            asked.set(Some(at));
+            vec![]
+        });
+        assert_eq!(asked.get(), Some(2));
     }
 }

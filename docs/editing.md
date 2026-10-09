@@ -103,7 +103,13 @@ Any GitHub table works this way: with or without pipes at the ends of its rows, 
 
 ### Creating one
 
-`Ctrl-Shift-T`, or "Insert table" in the palette. You'll be asked for rows and columns. **The cursor has to be on a blank line** — otherwise you get an error flash instead of a table.
+`Ctrl-Shift-T`, or "Insert table" in the palette. You'll be asked for rows and columns. **The cursor has to be on a blank line or an empty list item** — otherwise you get an error flash instead of a table. Inside a list, the table goes where text you typed there would go:
+
+- On an empty item (`- `, `1. `), it fills the item, starting on the marker's line. Task items (`- [ ]`) don't qualify.
+- On the blank line directly below an item, it joins that item, indented to match.
+- Further down, past another blank line, it joins an item only if the line is already indented to that item's text; otherwise it starts a new top-level table, as after leaving a list with `Enter`.
+
+Lists inside a quote or footnote get a top-level table.
 
 ### Moving around
 

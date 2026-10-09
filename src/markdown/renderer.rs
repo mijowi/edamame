@@ -7,7 +7,7 @@ use std::cell::Cell;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 use tui_big_text::{BigText, PixelSize};
@@ -53,6 +53,12 @@ pub struct Renderer<'t> {
     /// The render cache needs no key for it: only top-level blocks are cached, and they render at
     /// inset 0, so a nested block's inset is a function of its top-level ancestor's value.
     inset: Cell<usize>,
+    /// The background the enclosing containers paint under the block being rendered: a quote's
+    /// wash, or `None` for the page.  What a list item gives the indent it prefixes to a block
+    /// with a surface of its own (`render_under_indent`), so that surface stays off the indent.
+    /// Set only by [`on_surface`](Self::on_surface), which restores it; uncached for the same
+    /// reason as `inset`.
+    surface: Cell<Option<Color>>,
     /// Whether code block lines should wrap at [`width`](Self::width).
     code_wrap: bool,
     /// Rows reserved per `Block::ImageBlock` absent a row override; from
@@ -90,6 +96,7 @@ impl<'t> Renderer<'t> {
             theme,
             viewport_width: 80,
             inset: Cell::new(0),
+            surface: Cell::new(None),
             code_wrap: false,
             image_max_height: 24,
             image_row_override: None,
@@ -264,6 +271,21 @@ impl<'t> Renderer<'t> {
         let r = f();
         self.inset.set(outer);
         r
+    }
+
+    /// Run `f` with [`surface`](Self::surface) set to `bg`, for a container painting `bg` under
+    /// its children.  A container painting no background leaves the outer one.
+    fn on_surface<R>(&self, bg: Option<Color>, f: impl FnOnce() -> R) -> R {
+        let outer = self.surface.replace(bg.or(self.surface.get()));
+        let r = f();
+        self.surface.set(outer);
+        r
+    }
+
+    /// The background behind the block being rendered, `Color::Reset` (the terminal's own) on
+    /// the page.
+    pub(super) fn surface_bg(&self) -> Color {
+        self.surface.get().unwrap_or(Color::Reset)
     }
 
     pub(super) fn render_block(
@@ -942,10 +964,12 @@ impl<'t> Renderer<'t> {
         // two cells narrower.
         let bar_cells = str_cells("▎ ");
         let mut inner = RowSink::default();
-        self.inset_by(bar_cells, || {
-            render_children(&mut inner, blocks, Some(span), hidden, |_, block, inner| {
-                self.render_block(block, inner, "", false);
-            });
+        self.on_surface(self.theme.blockquote_text.bg, || {
+            self.inset_by(bar_cells, || {
+                render_children(&mut inner, blocks, Some(span), hidden, |_, block, inner| {
+                    self.render_block(block, inner, "", false);
+                });
+            })
         });
 
         for (line, origin) in inner.into_rows() {
@@ -1826,6 +1850,58 @@ mod tests {
             ],
             "{texts:?}"
         );
+    }
+
+    /// A block that renders flush (a table, code, a rule, a quote) sits under its item's text
+    /// too, at any depth and on a marker line, and sizes to the width left beside the indent.
+    #[test]
+    fn an_items_flush_blocks_sit_under_its_text() {
+        let texts = |src: &str| -> Vec<String> {
+            renderer()
+                .with_viewport_width(20)
+                .render(&parse(src))
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        let table = ["┌─────┐", "│ a   │", "┝━━━━━┥", "│ 1   │", "└─────┘"];
+        let indented = |n: usize| table.map(|r| format!("{}{r}", " ".repeat(n)));
+        let rows = texts("- x\n\n  | a |\n  |---|\n  | 1 |\n");
+        assert_eq!(rows[2..], indented(2), "under `• `");
+        let rows = texts("10. | a |\n    |---|\n    | 1 |\n");
+        assert_eq!(rows[1..], indented(4), "on a marker line, under `10. `");
+        let rows = texts("- x\n  - y\n\n    | a |\n    |---|\n    | 1 |\n");
+        assert_eq!(rows[3..], indented(6), "in a nested item");
+
+        let rows = texts("- x\n\n  ---\n\n  > q\n");
+        assert_eq!(
+            rows[2],
+            format!("  {}", "─".repeat(18)),
+            "a rule fills what's left"
+        );
+        assert_eq!(rows[4], "  ▎ q");
+        let rows = texts("- x\n\n  ```\n  code\n  ```\n");
+        assert!(rows[3].starts_with("   code"), "{:?}", rows[3]);
+        assert_eq!(rows[3].chars().count(), 20, "the surface ends at the edge");
+    }
+
+    /// A block with a surface keeps it on its line style under an item, so the surface fills
+    /// the row's trailing cells, but its indent shows what surrounds the item: the page, or the
+    /// wash of a quote holding the list.
+    #[test]
+    fn an_items_indent_stays_off_a_nested_surface() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let wash = theme.blockquote_text.bg;
+        assert!(wash.is_some(), "the default theme washes quotes");
+        let rows = Renderer::new(theme).render(&parse("- x\n\n  > q\n"));
+        assert_eq!(rows[2].style.bg, wash, "the quote's own row");
+        assert_eq!(rows[2].spans[0].content, "  ");
+        assert_eq!(rows[2].spans[0].style.bg, Some(Color::Reset), "the page");
+        let rows = Renderer::new(theme).render(&parse("> - x\n>\n>   ```\n>   c\n>   ```\n"));
+        let code = &rows[3];
+        assert_eq!(code.style.bg, theme.code_block_text.bg, "{code:?}");
+        assert_eq!(code.spans[1].content, "  ", "after the outer bar");
+        assert_eq!(code.spans[1].style.bg, wash, "the outer quote");
     }
 
     /// An item's later blocks align under its text (behind the marker and any task box), and each

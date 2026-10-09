@@ -550,7 +550,7 @@ impl App {
                 true
             }
             Action::InsertTable => {
-                // The blank-line guard runs before the modal opens, so a non-blank cursor gets
+                // The location guard runs before the modal opens, so a cursor elsewhere gets
                 // an immediate warning.  It subsumes every block-kind case without classifying.
                 let source = self.editor.buffer.contents();
                 let cursor_byte = self
@@ -558,10 +558,13 @@ impl App {
                     .buffer
                     .rope()
                     .char_to_byte(self.editor.cursor.offset);
-                if crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
+                if crate::editor::table_edit::can_insert_table(&source, cursor_byte) {
                     self.open_insert_table_modal();
                 } else {
-                    self.notify("Insert Table requires a blank line", ModalKind::Warning);
+                    self.notify(
+                        "Insert Table requires a blank line or an empty list item",
+                        ModalKind::Warning,
+                    );
                 }
                 self.needs_draw = true;
                 true
@@ -1503,8 +1506,8 @@ impl App {
             )));
     }
 
-    /// Open the rows/columns prompt.  The caller must have verified the blank-line precondition
-    /// via [`crate::editor::table_edit::cursor_line_is_blank`].
+    /// Open the rows/columns prompt.  The caller must have verified the location precondition
+    /// via [`crate::editor::table_edit::can_insert_table`].
     pub fn open_insert_table_modal(&mut self) {
         self.modal_stack
             .push(Box::new(modal::InsertTableModal::new()));

@@ -2571,7 +2571,8 @@ fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
     use edamame::ui::{RenderedView, RenderedViewState};
 
     let theme = Box::leak(Box::new(Theme::default()));
-    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash " label, 3 = " gh run watch".
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = "    bash " label, 3 = "    gh run watch":
+    // the block sits under the item's text, 3 cells in.
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n    ```\n";
     let width: u16 = 30;
     let draw = |cursor: usize| {
@@ -2600,9 +2601,9 @@ fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
     };
 
     let resting = draw(0);
-    // The `r` of `run`: raw col 7, rendered col 7 - 4 + 1 = 4.
+    // The `r` of `run`: raw col 7, rendered col 3 + (7 - 4) + 1 = 7.
     let active = draw(src.find("run").unwrap());
-    let cursor_x = 4u16;
+    let cursor_x = 7u16;
     for x in 0..width {
         let (r, a) = (resting.cell((x, 3)).unwrap(), active.cell((x, 3)).unwrap());
         assert_eq!(a.symbol(), r.symbol(), "row text changed at col {x}");
@@ -2628,7 +2629,8 @@ fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
     use edamame::ui::{RenderedView, RenderedViewState};
 
     let theme = Box::leak(Box::new(Theme::default()));
-    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = " bash " label, 3 = " gh run watch".
+    // Rendered rows: 0 = "8. Tag it.", 1 = blank, 2 = "    bash " label, 3 = "    gh run watch":
+    // the block sits under the item's text, 3 cells in.
     let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n    ```\n";
     let width: u16 = 30;
     let mut state = EditorState::new(Buffer::from_str(src), theme);
@@ -2665,8 +2667,8 @@ fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
     };
     assert_eq!(
         washed(3),
-        [4, 5, 6],
-        "`run` sits at cols 4..7 of the body row"
+        [7, 8, 9],
+        "`run` sits at cols 7..10 of the body row"
     );
     assert!(washed(2).is_empty(), "the label row must stay unselected");
 }

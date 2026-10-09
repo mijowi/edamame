@@ -59,8 +59,9 @@ pub struct TableLayoutSnapshot {
     /// Per-data-row vertical ranges; `row_ranges[i]` spans `info.rows[HEADER_ROWS + i]`.  Only
     /// data rows carry a drag handle, so the header and alignment rows are skipped.
     pub row_ranges: Vec<Range<u16>>,
-    /// Where the `⠿` row-reorder glyph is painted: one cell left of the outer `│`, in the external
-    /// gutter.  `None` when handles are disabled.
+    /// Where the `⠿` row-reorder glyph is painted: ON the outer left `│`, overlaying the border for
+    /// each data row, wherever the table sits (top-level, or behind a quote's bar or an item's
+    /// indent), as `✕` does on the right.  `None` when handles are disabled.
     pub row_handle_col: Option<u16>,
     /// The `┌─┬─┐` top border, carrying one column-reorder glyph per column.  `None` when handles
     /// are disabled or the border scrolled off.
@@ -469,10 +470,9 @@ pub fn build_snapshots(
                     None => {}
                 }
 
-                // One cell left of the outer `│`.
+                // ON the outer left `│`.
                 if show_handles && snap.row_handle_col.is_none() && !snap.col_ranges.is_empty() {
-                    let outer_left = snap.col_ranges[0].start.saturating_sub(1);
-                    snap.row_handle_col = Some(outer_left.saturating_sub(1));
+                    snap.row_handle_col = Some(snap.col_ranges[0].start.saturating_sub(1));
                 }
                 // ON the outer right `│`, overlaying the border for each data row; `hit_test`
                 // checks delete before `ColumnBorder`, so non-data rows still resize here.

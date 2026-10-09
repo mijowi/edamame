@@ -1,7 +1,7 @@
 //! Insert Table modal.  Adapter wrapping [`crate::ui::InsertTableState`].
 //!
-//! The blank-line precondition is re-verified on Insert: the App checks it before opening the
-//! modal, but the cursor may have moved since.
+//! The location precondition (a blank line or an empty list item) is re-verified on Insert: the
+//! App checks it before opening the modal, but the cursor may have moved since.
 
 use std::any::Any;
 
@@ -58,9 +58,12 @@ impl Modal for InsertTableModal {
                     .buffer
                     .rope()
                     .char_to_byte(app.editor.cursor.offset);
-                if !crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
+                if !crate::editor::table_edit::can_insert_table(&source, cursor_byte) {
                     return ModalOutcome::CloseAnd(Box::new(|app| {
-                        app.notify("Insert Table requires a blank line", ModalKind::Warning);
+                        app.notify(
+                            "Insert Table requires a blank line or an empty list item",
+                            ModalKind::Warning,
+                        );
                     }));
                 }
                 edit_ops::insert_table_at_cursor(
@@ -97,7 +100,7 @@ impl Modal for InsertTableModal {
 
 #[cfg(test)]
 mod tests {
-    //! The App-level Insert Table flow: pre-flight blank-line guard, modal lifecycle, and the
+    //! The App-level Insert Table flow: pre-flight location guard, modal lifecycle, and the
     //! resulting buffer + cursor state.
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -182,7 +185,7 @@ mod tests {
         assert_eq!(app.editor.buffer.contents(), before, "buffer unchanged");
         assert!(
             app.modal_stack.contains::<NoticeModal>(),
-            "blank-line guard must push a NoticeModal"
+            "location guard must push a NoticeModal"
         );
     }
 
@@ -202,6 +205,31 @@ mod tests {
         app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(!app.modal_stack.contains::<InsertTableModal>());
         assert!(app.modal_stack.contains::<NoticeModal>());
+    }
+
+    /// On an empty item the table opens on the marker line, inside the item.
+    #[test]
+    fn insert_table_on_an_empty_list_item_fills_the_item() {
+        let src = "- one\n- \n";
+        let mut app = app_with_buffer(src, src.len() - 1);
+        app.handle_app_action(&Action::InsertTable, 40, 80);
+        assert!(app.modal_stack.contains::<InsertTableModal>());
+        app.dispatch_modal_key(key(KeyCode::Enter), 40, 80);
+        let post = app.editor.buffer.contents();
+        assert!(
+            post.starts_with("- one\n- |   |   |   |\n  | --- | --- | --- |\n  |   |"),
+            "got:\n{post}"
+        );
+        let cursor = app
+            .editor
+            .buffer
+            .rope()
+            .char_to_byte(app.editor.cursor.offset);
+        assert_eq!(
+            cursor,
+            "- one\n- | ".len(),
+            "cursor in the first header cell"
+        );
     }
 
     #[test]
@@ -226,7 +254,7 @@ mod tests {
         );
         assert!(
             app.modal_stack.contains::<NoticeModal>(),
-            "blank-line guard must push a NoticeModal"
+            "location guard must push a NoticeModal"
         );
         app.dispatch_modal_key(key(KeyCode::Esc), 40, 80);
 
