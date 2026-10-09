@@ -11,7 +11,7 @@ use crate::editor::Mode;
 use crate::markdown::{ast::heading_plain_text, Block};
 use crate::ui::HeadingEntry;
 
-use super::App;
+use super::{App, MessageKind};
 
 /// Debounce window for live-preview scrolls: long enough to absorb a held arrow key's autorepeat
 /// (~50 ms), short enough that a tap feels immediate.
@@ -95,6 +95,118 @@ impl App {
     pub(super) fn section_jump_deadline(&self) -> Option<Instant> {
         self.section_jump_pending_since
             .map(|t| t + SECTION_JUMP_DELAY)
+    }
+}
+
+impl App {
+    /// Refresh the docked outline only when its parse, mode or viewport width changed.
+    pub(super) fn sync_outline_entries(&mut self, doc_width: usize) {
+        let key = (self.editor.parsed_version, doc_width, self.editor.mode);
+        if self.outline_cache_key == Some(key) {
+            return;
+        }
+        self.outline_entries = collect_heading_entries(&self.editor, doc_width);
+        self.outline_cache_key = Some(key);
+        self.outline_selected = self
+            .outline_selected
+            .min(self.outline_entries.len().saturating_sub(1));
+        self.outline_scroll = self
+            .outline_scroll
+            .min(self.outline_entries.len().saturating_sub(1));
+    }
+
+    /// The stored preference remains on when the window cannot fit two panes.
+    pub(super) fn explain_hidden_outline(&mut self) {
+        if !self.config.editor.show_outline
+            || self.editor.mode == Mode::Diff
+            || self.last_terminal_width == 0
+        {
+            return;
+        }
+        let height =
+            (self.last_doc_height as u16).saturating_add(crate::ui::BottomRegion::height());
+        if self
+            .compute_doc_dims(ratatui::layout::Size {
+                width: self.last_terminal_width,
+                height,
+            })
+            .outline_area
+            .is_none()
+        {
+            self.flash(
+                "Outline hidden: terminal too narrow; use Ctrl-G",
+                MessageKind::Info,
+            );
+        }
+    }
+
+    /// The viewport defines the current heading in Preview; editing uses the cursor.
+    pub(super) fn outline_current(&self) -> Option<usize> {
+        let count = if self.editor.mode == Mode::Preview {
+            self.outline_entries
+                .iter()
+                .take_while(|entry| entry.target_scroll <= self.editor.scroll)
+                .count()
+        } else {
+            let cursor_line = self.editor.buffer.char_to_line(self.editor.cursor.offset);
+            self.outline_entries
+                .iter()
+                .take_while(|entry| entry.buffer_line <= cursor_line)
+                .count()
+        };
+        count.checked_sub(1)
+    }
+
+    pub(super) fn focus_outline(&mut self, height: usize) {
+        self.outline_focused = !self.outline_focused;
+        if self.outline_focused {
+            self.outline_browsing = false;
+            if let Some(vim) = self.vim.as_mut() {
+                vim.reset_pending();
+                if vim.sub_mode == crate::input::VimSubMode::OperatorPending {
+                    vim.sub_mode = crate::input::VimSubMode::Normal;
+                }
+            }
+            self.outline_selected = self.outline_current().unwrap_or(0);
+            self.keep_outline_selection_visible(height.saturating_sub(1));
+        }
+        self.needs_draw = true;
+    }
+
+    pub(super) fn keep_outline_selection_visible(&mut self, height: usize) {
+        self.keep_outline_row_visible(self.outline_selected, height);
+    }
+
+    pub(super) fn keep_outline_row_visible(&mut self, row: usize, height: usize) {
+        if height == 0 {
+            return;
+        }
+        if row < self.outline_scroll {
+            self.outline_scroll = row;
+        } else if row >= self.outline_scroll.saturating_add(height) {
+            self.outline_scroll = row - height + 1;
+        }
+    }
+
+    pub(super) fn jump_to_outline_heading(
+        &mut self,
+        index: usize,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        self.sync_outline_entries(doc_width);
+        let Some(entry) = self.outline_entries.get(index) else {
+            return;
+        };
+        let (line, scroll) = (entry.buffer_line, entry.target_scroll);
+        self.record_in_doc_jump(None);
+        self.commit_section_jump(line, scroll);
+        if self.editor.mode != Mode::Preview {
+            self.editor.ensure_cursor_visible(doc_height, doc_width);
+        }
+        self.outline_selected = index;
+        self.outline_focused = false;
+        self.outline_browsing = false;
     }
 }
 
@@ -309,5 +421,53 @@ mod tests {
         app.tick_section_jump();
         assert_eq!(app.editor.scroll, 0);
         assert!(app.section_jump_pending_since.is_some());
+    }
+    #[test]
+    fn outline_jump_tracks_history_and_uses_current_headings_after_edit() {
+        let mut app = make_app();
+        load(
+            &mut app,
+            &("# Intro\n\n".to_string() + &"body\n\n".repeat(25) + "## Older\n"),
+        );
+        app.editor.mode = Mode::Rendered;
+        app.sync_outline_entries(80);
+        assert_eq!(app.outline_entries[1].text, "Older");
+        app.editor
+            .buffer
+            .insert(app.editor.buffer.len_chars(), "\n### Latest\n");
+        app.editor.refresh_parsed();
+        app.sync_outline_entries(80);
+        assert_eq!(app.outline_entries[2].text, "Latest");
+
+        app.jump_to_outline_heading(2, 12, 80);
+        assert_eq!(app.nav_back.len(), 1);
+        assert!(app.editor.scroll > 0);
+        assert_eq!(app.editor.buffer.char_to_line(app.editor.cursor.offset), 54);
+        app.navigate_back(12, 80);
+        assert_eq!(app.editor.scroll, 0);
+    }
+
+    #[test]
+    fn outline_jumps_to_duplicate_cjk_headings_in_every_view_mode() {
+        let source = format!("# 同名\n\n{}## 同名\n", "body\n\n".repeat(30));
+        for mode in [Mode::Preview, Mode::Rendered, Mode::Raw] {
+            let mut app = make_app();
+            load(&mut app, &source);
+            app.editor.mode = mode;
+            app.editor.set_viewport_width(72);
+            app.sync_outline_entries(72);
+            assert_eq!(app.outline_entries.len(), 2);
+            assert_eq!(app.outline_entries[0].text, app.outline_entries[1].text);
+            let second_line = app.outline_entries[1].buffer_line;
+            app.jump_to_outline_heading(1, 8, 72);
+            assert_eq!(
+                app.editor.buffer.char_to_line(app.editor.cursor.offset),
+                second_line
+            );
+            assert!(app.editor.scroll > 0, "{mode:?}");
+            assert_eq!(app.nav_back.len(), 1);
+            app.navigate_back(8, 72);
+            assert_eq!(app.editor.scroll, 0, "{mode:?}");
+        }
     }
 }

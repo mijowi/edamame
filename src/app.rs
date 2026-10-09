@@ -136,6 +136,14 @@ pub struct App {
     diff_stop_walk: bool,
     editor: EditorState,
     view_state: EditorViewState,
+    /// Heading rows for the current parse/width; rebuilt only on a relevant change.
+    outline_entries: Vec<crate::ui::HeadingEntry>,
+    outline_cache_key: Option<(u64, usize, crate::editor::Mode)>,
+    outline_selected: usize,
+    outline_scroll: usize,
+    outline_focused: bool,
+    /// A wheel over the list pauses automatic current-section following.
+    outline_browsing: bool,
     should_quit: bool,
     /// Session-only override for the images switch, set by `Yes` / `No` on the prompt; `None`
     /// defers to `config.images.enabled`.  `Always` / `Never` persist to config instead.
@@ -190,6 +198,8 @@ pub struct App {
     /// paint.  It is the *clamped* doc width, not the terminal width, or the scratch would be
     /// resized on that first paint anyway.
     last_area_width: u16,
+    /// Last terminal width for explaining why a requested outline cannot fit.
+    last_terminal_width: u16,
     /// Document-area dimensions cached each frame, for modal click handlers, which don't receive
     /// the live `DocDims` the keystroke path does.
     pub(crate) last_doc_height: usize,
@@ -626,6 +636,12 @@ impl App {
             diff_stop_walk: false,
             editor,
             view_state,
+            outline_entries: Vec::new(),
+            outline_cache_key: None,
+            outline_selected: 0,
+            outline_scroll: 0,
+            outline_focused: false,
+            outline_browsing: false,
             should_quit: false,
             session_images_enabled: None,
             session_diagrams_enabled: None,
@@ -641,6 +657,7 @@ impl App {
             settle_frame_pending: false,
             last_draw_at: None,
             last_area_width: 0,
+            last_terminal_width: 0,
             last_doc_height: 0,
             last_doc_width: 0,
             images_dirty: false,
@@ -825,7 +842,9 @@ impl App {
             }
 
             if let Event::Paste(text) = event {
-                self.dispatch_paste(text, &dims);
+                if !self.outline_focused {
+                    self.dispatch_paste(text, &dims);
+                }
                 continue;
             }
 
@@ -1122,7 +1141,9 @@ mod vim_wiring_tests {
         DocDims {
             doc_height: 24,
             doc_width: 80,
+            terminal_width: 80,
             doc_area: Rect::new(0, 0, 80, 24),
+            outline_area: None,
         }
     }
 

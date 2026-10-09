@@ -15,6 +15,7 @@ use super::{
     bottom_region::{BottomRegion, HintContent, HintLineState},
     diff_view::{DiffView, DiffViewState},
     image_view, link_view,
+    outline::{split_outline_area, OutlineView},
     preview::{PreviewState, PreviewView},
     raw_view::{RawView, RawViewState},
     rendered_view::{RenderedView, RenderedViewState},
@@ -60,6 +61,14 @@ pub struct EditorView<'a> {
     pub max_width_cols: usize,
     /// Hovering the scrollbar gutter or dragging the thumb; selects the bright thumb variant.
     pub scrollbar_active: bool,
+    /// Whether the persisted outline preference requests the left pane.
+    pub outline_enabled: bool,
+    /// Whether keyboard selection is currently active in the outline.
+    pub outline_focused: bool,
+    pub outline_entries: &'a [super::HeadingEntry],
+    pub outline_selected: Option<usize>,
+    pub outline_current: Option<usize>,
+    pub outline_scroll: usize,
 }
 
 /// Lay out the document area and, when needed, a scrollbar gutter inside `full`.  The gutter
@@ -175,8 +184,28 @@ impl<'a> StatefulWidget for EditorView<'a> {
         } else {
             0
         };
+        let (outline_area, document_region) = split_outline_area(
+            full_doc_area,
+            self.outline_enabled && mode != Mode::Diff,
+            super::gutter::gutter_width(line_count),
+        );
+        if let Some(outline_area) = outline_area {
+            OutlineView {
+                entries: self.outline_entries,
+                selected: self.outline_selected,
+                current: self.outline_current,
+                scroll: self.outline_scroll,
+                focused: self.outline_focused,
+                theme: self.theme,
+            }
+            .render(outline_area, buf);
+            let separator_x = outline_area.x + outline_area.width;
+            for y in outline_area.y..outline_area.y + outline_area.height {
+                buf.set_string(separator_x, y, "│", self.theme.rule);
+            }
+        }
         let (gutter_area, full_after_gutter) =
-            super::gutter::split_gutter(full_doc_area, line_count);
+            super::gutter::split_gutter(document_region, line_count);
 
         // The overflow decision is made at the post-clamp width; see `layout_doc_and_gutter`.
         let (doc_area, scrollbar_area) = layout_doc_with_scrollbar(
@@ -515,5 +544,64 @@ mod tests {
         let out = clamp_doc_area_to_max_width(area, true, 80);
         assert_eq!(out.y, 5);
         assert_eq!(out.height, 30);
+    }
+    #[test]
+    fn docked_outline_keeps_bottom_full_width() {
+        use crate::document::Buffer as DocumentBuffer;
+        use crate::ui::section_picker::HeadingEntry;
+        use pulldown_cmark::HeadingLevel;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        static THEME: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(Theme::default);
+        let theme = &*THEME;
+        let mut editor = EditorState::new(DocumentBuffer::from_str("# Title\n"), theme);
+        editor.mode = Mode::Raw;
+        let entries = [HeadingEntry {
+            level: HeadingLevel::H1,
+            text: "Title".into(),
+            buffer_line: 0,
+            target_scroll: 0,
+        }];
+        let caps = Capabilities::default();
+        let mut view_state = EditorViewState::new();
+        let mut terminal = Terminal::new(TestBackend::new(100, 7)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(
+                    EditorView {
+                        state: &mut editor,
+                        theme,
+                        filename: "file.md",
+                        show_table_buttons: false,
+                        table_drop_indicator: None,
+                        capabilities: &caps,
+                        show_line_numbers: false,
+                        is_scrolling: false,
+                        hint: HintContent::Chords(Default::default()),
+                        vim_mode_label: None,
+                        visual_kind: None,
+                        editor_cursor_style: theme.status_mode_raw,
+                        max_width_enabled: false,
+                        max_width_cols: 0,
+                        scrollbar_active: false,
+                        outline_enabled: true,
+                        outline_focused: false,
+                        outline_entries: &entries,
+                        outline_selected: None,
+                        outline_current: Some(0),
+                        outline_scroll: 0,
+                    },
+                    frame.area(),
+                    &mut view_state,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "O");
+        assert_eq!(buf.cell((0, 1)).unwrap().symbol(), "●");
+        assert_eq!(buf.cell((25, 0)).unwrap().symbol(), "│");
+        assert_eq!(buf.cell((26, 0)).unwrap().symbol(), "#");
+        assert_eq!(buf.cell((0, 5)).unwrap().style().bg, theme.hint_bar.bg);
+        assert_eq!(buf.cell((99, 5)).unwrap().style().bg, theme.hint_bar.bg);
     }
 }

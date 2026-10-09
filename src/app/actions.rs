@@ -184,7 +184,7 @@ pub(super) fn action_caps(action: &Action) -> ActionCaps {
         // Neither reads nor writes the document: mode transitions and persisted-setting flips.
         | EnterEditMode | ExitToPreview | ToggleRawMode | ToggleTableButtons | ToggleBigH1
         | ToggleLineNumbers | ToggleBlinkCursor | ToggleAutosave | ToggleVisualLineNav
-        | ToggleVimMode | ToggleLimitWidth | ToggleDiffOnChange
+        | ToggleVimMode | ToggleLimitWidth | ToggleDiffOnChange | ToggleOutline | FocusOutline
         // The two bespoke command vocabularies, which each gate names explicitly: "is a diff
         // command" is a fact about one context, not a capability.
         | OpenSearch | SearchNext | SearchPrev | SearchExit | DiffNext | DiffPrev
@@ -495,6 +495,27 @@ impl App {
                     settings_overlay::LABEL_LINE_NUMBERS,
                     self.config.editor.show_line_numbers,
                 );
+                true
+            }
+            Action::ToggleOutline => {
+                self.config.editor.show_outline = !self.config.editor.show_outline;
+                self.outline_focused = false;
+                self.outline_browsing = false;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_OUTLINE,
+                    self.config.editor.show_outline,
+                );
+                self.explain_hidden_outline();
+                true
+            }
+            Action::FocusOutline => {
+                let size = ratatui::layout::Size {
+                    width: self.last_terminal_width,
+                    height: (doc_height as u16).saturating_add(crate::ui::BottomRegion::height()),
+                };
+                if self.compute_doc_dims(size).outline_area.is_some() {
+                    self.focus_outline(doc_height);
+                }
                 true
             }
             Action::ToggleBlinkCursor => {

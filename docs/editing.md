@@ -221,6 +221,8 @@ Because a backslash starts an escape, **a literal backslash must be typed `\\`**
 
 **Go to section** (`Ctrl-G`) is often what you actually want: a fuzzy search list of every heading, previewing as you arrow through it. `Esc` puts you back.
 
+For a persistent heading list, press `F8` to show the optional left outline (or turn on **Show outline** in Settings). `F6` switches focus to and from the outline; `↑`/`↓` select a heading, `Enter` or a click jumps to it, and `Esc` returns focus to editing without hiding the pane. Only a jump moves the document and adds a back/forward navigation entry. The outline automatically disappears if the document viewport gets too narrow and returns when space permits; `Ctrl-G` remains available.
+
 ---
 
 ## When the file changes underneath you

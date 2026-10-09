@@ -158,6 +158,10 @@ pub enum Action {
     ToggleBigH1,
     /// Toggle `config.editor.show_line_numbers` (gutter line numbers).
     ToggleLineNumbers,
+    /// Toggle the optional left heading outline (`config.editor.show_outline`).
+    ToggleOutline,
+    /// Switch focus between editor and visible outline; does not persist a preference.
+    FocusOutline,
     /// Toggle `config.editor.cursor_blink` (blinking editor cursor).
     ToggleBlinkCursor,
     /// Toggle `config.editor.autosave_enabled` (idle autosave).
@@ -329,7 +333,7 @@ action_variants! {
     OpenSettings, OpenWelcome, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable, InsertImage, InsertLink, PasteImage,
-    ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
+    ToggleBigH1, ToggleLineNumbers, ToggleOutline, FocusOutline, ToggleBlinkCursor, ToggleAutosave,
     ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,
     FixListNumbering,
@@ -831,6 +835,8 @@ impl KeyMap {
 
         // Ctrl-G is unclaimed by terminals: ASCII BEL is generated, never consumed as input.
         bind!("ctrl+g", Action::GoToSection);
+        bind!("f8", Action::ToggleOutline);
+        bind!("f6", Action::FocusOutline);
 
         // The in-flow keys (Tab / Shift-Tab / r / a / Esc) are hard-bound in
         // `search::search_keys`, not here.
@@ -869,6 +875,15 @@ mod tests {
             .collect();
         rows.sort();
         insta::assert_snapshot!(rows.join("\n"));
+    }
+
+    #[test]
+    fn outline_actions_have_default_bindings_and_parseable_names() {
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        for (chord, action) in [("f8", Action::ToggleOutline), ("f6", Action::FocusOutline)] {
+            assert_eq!(km.action_for(&parse_key(chord).unwrap()), Some(&action));
+            assert_eq!(Action::from_str(&action.to_string()).unwrap(), action);
+        }
     }
 
     /// `Action::Open` is a stub, so it must stay unbound — `docs/keybindings.md` says there is

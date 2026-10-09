@@ -15,9 +15,9 @@ use crate::app::App;
 use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
-    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_MATH_PREVIEW, LABEL_REFLOW, LABEL_SCROLL_SPEED,
-    LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES, LABEL_SHOW_REMOTE_IMAGES, LABEL_SYNTAX_HIGHLIGHTING,
-    LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_MATH_PREVIEW, LABEL_OUTLINE, LABEL_REFLOW,
+    LABEL_SCROLL_SPEED, LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES, LABEL_SHOW_REMOTE_IMAGES,
+    LABEL_SYNTAX_HIGHLIGHTING, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
 };
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
@@ -78,6 +78,11 @@ pub(crate) fn apply_live_update(label: &str, app: &mut App) {
         LABEL_SCROLL_SPEED => app
             .mouse
             .set_wheel_step(app.config.editor.mouse_scroll_lines),
+        LABEL_OUTLINE => {
+            app.outline_focused = false;
+            app.outline_browsing = false;
+            app.explain_hidden_outline();
+        }
         LABEL_VISUAL_LINE_NAV => {
             app.editor.visual_line_nav = app.config.editor.visual_line_nav;
         }
@@ -186,6 +191,7 @@ mod tests {
         "Diff when file changes",
         "Limit editor width",
         "Show line numbers",
+        "Show outline",
         "Show table buttons",
     ];
 

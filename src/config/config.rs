@@ -1248,6 +1248,23 @@ extension = "pdf"
     }
 
     #[test]
+    fn outline_preference_defaults_off_and_round_trips_through_merge() {
+        let missing: Config = toml::from_str("[editor]\n").unwrap();
+        assert!(!missing.editor.show_outline);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[editor]\n# retained\nshow_outline = false\n").unwrap();
+        let mut config = Config::default();
+        config.editor.show_outline = true;
+        let merged = save_merge(&config, &path).unwrap();
+        assert!(merged.contains("# retained"));
+        assert!(merged.contains("show_outline = true"));
+        let restored: Config = toml::from_str(&merged).unwrap();
+        assert!(restored.editor.show_outline);
+    }
+
+    #[test]
     fn save_merge_unchanged_config_preserves_file_verbatim() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

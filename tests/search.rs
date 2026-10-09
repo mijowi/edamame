@@ -152,6 +152,12 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
+                outline_enabled: false,
+                outline_focused: false,
+                outline_entries: &[],
+                outline_selected: None,
+                outline_current: None,
+                outline_scroll: 0,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })

@@ -8,6 +8,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Added
+
+- An optional heading outline on the left of the editor, off by default. Press `F8` to show it, `F6` to move focus into it, and `↑`/`↓` (or `j`/`k` in vim mode) to pick a heading; `Enter` or a click jumps to it. Turn it on for good with **Show outline** in Settings or `show_outline = true` in `config.toml`. It hides itself on narrow terminals.
+
 ## [0.1.5] - 2026-10-05
 
 ### Added

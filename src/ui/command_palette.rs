@@ -200,6 +200,8 @@ fn section_of(action: &Action) -> &'static str {
         | Action::ToggleTableButtons
         | Action::ToggleBigH1
         | Action::ToggleLineNumbers
+        | Action::ToggleOutline
+        | Action::FocusOutline
         | Action::ToggleBlinkCursor
         | Action::ToggleAutosave
         | Action::ToggleVisualLineNav
