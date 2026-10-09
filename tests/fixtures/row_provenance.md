@@ -291,7 +291,7 @@ Rows with fewer or more cells than the header. Click an empty cell: on `| 1 |` t
 | 1
 | a | b | c | d | e |
 
-A table in a quote without edge pipes, and one on a footnote leader whose label holds a `|`: a click on the label follows the back-link, and one in a cell lands in that cell, not one over. Tab and the table chords work in both; a column move keeps the quote's `>` and the footnote's label, and `Alt-Shift-↓` adds a row inside the quote or footnote. Neither grows mouse handles (top-level tables only). Below about 16 columns these overflow and wrap, and a click near a wrapped cell's end can land one char left (#69).
+A table in a quote without edge pipes, and one on a footnote leader whose label holds a `|`: a click on the label follows the back-link, and one in a cell lands in that cell, not one over. Tab and the table chords work in both; a column move keeps the quote's `>` and the footnote's label, and `Alt-Shift-↓` adds a row inside the quote or footnote. Both grow mouse handles when the cursor is in them, and every handle keeps the `>` and the label. Below about 16 columns these overflow and wrap, and a click near a wrapped cell's end can land one char left (#69).
 
 > a | b
 > --|--

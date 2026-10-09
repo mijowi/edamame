@@ -250,10 +250,6 @@ impl<'t> Renderer<'t> {
 
     /// Stripe-aware blank separator: a `│ … │ … │` row whose cells carry `cell_style`'s
     /// background while the outer `│`s stay at the border style.
-    ///
-    /// The fill is NBSP (U+00A0), not a space, so
-    /// `ui::table_view::classify_table_sub_lines` can tell a stripe separator from the
-    /// ASCII-space wrap-continuation line `render_table_row` emits.  Visually identical.
     fn blank_table_separator(
         &self,
         widths: &[usize],
@@ -269,7 +265,7 @@ impl<'t> Renderer<'t> {
         spans.push(Span::styled("│", outer_border));
         for i in 0..col_count {
             let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
-            spans.push(Span::styled("\u{00A0}".repeat(width + 2), cell_style));
+            spans.push(Span::styled(" ".repeat(width + 2), cell_style));
             let is_last = i + 1 == col_count;
             spans.push(Span::styled(
                 "│",

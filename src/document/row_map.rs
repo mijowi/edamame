@@ -605,6 +605,7 @@ fn char_at_cell(chars: &[char], cell: usize) -> usize {
 }
 
 /// The leaf `line` (block-relative) belongs to inside `block`.
+/// `parsed_doc::set_table_widths_at` walks the same containers; a new one needs adding to both.
 fn leaf_at(block: &Block, line: u32) -> Option<&Block> {
     match block {
         Block::BlockQuote { blocks, .. } | Block::FootnoteDefinition { blocks, .. } => {
@@ -1034,6 +1035,90 @@ pub fn table_row(parsed: &ParsedDoc, block: usize, row: usize) -> Option<TableRo
         rows: first + band..end + band,
         raw_col,
     })
+}
+
+/// What one rendered row of a table draws, as the renderer recorded it.  Data row `row` is
+/// `TableInfo` row `2 + row` (past the header and the delimiter row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePart {
+    /// `┌─┬─┐`.
+    TopBorder,
+    /// Chunk `sub` of the header.
+    Header { sub: usize },
+    /// `┝━┿━┥`, under the header.
+    HeavyRule,
+    /// Chunk `sub` of data row `row`.
+    DataRow { row: usize, sub: usize },
+    /// Between two data rows: `├─┼─┤`, or a blank stripe under `row_striping`.
+    Separator,
+    /// `└─┴─┘`.
+    BottomBorder,
+}
+
+/// Per row of a block, the table it belongs to (the line its header is on) and the part of it
+/// the row draws: [`table_parts`]'s answer.
+pub type TableParts = Vec<Option<(usize, TablePart)>>;
+
+/// Per row of `block` (indexed as [`table_row`]'s `row`), the table the row belongs to, as the
+/// block-relative line its header is on, and the part of it the row draws; `None` off a table.
+/// Empty for a block that draws no table.  What the table handles' geometry is built from, at
+/// any nesting depth.
+///
+/// Read off the origins' sequence rather than their lines: a table starts at the one chrome row
+/// showing no line directly above a header chunk (its top border), and a chrome row is a
+/// separator when a data row follows it, else the bottom border.  The heavy rule and the bottom
+/// border of a table with no data rows show the same line, and a separator shows the line of
+/// the row above it, as the bottom border does.
+pub fn table_parts(parsed: &ParsedDoc, block: usize) -> TableParts {
+    let (origins, band) = own_origins(parsed, block);
+    let cells = |i: usize| match origins.get(i)?.cols {
+        ColOrigin::Content {
+            kind: ContentKind::TableRow { row, sub },
+            ..
+        } => Some((row as usize, sub as usize)),
+        _ => None,
+    };
+    if !(0..origins.len()).any(|i| cells(i).is_some()) {
+        return Vec::new();
+    }
+    let mut out = vec![None; band + origins.len()];
+    let data = |i: usize| cells(i).filter(|&(row, _)| row > 0);
+    let chrome = |i: usize| origins.get(i).is_some_and(|o| o.cols == ColOrigin::Chrome);
+    let mut i = 0;
+    while i < origins.len() {
+        if !(chrome(i) && origins[i].lines.is_none() && cells(i + 1) == Some((0, 0))) {
+            i += 1;
+            continue;
+        }
+        let Some(header) = origins[i + 1].first_line().map(|l| l as usize) else {
+            i += 1;
+            continue;
+        };
+        let mut mark = |i: usize, part| out[band + i] = Some((header, part));
+        mark(i, TablePart::TopBorder);
+        i += 1;
+        while let Some((0, sub)) = cells(i) {
+            mark(i, TablePart::Header { sub });
+            i += 1;
+        }
+        if chrome(i) {
+            mark(i, TablePart::HeavyRule);
+            i += 1;
+        }
+        while chrome(i) || data(i).is_some() {
+            if let Some((row, sub)) = data(i) {
+                mark(i, TablePart::DataRow { row: row - 1, sub });
+            } else if data(i + 1).is_some() {
+                mark(i, TablePart::Separator);
+            } else {
+                mark(i, TablePart::BottomBorder);
+                i += 1;
+                break;
+            }
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1610,5 +1695,69 @@ mod tests {
                 "{src:?}"
             );
         }
+    }
+
+    /// Every row's table part, read off the origins: borders, the heavy rule, a wrapped data
+    /// row's chunks and the separators between rows, striped or ruled alike, and nothing for the
+    /// list marker's own row above a table opening on it.
+    #[test]
+    fn table_parts_follow_the_rows_the_renderer_drew() {
+        use TablePart::*;
+        let build = |src: &str, striping: bool| {
+            ParsedDoc::build_with_overrides(
+                src,
+                theme(),
+                true,
+                4,
+                None,
+                None,
+                striping,
+                24,
+                false,
+                false,
+                true,
+                false,
+                None,
+            )
+        };
+        let wrapped = "| a | b |\n|---|---|\n| 1 | alpha bravo charlie delta |\n| 3 | 4 |\n";
+        for striping in [false, true] {
+            let parsed = build(wrapped, striping);
+            let parts: Vec<_> = table_parts(&parsed, 0).into_iter().flatten().collect();
+            let want = [
+                TopBorder,
+                Header { sub: 0 },
+                HeavyRule,
+                DataRow { row: 0, sub: 0 },
+                DataRow { row: 0, sub: 1 },
+                Separator,
+                DataRow { row: 1, sub: 0 },
+                BottomBorder,
+            ];
+            assert_eq!(parts, want.map(|p| (0, p)), "striping {striping}");
+        }
+
+        assert!(
+            table_parts(&doc("para\n"), 0).is_empty(),
+            "a block with no table"
+        );
+
+        // A table with no data rows: its heavy rule and bottom border show the same line.
+        let parsed = doc("| a |\n|---|\n");
+        let parts: Vec<_> = table_parts(&parsed, 0).into_iter().flatten().collect();
+        let want = [TopBorder, Header { sub: 0 }, HeavyRule, BottomBorder];
+        assert_eq!(parts, want.map(|p| (0, p)));
+
+        // In a list item opening on the table, the marker's row comes first and is no part;
+        // the second table's header is on block-relative line 4.
+        let parsed = doc("- | a |\n  |---|\n  | 1 |\n\n  | c |\n  |---|\n");
+        let parts = table_parts(&parsed, 0);
+        assert_eq!(parts[0], None, "the marker's row");
+        assert_eq!(parts[1], Some((0, TopBorder)));
+        assert_eq!(parts[4], Some((0, DataRow { row: 0, sub: 0 })));
+        assert_eq!(parts[5], Some((0, BottomBorder)));
+        let second: Vec<_> = parts.iter().flatten().filter(|(h, _)| *h == 4).collect();
+        assert_eq!(second.first(), Some(&&(4, TopBorder)));
+        assert_eq!(second.last(), Some(&&(4, BottomBorder)));
     }
 }

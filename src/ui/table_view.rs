@@ -15,9 +15,9 @@ use std::ops::Range;
 use ratatui::buffer::Buffer as TuiBuf;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
 
 use crate::config::Theme;
+use crate::document::row_map::{self, TablePart};
 use crate::editor::{table_edit_ops, EditorState};
 use crate::markdown::table_layout;
 
@@ -324,12 +324,16 @@ pub fn build_snapshots(
     let height = area.height as usize;
 
     // The open snapshot stays open through border / separator rows so a multi-row table merges
-    // into one snapshot; it closes only when the rendered line leaves the table block.
+    // into one snapshot; it closes only when the rendered line leaves the table.
     let mut open_table: Option<TableLayoutSnapshot> = None;
-    let mut open_table_block: Option<usize> = None; // block byte_start
-                                                    // Per-data-row span accumulator: opened by a row's first `DataRow` sub-line, extended by its
-                                                    // continuations, pushed onto `snap.row_ranges` when a separator closes the row.
+    // The source line of the open snapshot's table's header.
+    let mut open_table_line: Option<usize> = None;
+    // Per-data-row span accumulator: opened by a row's first `DataRow` sub-line, extended by its
+    // continuations, pushed onto `snap.row_ranges` when a separator closes the row.
     let mut current_data_row_y: Option<(usize, Range<u16>)> = None;
+    // The block last read, its first rendered line, and its rows' table parts with the header
+    // lines made absolute: one read per block, not per line.
+    let mut block_parts: Option<(usize, usize, row_map::TableParts)> = None;
 
     while vis_y < height && virtual_idx < total {
         let Some(line) = lines.get(virtual_idx) else {
@@ -341,50 +345,50 @@ pub fn build_snapshots(
             .max(1);
         let rows_used = full_rows_used.saturating_sub(first_sub_row).max(1);
 
-        // Does this rendered line belong to a table block?
-        let block_byte = state
-            .parsed
-            .source_map
-            .original_byte_for_rendered_line(virtual_idx);
-        let mut current_block: Option<usize> = None;
-        // Drives everything from row-handle placement to row_range accumulation.
-        let mut sub_kind: Option<TableSubLineKind> = None;
-        if let Some(bb) = block_byte {
-            if let Some(range) = state.parsed.source_map.original_range_for_byte(bb) {
-                // A top-level table, by the parse: nested tables get no handles.
-                if matches!(
-                    state.parsed.real_block_for_byte(range.start),
-                    Some(crate::markdown::Block::Table { .. })
-                ) {
-                    current_block = Some(range.start);
-                    let own = state.parsed.source_map.rendered_lines_for_byte(range.start);
-                    let sub_in_block = virtual_idx.saturating_sub(own.start);
-                    let block_lines = lines.get(own.start..own.end).unwrap_or(&[]);
-                    let kinds = classify_table_sub_lines(block_lines);
-                    sub_kind = kinds.get(sub_in_block).copied();
+        // Which table this rendered line belongs to, at any depth, by the parse's row origins:
+        // the source line of its header, and the part it draws.
+        let mut part: Option<(usize, TablePart)> = None;
+        if let Some(block) = state.parsed.source_map.block_for_rendered_line(virtual_idx) {
+            if block_parts.as_ref().is_none_or(|(b, ..)| *b != block) {
+                let map = &state.parsed.source_map;
+                let first_line = map
+                    .original_range_for_block(block)
+                    .map_or(0, |r| state.parsed.byte_to_line(r.start));
+                let mut parts = row_map::table_parts(&state.parsed, block);
+                for (header, _) in parts.iter_mut().flatten() {
+                    *header += first_line;
                 }
+                block_parts = Some((block, map.rendered_lines_for_block(block).start, parts));
+            }
+            if let Some((_, first_row, parts)) = block_parts.as_ref() {
+                part = parts
+                    .get(virtual_idx.saturating_sub(*first_row))
+                    .copied()
+                    .flatten();
             }
         }
+        let current_table = part.map(|(header, _)| header);
+        let sub_kind = part.map(|(_, p)| p);
 
-        // Close the open snapshot if we've moved into a different block.
-        if current_block != open_table_block {
+        // Close the open snapshot if we've moved off its table.
+        if current_table != open_table_line {
             if let Some(mut prev) = open_table.take() {
                 if let Some((_, range)) = current_data_row_y.take() {
                     prev.row_ranges.push(range);
                 }
                 out.push(prev);
             }
-            open_table_block = None;
+            open_table_line = None;
             current_data_row_y = None;
         }
 
-        if let Some(table_start) = current_block {
+        if let Some(header_line) = current_table {
             // Open a new snapshot if we aren't already tracking this table.
             if open_table.is_none() {
                 // By line: the parse's bytes drift from the buffer's while an in-line edit
                 // defers the re-parse, its lines don't.
                 let rope = state.buffer.rope();
-                let line = state.parsed.byte_to_line(table_start).min(rope.len_lines());
+                let line = header_line.min(rope.len_lines());
                 if let Some(info) = table_edit_ops::locate_table(state, rope.line_to_byte(line)) {
                     open_table = Some(TableLayoutSnapshot {
                         table_byte_start: info.start,
@@ -399,7 +403,7 @@ pub fn build_snapshots(
                         delete_row_handle_col: None,
                         bottom_border_row: None,
                     });
-                    open_table_block = Some(table_start);
+                    open_table_line = Some(header_line);
                 }
             }
 
@@ -421,28 +425,28 @@ pub fn build_snapshots(
                 let y_end = y + rows_used as u16;
 
                 match sub_kind {
-                    Some(TableSubLineKind::TopBorder) => {
+                    Some(TablePart::TopBorder) => {
                         if show_handles && snap.top_border_row.is_none() {
                             snap.top_border_row = Some(y);
                         }
                     }
-                    Some(TableSubLineKind::Header { sub: 0 }) => {
+                    Some(TablePart::Header { sub: 0 }) => {
                         // Anchor the column-resize glyph row on the header's first sub-line.
                         if show_handles && snap.header_row.is_none() {
                             snap.header_row = Some(y);
                         }
                     }
-                    Some(TableSubLineKind::Header { .. }) => {
+                    Some(TablePart::Header { .. }) => {
                         // A wrapped header's continuation lines anchor nothing new.
                     }
-                    Some(TableSubLineKind::ThickSeparator)
-                    | Some(TableSubLineKind::ThinSeparator)
-                    | Some(TableSubLineKind::BottomBorder) => {
+                    Some(TablePart::HeavyRule)
+                    | Some(TablePart::Separator)
+                    | Some(TablePart::BottomBorder) => {
                         // A separator closes the current data row's span.
                         if let Some((_, range)) = current_data_row_y.take() {
                             snap.row_ranges.push(range);
                         }
-                        if matches!(sub_kind, Some(TableSubLineKind::BottomBorder))
+                        if matches!(sub_kind, Some(TablePart::BottomBorder))
                             && show_handles
                             && snap.bottom_border_row.is_none()
                             && snap.col_count > 1
@@ -451,19 +455,17 @@ pub fn build_snapshots(
                             snap.bottom_border_row = Some(y);
                         }
                     }
-                    Some(TableSubLineKind::DataRow { row, .. }) => {
-                        match current_data_row_y.as_mut() {
-                            Some((existing_row, range)) if *existing_row == row => {
-                                range.end = y_end;
-                            }
-                            _ => {
-                                if let Some((_, prev_range)) = current_data_row_y.take() {
-                                    snap.row_ranges.push(prev_range);
-                                }
-                                current_data_row_y = Some((row, y..y_end));
-                            }
+                    Some(TablePart::DataRow { row, .. }) => match current_data_row_y.as_mut() {
+                        Some((existing_row, range)) if *existing_row == row => {
+                            range.end = y_end;
                         }
-                    }
+                        _ => {
+                            if let Some((_, prev_range)) = current_data_row_y.take() {
+                                snap.row_ranges.push(prev_range);
+                            }
+                            current_data_row_y = Some((row, y..y_end));
+                        }
+                    },
                     None => {}
                 }
 
@@ -482,8 +484,6 @@ pub fn build_snapshots(
                     snap.delete_row_handle_col = Some(outer_right);
                 }
             }
-        } else {
-            // Left the table block — any open snapshot was closed above.
         }
 
         vis_y += rows_used;
@@ -498,110 +498,6 @@ pub fn build_snapshots(
         out.push(prev);
     }
     out
-}
-
-/// Classification of one rendered line within a table block, for every consumer mapping a sub-line
-/// index back to a logical row.  Fixed-pattern math can't do this job: a wrapped data row occupies
-/// any number of consecutive `│`-prefixed lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TableSubLineKind {
-    /// Top border (`┌─┬─┐`).  Always sub 0.
-    TopBorder,
-    /// A header line; `sub` is its 0-indexed row within the (possibly wrapped) header.
-    Header { sub: usize },
-    /// Thick separator under the header (`┝━┿━┥`).
-    ThickSeparator,
-    /// A line of data row `row` (0-indexed across data rows, so `TableInfo.rows[row +
-    /// HEADER_ROWS]`); `sub` is its visual row within that data row.
-    DataRow { row: usize, sub: usize },
-    /// Thin separator between two data rows (`├─┼─┤`).
-    ThinSeparator,
-    /// Bottom border (`└─┴─┘`).
-    BottomBorder,
-}
-
-/// Classify every rendered sub-line of a table block by its leading box-drawing glyph.  The result
-/// is indexed by `sub_in_block`, so its length matches `lines.len()`.
-///
-/// Under `config.table.row_striping` the renderer emits a *blank* `│ … │` line in place of the
-/// `├─┼─┤` rule; those are detected by shape and classified as `ThinSeparator` so the row-counting
-/// logic keeps working.
-pub fn classify_table_sub_lines(lines: &[Line<'_>]) -> Vec<TableSubLineKind> {
-    let mut out = Vec::with_capacity(lines.len());
-    let mut past_thick = false;
-    let mut current_header_sub = 0usize;
-    let mut current_data_row = 0usize;
-    let mut current_data_sub = 0usize;
-    let mut prev_was_data = false;
-    for line in lines {
-        let first = line
-            .spans
-            .iter()
-            .flat_map(|s| s.content.chars())
-            .next()
-            .unwrap_or(' ');
-        let kind = match first {
-            '┌' => TableSubLineKind::TopBorder,
-            '┝' => {
-                past_thick = true;
-                prev_was_data = false;
-                TableSubLineKind::ThickSeparator
-            }
-            '├' => {
-                if prev_was_data {
-                    current_data_row += 1;
-                    current_data_sub = 0;
-                }
-                prev_was_data = false;
-                TableSubLineKind::ThinSeparator
-            }
-            '└' => TableSubLineKind::BottomBorder,
-            '│' => {
-                let blank_stripe_separator =
-                    past_thick && prev_was_data && is_blank_stripe_line(line);
-                if blank_stripe_separator {
-                    current_data_row += 1;
-                    current_data_sub = 0;
-                    prev_was_data = false;
-                    TableSubLineKind::ThinSeparator
-                } else if past_thick {
-                    let sub = current_data_sub;
-                    current_data_sub += 1;
-                    prev_was_data = true;
-                    TableSubLineKind::DataRow {
-                        row: current_data_row,
-                        sub,
-                    }
-                } else {
-                    let sub = current_header_sub;
-                    current_header_sub += 1;
-                    TableSubLineKind::Header { sub }
-                }
-            }
-            _ => {
-                // Unrecognized leading glyph: treat as a header line rather than panicking.
-                TableSubLineKind::Header { sub: 0 }
-            }
-        };
-        out.push(kind);
-    }
-    out
-}
-
-/// True for lines made only of `│` plus NBSP — the exact shape `Renderer::blank_table_separator`
-/// produces.  ASCII-space-only lines deliberately do *not* qualify, so a wrap-continuation line
-/// (ASCII-padded) can't be mistaken for a separator; a data row carrying NBSP from a code-span pad
-/// still has ASCII cell padding alongside it, which disqualifies it here.
-fn is_blank_stripe_line(line: &Line<'_>) -> bool {
-    let mut saw_nbsp = false;
-    for c in line.spans.iter().flat_map(|s| s.content.chars()) {
-        match c {
-            '│' => {}
-            '\u{00A0}' => saw_nbsp = true,
-            _ => return false,
-        }
-    }
-    saw_nbsp
 }
 
 // ── Handle rendering ────────────────────────────────────────────────────────
@@ -1205,89 +1101,5 @@ mod tests {
             snapshots[0].col_count, 999,
             "snapshots must be rebuilt when show_handles changes",
         );
-    }
-
-    #[test]
-    fn classify_table_sub_lines_simple_table() {
-        use ratatui::text::Span;
-        let lines = vec![
-            Line::from(Span::raw("┌──┬──┐")),
-            Line::from(Span::raw("│ a│ b│")),
-            Line::from(Span::raw("┝━━┿━━┥")),
-            Line::from(Span::raw("│ 1│ 2│")),
-            Line::from(Span::raw("├──┼──┤")),
-            Line::from(Span::raw("│ 3│ 4│")),
-            Line::from(Span::raw("└──┴──┘")),
-        ];
-        let kinds = classify_table_sub_lines(&lines);
-        assert_eq!(kinds[0], TableSubLineKind::TopBorder);
-        assert_eq!(kinds[1], TableSubLineKind::Header { sub: 0 });
-        assert_eq!(kinds[2], TableSubLineKind::ThickSeparator);
-        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
-        assert_eq!(kinds[4], TableSubLineKind::ThinSeparator);
-        assert_eq!(kinds[5], TableSubLineKind::DataRow { row: 1, sub: 0 });
-        assert_eq!(kinds[6], TableSubLineKind::BottomBorder);
-    }
-
-    #[test]
-    fn classify_table_sub_lines_multirow_data_row() {
-        use ratatui::text::Span;
-        // Data row 0 wraps to two lines, data row 1 stays one line.
-        let lines = vec![
-            Line::from(Span::raw("┌──┬──┐")),
-            Line::from(Span::raw("│ a│ b│")),
-            Line::from(Span::raw("┝━━┿━━┥")),
-            Line::from(Span::raw("│ 1│ x│")),
-            Line::from(Span::raw("│  │ y│")),
-            Line::from(Span::raw("├──┼──┤")),
-            Line::from(Span::raw("│ 3│ 4│")),
-            Line::from(Span::raw("└──┴──┘")),
-        ];
-        let kinds = classify_table_sub_lines(&lines);
-        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
-        assert_eq!(kinds[4], TableSubLineKind::DataRow { row: 0, sub: 1 });
-        assert_eq!(kinds[5], TableSubLineKind::ThinSeparator);
-        assert_eq!(kinds[6], TableSubLineKind::DataRow { row: 1, sub: 0 });
-    }
-
-    /// The NBSP padding of `blank_table_separator` is what distinguishes it from an
-    /// ASCII-padded wrap continuation; classify must read it as a `ThinSeparator`.
-    #[test]
-    fn classify_table_sub_lines_blank_stripe_separator() {
-        use ratatui::text::Span;
-        // NBSP between pipes marks the stripe separator (line index 4).
-        let lines = vec![
-            Line::from(Span::raw("┌──┬──┐")),
-            Line::from(Span::raw("│ a│ b│")),
-            Line::from(Span::raw("┝━━┿━━┥")),
-            Line::from(Span::raw("│ 1│ 2│")),
-            Line::from(Span::raw(
-                "│\u{00A0}\u{00A0}\u{00A0}│\u{00A0}\u{00A0}\u{00A0}│",
-            )),
-            Line::from(Span::raw("│ 3│ 4│")),
-            Line::from(Span::raw("└──┴──┘")),
-        ];
-        let kinds = classify_table_sub_lines(&lines);
-        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
-        assert_eq!(kinds[4], TableSubLineKind::ThinSeparator);
-        assert_eq!(kinds[5], TableSubLineKind::DataRow { row: 1, sub: 0 });
-    }
-
-    /// Counterpart to the NBSP test: an ASCII-padded wrap continuation must not be misclassified
-    /// as a stripe separator.
-    #[test]
-    fn classify_table_sub_lines_ascii_space_padded_continuation_stays_data() {
-        use ratatui::text::Span;
-        let lines = vec![
-            Line::from(Span::raw("┌──┬──┐")),
-            Line::from(Span::raw("│ a│ b│")),
-            Line::from(Span::raw("┝━━┿━━┥")),
-            Line::from(Span::raw("│hi│ y│")),
-            Line::from(Span::raw("│  │  │")), // both cells empty on continuation
-            Line::from(Span::raw("└──┴──┘")),
-        ];
-        let kinds = classify_table_sub_lines(&lines);
-        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
-        assert_eq!(kinds[4], TableSubLineKind::DataRow { row: 0, sub: 1 });
     }
 }

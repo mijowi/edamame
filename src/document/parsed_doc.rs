@@ -10,6 +10,7 @@ use crate::document::row_map::{JoinedMap, RowCache};
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::wrap::Indent;
 use crate::document::SourceMap;
+use crate::markdown::ast::to_u32;
 use crate::markdown::{
     attach_nested_tui_columns_comments, inlines_to_plain, parse_document,
     promote_diagram_code_blocks, promote_display_math_paragraphs, promote_html_comments,
@@ -236,7 +237,7 @@ impl ParsedDoc {
             HashMap::new()
         };
         if let Some((override_start, widths)) = live_table_widths {
-            apply_live_table_widths(&mut blocks, &real_ranges, *override_start, widths);
+            apply_live_table_widths(&mut blocks, &real_ranges, source, *override_start, widths);
         }
 
         // The viewport width feeds the table-column min-max distribution, so wide tables
@@ -746,25 +747,53 @@ pub(crate) fn uniquify_slug(base: &str, counts: &mut HashMap<String, usize>) -> 
     slug
 }
 
-/// Splice a `user_widths` override onto the `Block::Table` whose range starts at
-/// `override_start`, for the column-resize drag's preview.
+/// Splice a `user_widths` override onto the `Block::Table` whose header line starts at
+/// `override_start`, at any nesting depth, for the column-resize drag's preview.  Matched by
+/// source line: a nested table's header shares its line with the container's prefix, so no
+/// block range starts at it.
 fn apply_live_table_widths(
     blocks: &mut [crate::markdown::ast::Block],
     real_ranges: &[Range<usize>],
+    source: &str,
     override_start: usize,
     widths: &[Option<usize>],
 ) {
-    use crate::markdown::ast::Block;
     // Blocks and ranges are emitted in the same order, so they pair by index before the
-    // trailing-comment merge runs.
-    let mut block_i = 0usize;
-    while block_i < blocks.len() && block_i < real_ranges.len() {
-        if real_ranges[block_i].start == override_start {
-            if let Block::Table { user_widths, .. } = &mut blocks[block_i] {
-                *user_widths = Some(widths.to_vec());
-            }
-        }
-        block_i += 1;
+    // trailing-comment merge runs.  Ranges ascend and don't overlap, so the only block that can
+    // hold the header is the last one starting at or before it.
+    let Some(i) = real_ranges
+        .iter()
+        .take(blocks.len())
+        .rposition(|r| r.start <= override_start)
+    else {
+        return;
+    };
+    let newlines = |text: &str| memchr::memchr_iter(b'\n', text.as_bytes()).count();
+    let start = real_ranges[i].start.min(source.len());
+    let to_header = newlines(&source[start..override_start.min(source.len())]);
+    set_table_widths_at(&mut blocks[i], to_u32(to_header), widths);
+}
+
+/// Set `user_widths` on the table in `block` whose block-relative first line is `line`.  Walks
+/// the containers as `row_map::leaf_at` does; a new container kind needs adding to both.
+fn set_table_widths_at(
+    block: &mut crate::markdown::ast::Block,
+    line: u32,
+    widths: &[Option<usize>],
+) {
+    use crate::markdown::ast::Block;
+    match block {
+        Block::BlockQuote { blocks, .. } | Block::FootnoteDefinition { blocks, .. } => blocks
+            .iter_mut()
+            .for_each(|b| set_table_widths_at(b, line, widths)),
+        Block::List { items, .. } => items
+            .iter_mut()
+            .flat_map(|item| &mut item.blocks)
+            .for_each(|b| set_table_widths_at(b, line, widths)),
+        Block::Table {
+            user_widths, src, ..
+        } if src.first == line => *user_widths = Some(widths.to_vec()),
+        _ => {}
     }
 }
 

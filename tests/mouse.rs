@@ -13,6 +13,7 @@ use edamame::config::{Action, Theme};
 use edamame::document::Buffer;
 use edamame::editor::{edit_ops, mouse_ops, EditorState, Mode};
 use edamame::input::{MouseAction, MouseDispatcher};
+use edamame::ui::table_view;
 use ratatui::layout::Rect;
 
 const VP: usize = 40;
@@ -4120,4 +4121,222 @@ fn preview_click_past_the_end_of_a_wrapped_row_stays_on_that_row() {
         "click on row 1 placed the caret on row {sub} (char col {char_col})",
     );
     assert_eq!(char_col, 19, "caret should rest on row 1's last char");
+}
+
+// ── Handles on nested tables ────────────────────────────────────────────────
+
+/// One table in each container the parse nests one in, with two data rows, and the prefix its
+/// continuation lines carry: a list item, a quote, a footnote, a list item inside a quote.
+const NESTED_TABLES: [(&str, &str); 4] = [
+    ("- | a | b |\n  |---|---|\n  | 1 | 2 |\n  | 3 | 4 |\n", "  "),
+    ("> | a | b |\n> |---|---|\n> | 1 | 2 |\n> | 3 | 4 |\n", "> "),
+    (
+        "x[^n]\n\n[^n]: | a | b |\n    |---|---|\n    | 1 | 2 |\n    | 3 | 4 |\n",
+        "    ",
+    ),
+    (
+        "> - | a | b |\n>   |---|---|\n>   | 1 | 2 |\n>   | 3 | 4 |\n",
+        ">   ",
+    ),
+];
+
+/// `src` in Rendered mode with the cursor in its table's first data cell, and that table's
+/// snapshot, handles on, built as the view builds it.
+fn nested_table_state(src: &str) -> (EditorState, table_view::TableLayoutSnapshot) {
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("1 |").unwrap();
+    let snaps = table_view::build_snapshots(&st, Rect::new(0, 0, VW as u16, VP as u16), true);
+    assert_eq!(snaps.len(), 1, "one snapshot for {src:?}");
+    (st, snaps[0].clone())
+}
+
+/// Press at `from`, drag to `to`, release: one handle gesture.
+fn gesture(
+    st: &mut EditorState,
+    snap: &table_view::TableLayoutSnapshot,
+    from: (u16, u16),
+    to: (u16, u16),
+) {
+    let snapshots = [snap.clone()];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(st, click(from.0, from.1), &mut target, &snapshots, VP, VW);
+    mouse_ops::apply(st, drag(to.0, to.1), &mut target, &snapshots, VP, VW);
+    mouse_ops::apply(st, MouseAction::Release, &mut target, &snapshots, VP, VW);
+}
+
+/// A nested table grows the same handles a top-level one does, each placed on its own rows.
+#[test]
+fn a_nested_table_gets_every_handle() {
+    for (src, _) in NESTED_TABLES {
+        let (_, snap) = nested_table_state(src);
+        let table_start = src.find("| a").unwrap();
+        let line_start = src[..table_start].rfind('\n').map_or(0, |i| i + 1);
+        assert_eq!(snap.table_byte_start, line_start, "{src:?}");
+        assert_eq!((snap.col_count, snap.row_count), (2, 4), "{src:?}");
+        assert_eq!(snap.row_ranges.len(), 2, "{src:?}");
+        assert!(snap.top_border_row.is_some(), "{src:?}");
+        assert!(snap.header_row.is_some(), "{src:?}");
+        assert!(snap.bottom_border_row.is_some(), "{src:?}");
+        assert!(snap.row_handle_col.is_some(), "{src:?}");
+        assert!(snap.delete_row_handle_col.is_some(), "{src:?}");
+        assert_eq!(
+            snap.hit_test(snap.col_ranges[0].start + 1, snap.row_ranges[1].start),
+            Some(table_view::TableHit::Cell {
+                row_idx: 3,
+                col_idx: 0
+            }),
+            "{src:?}"
+        );
+    }
+}
+
+/// Every handle edits a nested table in place, keeping each line's container prefix.
+#[test]
+fn handles_edit_a_nested_table_inside_its_container() {
+    let swap = |s: &str, a: &str, b: &str| s.replace(a, "\0").replace(b, a).replace('\0', b);
+    for (src, prefix) in NESTED_TABLES {
+        // Row handle: drag data row 0 below data row 1.
+        let (mut st, snap) = nested_table_state(src);
+        let x = snap.row_handle_col.unwrap();
+        let (y0, y1) = (snap.row_ranges[0].start, snap.row_ranges[1].start);
+        gesture(&mut st, &snap, (x, y0), (x, y1));
+        assert_eq!(
+            st.contents(),
+            swap(src, "| 1 | 2 |", "| 3 | 4 |"),
+            "row drag"
+        );
+
+        // Column handle: drag column 0 onto column 1.
+        let (mut st, snap) = nested_table_state(src);
+        let y = snap.top_border_row.unwrap();
+        let mid = |r: &std::ops::Range<u16>| r.start + (r.end - r.start) / 2;
+        gesture(
+            &mut st,
+            &snap,
+            (mid(&snap.col_ranges[0]), y),
+            (mid(&snap.col_ranges[1]), y),
+        );
+        let want = swap(
+            &swap(src, "| a | b |", "| b | a |"),
+            "| 1 | 2 |",
+            "| 2 | 1 |",
+        );
+        let want = swap(&want, "| 3 | 4 |", "| 4 | 3 |");
+        assert_eq!(st.contents(), want, "column drag");
+
+        // Row delete: click data row 0's `✕` (the first click on a handle only focuses, and the
+        // cursor is already in the table).
+        let (mut st, snap) = nested_table_state(src);
+        let snapshots = [snap.clone()];
+        let mut target: Option<mouse_ops::DragTarget> = None;
+        let (x, y) = (
+            snap.delete_row_handle_col.unwrap(),
+            snap.row_ranges[0].start,
+        );
+        mouse_ops::apply(&mut st, click(x, y), &mut target, &snapshots, VP, VW);
+        assert_eq!(
+            st.contents(),
+            src.replace(&format!("{prefix}| 1 | 2 |\n"), ""),
+            "row delete"
+        );
+
+        // Column resize: widen column 0 by dragging its border on the header row.  The preview
+        // reaches the nested table, and the comment lands in the container.
+        let (mut st, snap) = nested_table_state(src);
+        let (x, y) = (snap.col_ranges[0].end, snap.header_row.unwrap());
+        let snapshots = [snap.clone()];
+        let mut target: Option<mouse_ops::DragTarget> = None;
+        mouse_ops::apply(&mut st, click(x, y), &mut target, &snapshots, VP, VW);
+        mouse_ops::apply(&mut st, drag(x + 3, y), &mut target, &snapshots, VP, VW);
+        let area = Rect::new(0, 0, VW as u16, VP as u16);
+        let widened = table_view::build_snapshots(&st, area, true)[0].col_ranges[0].clone();
+        assert_eq!(
+            widened.end - widened.start,
+            snap.col_ranges[0].end - snap.col_ranges[0].start + 3,
+            "the live preview widens a nested table: {src:?}"
+        );
+        mouse_ops::apply(
+            &mut st,
+            MouseAction::Release,
+            &mut target,
+            &snapshots,
+            VP,
+            VW,
+        );
+        st.commit_pending_column_widths();
+        let comment = st
+            .contents()
+            .lines()
+            .find(|l| l.contains("tui-columns"))
+            .map(str::to_owned);
+        assert!(
+            comment
+                .as_deref()
+                .is_some_and(|c| c.starts_with(&format!("{prefix}<!--"))),
+            "the widths comment stays in the container: {comment:?}"
+        );
+        let committed = table_view::build_snapshots(&st, area, true);
+        assert_eq!(committed.len(), 1, "the comment renders nothing: {src:?}");
+        assert_eq!(
+            committed[0].col_ranges[0], widened,
+            "the widths persist: {src:?}"
+        );
+    }
+}
+
+/// Two tables in one list item get a snapshot each, and the second one's resize previews on it
+/// alone, matched by its header's line.
+#[test]
+fn two_tables_in_one_list_item_get_a_snapshot_each() {
+    let src = "- | a | b |\n  |---|---|\n  | 1 | 2 |\n\n  | c | d |\n  |---|---|\n  | 3 | 4 |\n  | 5 | 6 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("3 |").unwrap();
+    let area = Rect::new(0, 0, VW as u16, VP as u16);
+    let snaps = table_view::build_snapshots(&st, area, true);
+    assert_eq!(snaps.len(), 2);
+    assert_eq!(snaps[0].table_byte_start, 0);
+    assert_eq!(snaps[1].table_byte_start, src.find("  | c").unwrap());
+    assert_eq!(snaps[0].row_ranges.len(), 1);
+    assert_eq!(snaps[1].row_ranges.len(), 2);
+
+    let snap = snaps[1].clone();
+    let (x, y) = (snap.col_ranges[0].end, snap.header_row.unwrap());
+    let snapshots = [snap.clone()];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(x, y), &mut target, &snapshots, VP, VW);
+    mouse_ops::apply(&mut st, drag(x + 3, y), &mut target, &snapshots, VP, VW);
+    let live = table_view::build_snapshots(&st, area, true);
+    let width = |r: &std::ops::Range<u16>| r.end - r.start;
+    assert_eq!(
+        width(&live[1].col_ranges[0]),
+        width(&snap.col_ranges[0]) + 3,
+        "the second table widens"
+    );
+    assert_eq!(
+        live[0].col_ranges, snaps[0].col_ranges,
+        "the first table keeps its widths"
+    );
+}
+
+/// Under row striping, a nested table's blank stripes still separate its data rows.
+#[test]
+fn a_striped_nested_table_splits_its_rows_at_the_stripes() {
+    for (src, _) in NESTED_TABLES {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.set_row_striping(true);
+        st.cursor.offset = src.find("1 |").unwrap();
+        let snaps = table_view::build_snapshots(&st, Rect::new(0, 0, VW as u16, VP as u16), true);
+        assert_eq!(snaps.len(), 1, "{src:?}");
+        let rows = &snaps[0].row_ranges;
+        assert_eq!(rows.len(), 2, "{src:?}");
+        assert_eq!(
+            rows[0].end + 1,
+            rows[1].start,
+            "one stripe between: {src:?}"
+        );
+        assert!(snaps[0].bottom_border_row.is_some(), "{src:?}");
+    }
 }

@@ -136,7 +136,7 @@ Each row keeps the style you wrote it in: a table without pipes at its row ends 
 
 ### With a mouse
 
-When your terminal supports a mouse, the table your cursor is in grows handles (top-level tables only, not ones inside a list, quote, or footnote):
+When your terminal supports a mouse, the table your cursor is in grows handles, wherever it sits (inside a list, quote, or footnote too):
 
 - **`⠿`** at the left of a row, or on top of a column — drag to reorder
 - **`⇔`** on the header row's dividers — drag to resize a column

@@ -91,9 +91,14 @@ impl SourceMap {
         self.extended_ranges.len()
     }
 
+    /// The block that produced `rendered_line`.
+    pub fn block_for_rendered_line(&self, rendered_line: usize) -> Option<usize> {
+        self.rendered_to_block.get(rendered_line).copied()
+    }
+
     /// Original byte-range start of the block that produced `rendered_line`.
     pub fn original_byte_for_rendered_line(&self, rendered_line: usize) -> Option<usize> {
-        let block_idx = *self.rendered_to_block.get(rendered_line)?;
+        let block_idx = self.block_for_rendered_line(rendered_line)?;
         self.original_ranges.get(block_idx).map(|r| r.start)
     }
 
