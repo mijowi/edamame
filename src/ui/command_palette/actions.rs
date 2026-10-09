@@ -32,6 +32,8 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // The settings-overlay booleans.
     Action::ToggleBigH1,
     Action::ToggleLineNumbers,
+    Action::ToggleOutline,
+    Action::FocusOutline,
     Action::ToggleBlinkCursor,
     Action::ToggleAutosave,
     Action::ToggleVisualLineNav,
@@ -99,6 +101,8 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::ToggleTableButtons => "Toggle table buttons",
         Action::ToggleBigH1 => "Toggle big H1 headings",
         Action::ToggleLineNumbers => "Toggle line numbers",
+        Action::ToggleOutline => "Toggle outline",
+        Action::FocusOutline => "Focus outline / editor",
         Action::ToggleBlinkCursor => "Toggle cursor blink",
         Action::ToggleAutosave => "Toggle autosave",
         Action::ToggleVisualLineNav => "Toggle visual line navigation",

@@ -22,6 +22,7 @@ pub mod markdown_cheat_sheet;
 pub mod modal;
 pub(crate) mod modal_links;
 pub mod modal_row;
+pub mod outline;
 pub mod overlay_nav;
 pub mod preview;
 pub mod raw_view;
@@ -60,6 +61,7 @@ pub use link_view::{LinkLayoutSnapshot, LinkRun};
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
 pub(crate) use modal_links::{ModalLink, ModalLinkTarget};
+pub use outline::{split_outline_area, OutlineView};
 pub use scroll_container::{ModalKind, MAX_PAD_H, MIN_PAD_H, PROSE_CONTENT_WIDTH};
 // Used by integration tests in tests/ui.rs.
 #[allow(unused_imports)]

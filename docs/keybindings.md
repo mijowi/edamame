@@ -21,10 +21,14 @@ The keybindings overlay lists every chord and lets you rebind on the spot — `C
 | `Ctrl-Q` | Quit (prompts if there are unsaved changes) |
 | `Ctrl-F` | Search and replace |
 | `Ctrl-G` | Go to section (fuzzy heading list) |
+| `F8` | Toggle the optional heading outline (off by default) |
+| `F6` | Switch focus between editor and visible outline |
 | `Esc` | Leave editing, back to Preview |
 | ``Ctrl-` `` | Toggle the whole document to raw Markdown |
 
 **`Ctrl-C` is Copy, not quit.** Quit is `Ctrl-Q`.
+
+The outline can also be enabled under **Settings → Show outline** or with `[editor] show_outline = true`. On narrow terminals it is hidden without clearing that preference; use `Ctrl-G` for the heading picker. While the outline has focus, `↑`/`↓` (or `j`/`k` with Vim keys) select a heading; `Enter` jumps and returns to the editor, while `Esc` returns without closing the outline. Clicking a heading jumps; scrolling over the pane scrolls its list. The bottom status and hint rows stay full width. F8 closes the pane and returns focus to the editor.
 
 ---
 
@@ -162,7 +166,7 @@ These are reachable from the command palette (`Ctrl-P`), or you can bind them yo
 **Documentation** — Help: Documentation (the index), and one entry per page: Docs: Getting started, Editing, Keybindings, Configuration, Themes, Vim mode, Security
 **Insert** — Link, Image, Footnote
 **Fix-ups** — Delete footnote, Renumber footnotes, Fix list numbering
-**Toggles** — Vim mode, Autosave, Big H1, Line numbers, Blink cursor, Visual line navigation, Limit editor width, Diff on external change, Table buttons
+**Toggles** — Vim mode, Autosave, Big H1, Line numbers, Blink cursor, Visual line navigation, Limit editor width, Diff on external change, Table buttons (outline toggle and focus also appear in the palette, with F8/F6 defaults)
 
 A handful of actions are not in the palette either, because they only make sense as a held-down key. Bind them in `keybindings.toml` if you want them: `ScrollUp`, `ScrollDown`, `MoveLineStart`, and the unconditional table-cell moves `TableNextCell`, `TableNextRow`, `TablePrevRow`.
 

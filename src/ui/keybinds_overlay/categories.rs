@@ -37,6 +37,8 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
             (Action::MoveDocEnd, "Doc end"),
             (Action::SelectAll, "Select all"),
             (Action::GoToSection, "Go to section"),
+            (Action::ToggleOutline, "Toggle outline"),
+            (Action::FocusOutline, "Focus outline / editor"),
         ],
     ),
     (

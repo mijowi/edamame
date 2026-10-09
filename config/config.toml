@@ -34,6 +34,9 @@ appearance = "dark"
 # Show line numbers in a left gutter.
 # show_line_numbers = false
 
+# Show a left heading outline when the document viewport is wide enough.
+# show_outline = false
+
 # Lines advanced per mouse-wheel / trackpad tick.
 # mouse_scroll_lines = 1
 

@@ -504,6 +504,11 @@ impl App {
         // event some backends synthesize on `open(2)` is suppressed.
         self.set_disk_hash(buffer.contents().as_bytes());
         self.editor = self.editor_for_buffer(buffer);
+        self.outline_cache_key = None;
+        self.outline_selected = 0;
+        self.outline_scroll = 0;
+        self.outline_focused = false;
+        self.outline_browsing = false;
         self.file_path = Some(path.clone());
         // `open_doc` and `file_path` are mutually exclusive, and this is the
         // transition back to a real file.  Leaving it set would keep the status

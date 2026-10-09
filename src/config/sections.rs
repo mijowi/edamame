@@ -23,6 +23,8 @@ pub struct EditorConfig {
     pub daily_tips: bool,
     /// Show line numbers in a left gutter in all three modes.  Default: false.
     pub show_line_numbers: bool,
+    /// Show the left-docked heading outline when the document viewport is wide enough.
+    pub show_outline: bool,
     /// Lines advanced per mouse-wheel tick.  The keyboard scroll actions always step by one.
     pub mouse_scroll_lines: usize,
     /// How long a non-sticky transient message overlays the hint line.  Errors ignore this and
@@ -108,6 +110,7 @@ impl Default for EditorConfig {
             check_for_updates: true,
             daily_tips: true,
             show_line_numbers: false,
+            show_outline: false,
             mouse_scroll_lines: 1,
             transient_ms: 1500,
             max_width_enabled: true,
