@@ -4,7 +4,7 @@
 
 ## Releases via `dist` (formerly cargo-dist)
 
-`dist-workspace.toml` holds the config (dist version, GitHub CI, `shell` + `homebrew` installers, the five targets, tap `mijowi/homebrew-tap`) and `.github/workflows/release.yml` is the generated workflow.
+`dist-workspace.toml` holds the config (dist version, GitHub CI, `shell` + `homebrew` installers, the six targets, tap `mijowi/homebrew-tap`) and `.github/workflows/release.yml` is the generated workflow.
 
 **Never hand-edit `.github/workflows/release.yml`.** `dist` owns it and it is coupled to the exact `dist` version that wrote it — run `dist init` / `dist generate` and commit the result (re-run `dist init` after upgrading `dist`). `dist plan` fails in CI when the file has drifted, and `release.yml` runs its `plan` job on every pull request as a dry run, so drift and config errors surface before a tag exists.
 
@@ -37,7 +37,7 @@ PREV=0.0.9       # the previous release: the benchmark baseline to compare again
 
    Treat a "regressed" line as something to confirm, not a release blocker by itself. With no `v$PREV` baseline on this machine (a new machine, or after `cargo clean`), rebuild it from the `v$PREV` tag first ([Rebuilding a missing baseline](performance.md#rebuilding-a-missing-baseline)).
 
-5. `dist plan` — confirm it announces `v$VERSION` and the five targets.
+5. `dist plan` — confirm it announces `v$VERSION` and the six targets.
 6. Commit all three files together:
 
    ```bash
@@ -52,7 +52,7 @@ PREV=0.0.9       # the previous release: the benchmark baseline to compare again
    gh run watch
    ```
 
-8. Tag and push the tag to trigger the release workflow (rerun with `gh run rerun <id>` if needed). It builds every target, creates the GitHub Release with the archives, checksums and `edamame-installer.sh`, and pushes the Homebrew formula to the tap.
+8. Tag and push the tag to trigger the release workflow (rerun with `gh run rerun <id>` if needed). It builds every target, creates the GitHub Release with the archives (a `.zip` for Windows), checksums and `edamame-installer.sh`, and pushes the Homebrew formula to the tap.
 
    ```bash
    git tag -a "v$VERSION" -m "edamame v$VERSION"

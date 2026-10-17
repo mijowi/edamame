@@ -95,7 +95,7 @@ Downloads the prebuilt binary for your platform, verifies its checksum, and plac
 
 ### Prebuilt binaries
 
-Download for your platform from [Releases](https://github.com/mijowi/edamame/releases).
+Download for your platform from [Releases](https://github.com/mijowi/edamame/releases). Windows (`x86_64`) gets a `.zip` archive with `edamame.exe`; no installer covers it.
 
 ### From source
 
@@ -110,7 +110,7 @@ Requires Rust 1.90 or newer.
 
 ### Platforms
 
-Linux and macOS are the supported platforms; the prebuilt binaries cover both. Windows is best-effort: edamame builds from source and passes its test suite there in CI, but nobody smoke-tests the running program on Windows, so terminal behavior — images, the clipboard, opening links, the external editor — is unverified. Use [Windows Terminal](https://github.com/microsoft/terminal); the legacy console lacks the alternate screen and mouse support a TUI depends on. If you run it on Windows and something is off, [an issue](https://github.com/mijowi/edamame/issues) with the terminal name and version is the most useful thing you can send.
+Linux and macOS are the supported platforms. Windows is best-effort: edamame passes its test suite there in CI, and each release has a prebuilt `x86_64` Windows binary, but nobody smoke-tests the running program on Windows, so terminal behavior — images, the clipboard, opening links, the external editor — is unverified. Use [Windows Terminal](https://github.com/microsoft/terminal); the legacy console lacks the alternate screen and mouse support a TUI depends on. If you run it on Windows and something is off, [an issue](https://github.com/mijowi/edamame/issues) with the terminal name and version is the most useful thing you can send.
 
 ### Upgrading
 

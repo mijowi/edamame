@@ -8,6 +8,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Added
+
+- Releases now include a prebuilt Windows binary (`x86_64`), as a `.zip` archive. Windows is still a best-effort platform.
+
 ## [0.1.6] - 2026-10-14
 
 ### Changed
