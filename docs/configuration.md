@@ -157,16 +157,16 @@ edamame's bookkeeping, such as when it last checked for updates or where you lef
 
 | Key | Type | Default | Where |
 |---|---|---|---|
-| `handler` | `"default"` \| `"vim"` | `"default"` | overlay, palette, welcome |
+| `handler` | `"default"` \| `"vim"` \| `"helix"` | `"default"` | overlay, palette, welcome |
 
 ```toml
 [modal]
 handler = "vim"
 ```
 
-`"vim"` turns on modal editing — see [vim-mode.md](vim-mode.md).
+Choose the editing handler with the Editing mode pill in Settings or Welcome, or set `handler` here. `"vim"` turns on Vim editing — see [vim-mode.md](vim-mode.md). `"helix"` turns on basic selection-first editing with one selection — review [Helix scope and limitations](helix-mode.md#scope-and-limitations), including unsupported native key sequences. The command palette also has **Toggle Helix mode**.
 
-Note that an unrecognized value is accepted without complaint and behaves as `"default"`, so check your spelling if vim mode doesn't appear.
+An unrecognized value is accepted without complaint and behaves as `"default"`, so check the spelling if the selected mode does not appear.
 
 ---
 

@@ -35,11 +35,11 @@ const NO_MATCHES_WIDTH: u16 = 12;
 /// Build the palette's list component from `keymap`.
 ///
 /// A single `Export…` entry covers every target; the format is chosen inside the export modal.
-/// `vim_enabled` drops `Exit to preview`: vim never rests in Preview, so the action would flip
-/// the editor there only for the next keystroke to leave again.  The keybinds overlay and the
-/// hint line hide it for the same reason.
-pub fn build_palette_list(keymap: &KeyMap, vim_enabled: bool) -> SearchableList<PaletteEntry> {
-    SearchableList::new(build_entries(keymap, vim_enabled), |e: &PaletteEntry| {
+/// A modal handler drops `Exit to preview`: it never rests in Preview, so the action would flip
+/// the editor there only for the next keystroke to leave again. The keybinds overlay and hint line
+/// hide it for the same reason.
+pub fn build_palette_list(keymap: &KeyMap, modal_active: bool) -> SearchableList<PaletteEntry> {
+    SearchableList::new(build_entries(keymap, modal_active), |e: &PaletteEntry| {
         e.label.as_str()
     })
     .with_sections(palette_sections)
@@ -48,6 +48,7 @@ pub fn build_palette_list(keymap: &KeyMap, vim_enabled: bool) -> SearchableList<
 /// Render the palette modal; returns the `esc` close-hint rect for click hit-testing.
 pub fn render_palette(
     list: &mut SearchableList<PaletteEntry>,
+    title: &str,
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
@@ -61,7 +62,7 @@ pub fn render_palette(
         area,
         buf,
         ListModalOpts {
-            title: "Command Palette",
+            title,
             content_width,
             max_list_rows: MAX_LIST_ROWS,
             vertical_pad: 0,
@@ -204,6 +205,7 @@ fn section_of(action: &Action) -> &'static str {
         | Action::ToggleAutosave
         | Action::ToggleVisualLineNav
         | Action::ToggleVimMode
+        | Action::ToggleHelixMode
         | Action::ToggleLimitWidth
         | Action::ToggleDiffOnChange => "View",
         Action::FollowLinkUnderCursor
@@ -236,11 +238,11 @@ fn section_of(action: &Action) -> &'static str {
     }
 }
 
-/// The full entry list, sorted by label.  See [`build_palette_list`] for the `vim_enabled` gate.
-fn build_entries(keymap: &KeyMap, vim_enabled: bool) -> Vec<PaletteEntry> {
+/// The full entry list, sorted by label. See [`build_palette_list`] for the modal-active gate.
+fn build_entries(keymap: &KeyMap, modal_active: bool) -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = ALL_ACTIONS
         .iter()
-        .filter(|a| !(vim_enabled && **a == Action::ExitToPreview))
+        .filter(|a| !(modal_active && **a == Action::ExitToPreview))
         .filter_map(|a| {
             let label = label_for(a)?;
             let chord = keymap.first_key_for(a);
@@ -271,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_to_preview_hidden_under_vim() {
+    fn exit_to_preview_hidden_under_modal_handler() {
         let default = build_entries(&keymap(), false);
         let vim = build_entries(&keymap(), true);
         assert!(default.iter().any(|e| e.action == Action::ExitToPreview));
@@ -294,7 +296,14 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_palette(list, area, frame.buffer_mut(), theme, true);
+                render_palette(
+                    list,
+                    "Command Palette · Default",
+                    area,
+                    frame.buffer_mut(),
+                    theme,
+                    true,
+                );
             })
             .unwrap();
         terminal

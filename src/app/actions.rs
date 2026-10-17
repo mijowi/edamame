@@ -11,11 +11,11 @@
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 
 use crate::app::modal;
-use crate::config::sections::{DEFAULT_HANDLER, VIM_HANDLER};
+use crate::config::sections::{modal_handler_label, DEFAULT_HANDLER, HELIX_HANDLER, VIM_HANDLER};
 use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme};
-use crate::editor::{edit_ops, EditorState};
+use crate::editor::{edit_ops, helix_ops, EditorState};
 use crate::input::mode_handler::default::DefaultHandler;
-use crate::input::ModeHandler;
+use crate::input::{HelixSubMode, ModeHandler};
 use crate::terminal::ColorDepth;
 use crate::ui::{settings_overlay, ModalKind};
 
@@ -184,7 +184,7 @@ pub(super) fn action_caps(action: &Action) -> ActionCaps {
         // Neither reads nor writes the document: mode transitions and persisted-setting flips.
         | EnterEditMode | ExitToPreview | ToggleRawMode | ToggleTableButtons | ToggleBigH1
         | ToggleLineNumbers | ToggleBlinkCursor | ToggleAutosave | ToggleVisualLineNav
-        | ToggleVimMode | ToggleLimitWidth | ToggleDiffOnChange
+        | ToggleVimMode | ToggleHelixMode | ToggleLimitWidth | ToggleDiffOnChange
         // The two bespoke command vocabularies, which each gate names explicitly: "is a diff
         // command" is a fact about one context, not a capability.
         | OpenSearch | SearchNext | SearchPrev | SearchExit | DiffNext | DiffPrev
@@ -524,13 +524,19 @@ impl App {
                 // Vim mode is stored as the modal handler name, not a bool; `apply_live_update`
                 // then rebuilds the live `VimState`.
                 let enabling = self.config.modal.handler != VIM_HANDLER;
+                self.set_vim_enabled(enabling);
+                self.toggle_persisted_setting(settings_overlay::LABEL_EDITING_MODE, enabling);
+                true
+            }
+            Action::ToggleHelixMode => {
+                let enabling = self.config.modal.handler != HELIX_HANDLER;
                 self.config.modal.handler = if enabling {
-                    VIM_HANDLER
+                    HELIX_HANDLER
                 } else {
                     DEFAULT_HANDLER
                 }
-                .to_owned();
-                self.toggle_persisted_setting(settings_overlay::LABEL_VIM_MODE, enabling);
+                .into();
+                self.toggle_persisted_setting(settings_overlay::LABEL_EDITING_MODE, enabling);
                 true
             }
             Action::ToggleLimitWidth => {
@@ -693,7 +699,13 @@ impl App {
         modal::settings::apply_live_update(label, self);
         match saved {
             Ok(()) => {
-                let state = if new_state { "on" } else { "off" };
+                let state = if label == settings_overlay::LABEL_EDITING_MODE {
+                    modal_handler_label(&self.config.modal.handler)
+                } else if new_state {
+                    "on"
+                } else {
+                    "off"
+                };
                 let msg = format!(
                     "{}: {state}{}",
                     label.trim(),
@@ -717,6 +729,7 @@ impl App {
         doc_height: usize,
         doc_width: usize,
     ) {
+        self.cancel_helix_pending();
         let Some(mut top) = self.modal_stack.pop() else {
             return;
         };
@@ -735,6 +748,7 @@ impl App {
     /// Route a bracketed paste to the topmost modal, as [`Self::dispatch_modal_key`] does.  Only
     /// the text-input modals act on it.
     pub(super) fn dispatch_modal_paste(&mut self, text: &str) {
+        self.cancel_helix_pending();
         let Some(mut top) = self.modal_stack.pop() else {
             return;
         };
@@ -805,11 +819,13 @@ impl App {
     /// Open the fuzzy-searchable command palette.
     pub fn open_command_palette(&mut self) {
         let keymap = self.ensure_keymap_clone();
-        let vim_enabled = self.vim.is_some();
+        let handler = self.modal_input.handler();
+        let modal_active = self.modal_input.is_active();
         self.modal_stack
             .push(Box::new(modal::CommandPaletteModal::new(
                 &keymap,
-                vim_enabled,
+                modal_active,
+                modal_handler_label(handler),
             )));
     }
 
@@ -833,7 +849,14 @@ impl App {
     /// guard, `edit_ops::apply`, scroll tracking, flashes, and link-follow draining are sequenced
     /// in exactly one place.
     pub fn dispatch_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
+        self.cancel_helix_pending();
+        let before = (
+            self.editor.buffer.version(),
+            self.editor.cursor.offset,
+            self.editor.selection,
+        );
         self.dispatch_action_unchecked(action, doc_height, doc_width);
+        self.sync_helix_after_external(before);
         // Every path that runs a Copy / Cut through `edit_ops` owes a `flush_clipboard_write`;
         // one that skips it leaves the copy in the kill-ring alone, never reaching the OS.
         debug_assert!(
@@ -879,12 +902,34 @@ impl App {
             self.dispatch_search_action(action, doc_height, doc_width);
             return;
         }
+        if let Some(helix) = self.modal_input.helix_mut() {
+            match action {
+                Action::ExitToPreview => {
+                    helix.sub_mode = HelixSubMode::Normal;
+                    helix.reset_pending();
+                    helix_ops::collapse_selection(&mut self.editor);
+                    return;
+                }
+                Action::EnterEditMode => {
+                    helix.sub_mode = HelixSubMode::Insert;
+                    self.editor.selection = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.dispatch_helix_range_action(&action, doc_height, doc_width) {
+            return;
+        }
+        if self.dispatch_helix_clipboard(&action, doc_height, doc_width) {
+            return;
+        }
         // Visual `Ctrl-C` / `Ctrl-X` / `Ctrl-V` act on the *widened* range so the clipboard
         // matches the highlight, widened through the shared `vim_ops::visual_span` the render and
         // operator paths also use.  `selection` itself is never snapped: Copy restores the stored
         // span so a continued Visual session keeps its anchor.
         if matches!(action, Action::Copy | Action::Cut | Action::Paste) {
-            if let Some(kind) = self.vim.as_ref().and_then(|v| v.visual_kind()) {
+            if let Some(kind) = self.modal_input.vim().and_then(|v| v.visual_kind()) {
                 self.dispatch_visual_clipboard(action, kind, doc_height, doc_width);
                 return;
             }
@@ -975,7 +1020,7 @@ impl App {
         }
         if matches!(action, Action::Cut | Action::Paste) {
             // The span is gone, so drop back to Normal.
-            if let Some(vim) = self.vim.as_mut() {
+            if let Some(vim) = self.modal_input.vim_mut() {
                 vim.sub_mode = crate::input::VimSubMode::Normal;
                 vim.visual_anchor = None;
             }
@@ -1273,7 +1318,7 @@ impl App {
         // sessions first, as Esc would — a dangling incsearch session would be reused by the next
         // `/`, and a live `:s` preview must revert its transient edit before the `old` snapshot
         // below, or the diff is taken against preview text and its gates hold forever.
-        if let Some(vim) = self.vim.as_mut() {
+        if let Some(vim) = self.modal_input.vim_mut() {
             crate::editor::vim_ops::end_incsearch(&mut self.editor, &mut vim.incsearch);
             vim.cmdline = None;
             vim.reset_pending();
@@ -1497,12 +1542,14 @@ impl App {
     pub fn open_keybinds_overlay(&mut self) {
         let keymap = self.ensure_keymap_clone();
         let overrides = self.keybindings.clone();
-        let vim_enabled = self.vim.is_some();
+        let handler = self.modal_input.handler();
+        let modal_active = self.modal_input.is_active();
         self.modal_stack
             .push(Box::new(modal::KeybindsOverlayModal::new(
                 &keymap,
                 &overrides,
-                vim_enabled,
+                modal_active,
+                modal_handler_label(handler),
             )));
     }
 
@@ -1686,6 +1733,7 @@ mod tests {
     use crate::app::test_utils::{app_with_buffer, make_app};
     use crate::config::Action;
     use crate::document::Buffer;
+    use crate::input::ModalInput;
 
     #[test]
     fn enter_diff_mode_with_show_intro_pushes_intro_modal() {
@@ -1732,11 +1780,11 @@ mod tests {
             anchor: 0,
             active: 0,
         });
-        app.vim = Some(VimState {
+        app.modal_input = ModalInput::Vim(Box::new(VimState {
             sub_mode: VimSubMode::VisualLine,
             visual_anchor: Some(0),
             ..Default::default()
-        });
+        }));
         app.dispatch_action(Action::Copy, 24, 80);
         let text = app.transient.as_ref().map(|t| t.text.clone());
         assert_eq!(
@@ -1817,13 +1865,13 @@ mod tests {
         use crate::ui::HintContent;
         let mut app = make_app();
         app.editor.buffer.insert(0, "alpha\nbeta\n");
-        app.vim = Some(VimState {
+        app.modal_input = ModalInput::Vim(Box::new(VimState {
             cmdline: Some(CmdLineState::new(CmdLineKind::Ex)),
             count: Some(3),
             ..Default::default()
-        });
+        }));
         app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
-        let vim = app.vim.as_ref().unwrap();
+        let vim = app.modal_input.vim().unwrap();
         assert!(vim.cmdline.is_none(), "command line must be cleared");
         assert_eq!(vim.count, None, "pending parse must be reset");
         assert!(matches!(app.hint_content(), HintContent::Chords(_)));
@@ -1843,9 +1891,9 @@ mod tests {
         update_incsearch(&mut app.editor, &mut vim.incsearch, "foo", true, 24, 80);
         assert!(vim.incsearch.is_some(), "live session while typing");
         assert_eq!(app.editor.cursor.offset, 8, "parked on the live focus");
-        app.vim = Some(vim);
+        app.modal_input = ModalInput::Vim(Box::new(vim));
         app.enter_diff_mode("foo bar\nGAMMA\n".to_owned());
-        let vim = app.vim.as_ref().unwrap();
+        let vim = app.modal_input.vim().unwrap();
         assert!(
             vim.incsearch.is_none(),
             "session must not dangle on VimState — the next `/` would reuse its stale saved view",
@@ -1862,10 +1910,10 @@ mod tests {
         let mut app = make_app();
         app.editor.buffer.insert(0, "alpha\nbeta\n");
         app.editor.refresh_parsed();
-        app.vim = Some(VimState {
+        app.modal_input = ModalInput::Vim(Box::new(VimState {
             cmdline: Some(CmdLineState::new(CmdLineKind::Ex)),
             ..Default::default()
-        });
+        }));
         update_substitute_preview(&mut app.editor, "%s/alpha/OMEGA/", None, 24, 80);
         assert!(app.editor.substitute_preview.is_some(), "preview active");
         assert!(app.editor.buffer.contents().contains("OMEGA"));

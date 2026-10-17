@@ -9,6 +9,7 @@
 use edamame::config::{KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::{Buffer, Selection};
 use edamame::editor::{EditorState, Mode};
+use edamame::input::ModalInput;
 use edamame::search::SearchState;
 use edamame::ui::bottom_region::{hint_line_for, HintCtx};
 use edamame::ui::{EditorView, EditorViewState};
@@ -146,7 +147,7 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 show_line_numbers: false,
                 is_scrolling: false,
                 hint,
-                vim_mode_label: None,
+                modal_input: &ModalInput::Default,
                 visual_kind: None,
                 editor_cursor_style: theme().status_mode_rendered,
                 max_width_enabled: false,

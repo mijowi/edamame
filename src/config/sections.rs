@@ -128,13 +128,30 @@ impl Default for EditorConfig {
 
 /// Handler name written to `config.modal.handler` for vim modal editing.
 pub const VIM_HANDLER: &str = "vim";
+/// Handler name for selection-first Helix editing.
+pub const HELIX_HANDLER: &str = "helix";
+/// Stable order shared by the editing-mode pills.
+pub const MODAL_HANDLERS: [&str; 3] = [DEFAULT_HANDLER, VIM_HANDLER, HELIX_HANDLER];
+pub const MODAL_HANDLER_LABELS: [&str; 3] = ["Default", "Vim", "Helix"];
+
+pub fn modal_handler_index(handler: &str) -> usize {
+    MODAL_HANDLERS
+        .iter()
+        .position(|name| *name == handler)
+        .unwrap_or(0)
+}
+
+pub fn modal_handler_label(handler: &str) -> &'static str {
+    MODAL_HANDLER_LABELS[modal_handler_index(handler)]
+}
+
 /// Handler name for the default (non-modal) editing handler.
 pub const DEFAULT_HANDLER: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModalConfig {
-    /// Which modal handler to use: [`DEFAULT_HANDLER`] or [`VIM_HANDLER`].
+    /// Which editing handler to use: [`DEFAULT_HANDLER`], [`VIM_HANDLER`] or [`HELIX_HANDLER`].
     pub handler: String,
 }
 

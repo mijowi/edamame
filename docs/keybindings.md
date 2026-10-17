@@ -2,7 +2,7 @@
 
 Every default chord, and how to change them.
 
-If you use Vim keys, see [vim-mode.md](vim-mode.md) — vim mode replaces the editing keys below but keeps every `Ctrl-*` chord.
+If you use modal editing, see [vim-mode.md](vim-mode.md) or [helix-mode.md](helix-mode.md). Vim and Helix replace the editing keys below but keep edamame's `Ctrl-*` chords. Helix implements only the basic commands listed in its manual; read [scope and limitations](helix-mode.md#scope-and-limitations) before using native prefix sequences such as `mi(` or `ma"`.
 
 **Can't find a key for something?** Many commands ship with no chord at all and live in the command palette instead. Press **`Ctrl-P`** and type.
 
@@ -159,10 +159,10 @@ These are reachable from the command palette (`Ctrl-P`), or you can bind them yo
 
 **Files** — Save as…, Open in external editor, Export HTML
 **Overlays** — Settings, Keybindings, Welcome / terminal setup, Markdown cheat sheet, About, Check for updates, Switch theme, Create custom theme
-**Documentation** — Help: Documentation (the index), and one entry per page: Docs: Getting started, Editing, Keybindings, Configuration, Themes, Vim mode, Security
+**Documentation** — Help: Documentation (the index), and one entry per page: Docs: Getting started, Editing, Keybindings, Configuration, Themes, Vim mode, Helix mode, Security
 **Insert** — Link, Image, Footnote
 **Fix-ups** — Delete footnote, Renumber footnotes, Fix list numbering
-**Toggles** — Vim mode, Autosave, Big H1, Line numbers, Blink cursor, Visual line navigation, Limit editor width, Diff on external change, Table buttons
+**Toggles** — Vim mode, Helix mode, Autosave, Big H1, Line numbers, Blink cursor, Visual line navigation, Limit editor width, Diff on external change, Table buttons
 
 A handful of actions are not in the palette either, because they only make sense as a held-down key. Bind them in `keybindings.toml` if you want them: `ScrollUp`, `ScrollDown`, `MoveLineStart`, and the unconditional table-cell moves `TableNextCell`, `TableNextRow`, `TablePrevRow`.
 

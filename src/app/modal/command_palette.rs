@@ -17,16 +17,18 @@ use crate::ui::searchable_list::{ListEvent, SearchableList};
 
 pub struct CommandPaletteModal {
     list: SearchableList<PaletteEntry>,
+    title: String,
     /// Cached `esc` close-hint rect, refreshed each render for click
     /// hit-testing.
     esc_button_rect: Option<Rect>,
 }
 
 impl CommandPaletteModal {
-    /// `vim_enabled` hides `Exit to preview`; see [`build_palette_list`].
-    pub fn new(keymap: &KeyMap, vim_enabled: bool) -> Self {
+    /// A modal handler hides `Exit to preview`; see [`build_palette_list`].
+    pub fn new(keymap: &KeyMap, modal_active: bool, handler_label: &str) -> Self {
         Self {
-            list: build_palette_list(keymap, vim_enabled),
+            list: build_palette_list(keymap, modal_active),
+            title: format!("Command Palette · {handler_label}"),
             esc_button_rect: None,
         }
     }
@@ -43,6 +45,7 @@ impl Modal for CommandPaletteModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
         self.esc_button_rect = render_palette(
             &mut self.list,
+            &self.title,
             area,
             frame.buffer_mut(),
             ctx.theme,

@@ -18,6 +18,7 @@ pub enum DocId {
     Configuration,
     Themes,
     VimMode,
+    HelixMode,
     Security,
 }
 
@@ -84,6 +85,13 @@ pub const ALL_DOCS: &[DocPage] = &[
         title: "Vim mode",
         palette_label: "Docs: Vim mode",
         source: include_str!("../../docs/vim-mode.md"),
+    },
+    DocPage {
+        id: DocId::HelixMode,
+        slug: "helix-mode.md",
+        title: "Helix mode",
+        palette_label: "Docs: Helix mode",
+        source: include_str!("../../docs/helix-mode.md"),
     },
     DocPage {
         id: DocId::Security,

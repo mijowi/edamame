@@ -14,6 +14,7 @@ mod external_editor;
 mod file_changed;
 mod flash;
 mod frame_timer;
+mod helix_actions;
 mod image_dispatch;
 mod nav;
 mod pointer;
@@ -25,6 +26,9 @@ mod tips;
 mod update_check;
 mod update_notice;
 
+#[cfg(test)]
+#[path = "app/helix_tests.rs"]
+mod helix;
 #[cfg(test)]
 mod test_utils;
 
@@ -40,13 +44,13 @@ use crossterm::event::Event;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::config::sections::{DEFAULT_HANDLER, VIM_HANDLER};
+use crate::config::sections::{DEFAULT_HANDLER, HELIX_HANDLER, VIM_HANDLER};
 use crate::config::{
     cursor_key, Config, ConfigWarning, KeyBindingOverrides, KeyMap, State, Theme, ThemeFile,
 };
 use crate::document::Buffer;
-use crate::editor::{mouse_ops, EditorState};
-use crate::input::{MouseDispatcher, VimState};
+use crate::editor::{helix_ops, mouse_ops, vim_ops, EditorState, Mode};
+use crate::input::{HelixSubMode, ModalInput, MouseDispatcher};
 use crate::terminal::{Capabilities, ColorDepth, PointerShape};
 use crate::ui::{EditorViewState, HintChord};
 use crate::watcher::{FileWatcher, WatchedEvent};
@@ -315,14 +319,10 @@ pub struct App {
     /// (see `docs/dev/link-following.md`), so the load paths that switch documents must not look
     /// one up.
     pending_cursor_restore: Option<PendingCursorRestore>,
-    /// Vim modal-editing state; `Some` iff the vim handler is configured, which keeps every vim
-    /// code path inert otherwise.  Carries counts, pending operators, and the active sub-mode.
-    vim: Option<VimState>,
-    /// The vim session parked while a read-only document is open.  Preview and vim-Normal are
-    /// alternative *resting* states that never coexist (see [`leave_preview_under_vim`]), so a
-    /// read-only document suspends vim rather than fighting it — parked, not destroyed, so the
-    /// session survives a trip into the manual.  [`App::sync_vim_suspension`] is the only writer.
-    parked_vim: Option<VimState>,
+    /// Only one input handler can own document keys at a time.
+    modal_input: ModalInput,
+    /// Session parked while a read-only document owns the editor.
+    parked_input: Option<ModalInput>,
 }
 
 /// Apply the App-level configuration every freshly built [`EditorState`] needs.  **Anything a new
@@ -360,7 +360,7 @@ fn configure_new_editor(
     if !images_layout_on || !diagrams_layout_on {
         editor.refresh_parsed();
     }
-    leave_preview_under_vim(config, editor);
+    leave_preview_under_modal(config, editor);
 }
 
 /// Vim-Normal replaces Preview as the resting non-editing mode, so no editor may rest in Preview
@@ -368,14 +368,16 @@ fn configure_new_editor(
 /// without this a file opened by link or back-navigation landed in Preview — "Press any key to
 /// edit" and all — while the status bar read `NORMAL`.  One helper, because the copies are how the
 /// per-document path was missed.
-fn leave_preview_under_vim(config: &Config, editor: &mut EditorState) {
+fn leave_preview_under_modal(config: &Config, editor: &mut EditorState) {
     // A read-only document is the one editor that *must* rest in Preview: vim is suspended for
     // its duration, so "force Preview" and "suspend vim" are one decision, not two.
     if editor.readonly {
         return;
     }
-    if config.modal.handler == VIM_HANDLER && editor.mode == crate::editor::Mode::Preview {
-        editor.mode = crate::editor::Mode::Rendered;
+    if matches!(config.modal.handler.as_str(), VIM_HANDLER | HELIX_HANDLER)
+        && editor.mode == Mode::Preview
+    {
+        editor.mode = Mode::Rendered;
     }
 }
 
@@ -479,7 +481,10 @@ impl App {
 
         // The Preview escape vim needs is handled by `configure_new_editor` above, shared with
         // every document opened later, so the `NORMAL` badge shows from the first frame.
-        let vim = (config.modal.handler == VIM_HANDLER).then(VimState::default);
+        let modal_input = ModalInput::from_handler(&config.modal.handler);
+        if modal_input.helix().is_some() {
+            helix_ops::collapse_selection(&mut editor);
+        }
 
         // PreviewView borrows `editor.parsed.lines` at render time rather than cloning — this was
         // the dominant per-event allocation on large preview-mode documents.
@@ -622,7 +627,7 @@ impl App {
             file_path,
             diff_label: None,
             open_doc: None,
-            parked_vim: None,
+            parked_input: None,
             diff_stop_walk: false,
             editor,
             view_state,
@@ -682,7 +687,7 @@ impl App {
             tip_deadline: None,
             startup_anchor: None,
             pending_cursor_restore,
-            vim,
+            modal_input,
         })
     }
 
@@ -703,37 +708,122 @@ impl App {
         self
     }
 
-    /// Enable or disable vim modal editing mid-session, keeping `config.modal.handler` and the
-    /// editor mode in sync.  Mirrors the startup wiring in `App::new`.
-    pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
-        if enabled {
-            self.config.modal.handler = VIM_HANDLER.into();
-            if self.vim.is_none() {
-                self.vim = Some(VimState::default());
-            }
-            // Leave Preview behind exactly as startup does.
-            leave_preview_under_vim(&self.config, &mut self.editor);
-        } else {
-            self.config.modal.handler = DEFAULT_HANDLER.into();
-            self.vim = None;
-            // A session the user turned off must not reappear when they leave the manual.
-            self.parked_vim = None;
+    /// Switch modal handlers through the same lifecycle used by settings and startup.
+    pub(crate) fn set_modal_handler(&mut self, handler: &str) {
+        let unchanged = self
+            .parked_input
+            .as_ref()
+            .unwrap_or(&self.modal_input)
+            .handler()
+            == handler;
+        if unchanged {
+            self.config.modal.handler = handler.to_owned();
+            return;
         }
-        // Enabling while a read-only document is open parks the fresh session straight away, so
-        // the toggle lands on the next editable buffer rather than being lost.
-        self.sync_vim_suspension();
+        if let Some(vim) = self.modal_input.vim_mut() {
+            vim_ops::end_incsearch(&mut self.editor, &mut vim.incsearch);
+        }
+        vim_ops::clear_substitute_preview(&mut self.editor, true);
+        self.modal_input = ModalInput::from_handler(handler);
+        self.parked_input = None;
+        self.editor.selection = None;
+        self.config.modal.handler = handler.to_owned();
+        leave_preview_under_modal(&self.config, &mut self.editor);
+        self.sync_modal_suspension();
     }
 
-    /// Park or restore the vim session to match the live document's read-only-ness.  The single
-    /// writer of [`App::parked_vim`], called by every document-swapping path; idempotent, so a new
-    /// one need only remember to call it.
-    pub(super) fn sync_vim_suspension(&mut self) {
+    pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
+        self.set_modal_handler(if enabled {
+            VIM_HANDLER
+        } else {
+            DEFAULT_HANDLER
+        });
+    }
+
+    /// Preserve the session's register while read-only pages own Preview and the keymap.
+    pub(super) fn sync_modal_suspension(&mut self) {
         if self.editor.readonly {
-            if let Some(vim) = self.vim.take() {
-                self.parked_vim = Some(vim);
+            if self.modal_input.is_active() {
+                if let Some(helix) = self.modal_input.helix_mut() {
+                    helix.prompt = None;
+                    helix.reset_pending();
+                }
+                self.parked_input = Some(std::mem::take(&mut self.modal_input));
             }
-        } else if self.vim.is_none() {
-            self.vim = self.parked_vim.take();
+        } else {
+            if !self.modal_input.is_active() {
+                if let Some(input) = self.parked_input.take() {
+                    self.modal_input = input;
+                }
+            }
+            if let Some(helix) = self.modal_input.helix_mut() {
+                helix.sub_mode = HelixSubMode::Normal;
+                helix.selection_linewise = false;
+                helix.prompt = None;
+                helix.reset_pending();
+                helix_ops::collapse_selection(&mut self.editor);
+            }
+        }
+    }
+
+    /// Capturing UI cancels a transient prompt and pending sequence before it can resume.
+    pub(super) fn cancel_helix_pending(&mut self) {
+        let restore =
+            !self.editor.readonly && self.editor.mode != Mode::Diff && !self.search_flow_captures();
+        let Some(helix) = self.modal_input.helix_mut() else {
+            return;
+        };
+        helix.reset_pending();
+        helix.cancel_prompt(&mut self.editor, restore);
+    }
+
+    /// Reconcile Helix with a cursor/selection changed by the ordinary editor or mouse.
+    pub(super) fn sync_helix_after_external(
+        &mut self,
+        before: (u64, usize, Option<crate::document::Selection>),
+    ) {
+        if self.search_flow_captures() {
+            return;
+        }
+        let Some(helix) = self.modal_input.helix_mut() else {
+            return;
+        };
+        if helix.sub_mode == HelixSubMode::Insert
+            || self.editor.readonly
+            || self.editor.mode == Mode::Diff
+        {
+            return;
+        }
+        let (version, cursor, selection) = before;
+        if self.editor.selection.is_some()
+            && (
+                self.editor.buffer.version(),
+                self.editor.cursor.offset,
+                self.editor.selection,
+            ) == before
+        {
+            return;
+        }
+        helix.reset_pending();
+        helix.prompt = None;
+        helix.selection_linewise = false;
+        let cursor_before_normalization = self.editor.cursor;
+        if self.editor.selection != selection
+            && self.editor.selection.is_some_and(|s| {
+                s.active == self.editor.cursor.offset
+                    || helix_ops::cursor_offset(&self.editor.buffer, s) == self.editor.cursor.offset
+            })
+        {
+            helix_ops::normalize_selection(&mut self.editor);
+        } else if self.editor.cursor.offset != cursor
+            || self.editor.buffer.version() != version
+            || self.editor.selection.is_none()
+            || self.editor.selection != selection
+        {
+            helix_ops::collapse_selection(&mut self.editor);
+        }
+        if self.editor.cursor.offset == cursor_before_normalization.offset {
+            self.editor.cursor.preferred_col = cursor_before_normalization.preferred_col;
         }
     }
 
@@ -878,7 +968,7 @@ mod vim_wiring_tests {
         let mut config = Config::default();
         config.modal.handler = handler.into();
         let theme_file = (&Theme::default()).into();
-        App::new(
+        let mut app = App::new(
             config,
             State::default(),
             KeyBindingOverrides::default(),
@@ -887,19 +977,27 @@ mod vim_wiring_tests {
             Capabilities::default(),
             Vec::new(),
         )
-        .expect("build app")
+        .expect("build app");
+        crate::app::test_utils::close_startup_modals(&mut app);
+        app
     }
 
     #[test]
     fn vim_disabled_by_default() {
         let app = app_with_handler("default");
-        assert!(app.vim.is_none(), "default handler must not enable vim");
+        assert!(
+            app.modal_input.vim().is_none(),
+            "default handler must not enable vim"
+        );
     }
 
     #[test]
     fn vim_enabled_when_configured() {
         let app = app_with_handler("vim");
-        assert!(app.vim.is_some(), "vim handler must enable vim state");
+        assert!(
+            app.modal_input.vim().is_some(),
+            "vim handler must enable vim state"
+        );
         // Vim never rests in Preview.
         assert_eq!(app.editor.mode, Mode::Rendered);
     }
@@ -928,10 +1026,13 @@ mod vim_wiring_tests {
     #[test]
     fn a_read_only_document_parks_the_vim_session_and_gives_it_back() {
         let mut app = app_with_handler("vim");
-        app.vim.as_mut().expect("vim active").pending_g = true;
+        app.modal_input.vim_mut().expect("vim active").pending_g = true;
 
         app.open_doc_page(crate::docs::DocId::Keybindings, None, 20, 80);
-        assert!(app.vim.is_none(), "vim is suspended while reading");
+        assert!(
+            app.modal_input.vim().is_none(),
+            "vim is suspended while reading"
+        );
         assert_eq!(
             app.editor.mode,
             crate::editor::Mode::Preview,
@@ -951,7 +1052,7 @@ mod vim_wiring_tests {
         app.load_file_into_editor(f.path().to_path_buf())
             .expect("load");
         assert!(
-            app.vim.as_ref().is_some_and(|v| v.pending_g),
+            app.modal_input.vim().is_some_and(|v| v.pending_g),
             "the parked session is restored, not rebuilt"
         );
         assert_ne!(
@@ -966,10 +1067,10 @@ mod vim_wiring_tests {
     fn disabling_vim_while_reading_clears_the_parked_session() {
         let mut app = app_with_handler("vim");
         app.open_doc_page(crate::docs::DocId::Editing, None, 20, 80);
-        assert!(app.parked_vim.is_some());
+        assert!(app.parked_input.is_some());
 
         app.set_vim_enabled(false);
-        assert!(app.parked_vim.is_none(), "parked session cleared");
+        assert!(app.parked_input.is_none(), "parked session cleared");
     }
 
     /// Enabling vim while reading parks the fresh session instead of dropping a cursor into a
@@ -980,8 +1081,8 @@ mod vim_wiring_tests {
         app.open_doc_page(crate::docs::DocId::Editing, None, 20, 80);
 
         app.set_vim_enabled(true);
-        assert!(app.vim.is_none(), "not active while reading");
-        assert!(app.parked_vim.is_some(), "parked for the next document");
+        assert!(app.modal_input.vim().is_none(), "not active while reading");
+        assert!(app.parked_input.is_some(), "parked for the next document");
         assert_eq!(app.editor.mode, crate::editor::Mode::Preview);
     }
 
@@ -989,11 +1090,11 @@ mod vim_wiring_tests {
     fn set_vim_enabled_mirrors_startup_wiring() {
         // Enabling mid-session must reach the exact state startup produces.
         let mut app = app_with_handler("default");
-        assert!(app.vim.is_none());
+        assert!(app.modal_input.vim().is_none());
         assert_eq!(app.editor.mode, Mode::Preview);
 
         app.set_vim_enabled(true);
-        assert!(app.vim.is_some(), "vim state created");
+        assert!(app.modal_input.vim().is_some(), "vim state created");
         assert_eq!(app.config.modal.handler, "vim");
         assert_eq!(
             app.editor.mode,
@@ -1006,10 +1107,10 @@ mod vim_wiring_tests {
     fn set_vim_enabled_false_clears_vim() {
         // The handler string must revert too, so a later `Config::save` writes it.
         let mut app = app_with_handler("vim");
-        assert!(app.vim.is_some());
+        assert!(app.modal_input.vim().is_some());
 
         app.set_vim_enabled(false);
-        assert!(app.vim.is_none(), "vim state cleared");
+        assert!(app.modal_input.vim().is_none(), "vim state cleared");
         assert_eq!(app.config.modal.handler, "default");
     }
 
@@ -1017,12 +1118,12 @@ mod vim_wiring_tests {
     fn set_vim_enabled_true_is_idempotent() {
         // A redundant enable must preserve the live vim state, not swap in a fresh default.
         let mut app = app_with_handler("vim");
-        app.vim.as_mut().expect("vim active").pending_g = true;
+        app.modal_input.vim_mut().expect("vim active").pending_g = true;
         app.editor.mode = Mode::Raw;
 
         app.set_vim_enabled(true);
         assert!(
-            app.vim.as_ref().expect("vim still active").pending_g,
+            app.modal_input.vim().expect("vim still active").pending_g,
             "existing vim state is preserved, not reset"
         );
         assert_eq!(app.editor.mode, Mode::Raw); // only Preview is rewritten
@@ -1039,7 +1140,7 @@ mod vim_wiring_tests {
         let mut app = app_with_handler("vim");
         app.editor.replace_buffer(Buffer::from_str(text));
         app.editor.selection = Some(Selection { anchor, active });
-        let vim = app.vim.as_mut().expect("vim active");
+        let vim = app.modal_input.vim_mut().expect("vim active");
         vim.sub_mode = VimSubMode::VisualLine;
         vim.visual_anchor = Some(anchor);
         app
@@ -1054,7 +1155,10 @@ mod vim_wiring_tests {
         // The stored selection is restored to the charwise span, never snapped.
         let sel = app.editor.selection.expect("selection restored");
         assert_eq!((sel.anchor, sel.active), (2, 7));
-        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::VisualLine);
+        assert_eq!(
+            app.modal_input.vim().unwrap().sub_mode,
+            VimSubMode::VisualLine
+        );
     }
 
     #[test]
@@ -1063,7 +1167,7 @@ mod vim_wiring_tests {
         app.dispatch_action(Action::Cut, 40, 80);
         assert_eq!(app.editor.buffer.contents(), "gamma");
         assert_eq!(app.editor.kill_ring, "alpha\nbeta\n");
-        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::Normal);
+        assert_eq!(app.modal_input.vim().unwrap().sub_mode, VimSubMode::Normal);
         assert!(app.editor.selection.is_none());
     }
 
@@ -1078,14 +1182,14 @@ mod vim_wiring_tests {
             anchor: 8,
             active: 8,
         });
-        app.vim.as_mut().unwrap().visual_anchor = Some(8);
+        app.modal_input.vim_mut().unwrap().visual_anchor = Some(8);
         app.dispatch_action(Action::Paste, 40, 80);
         assert_eq!(
             app.editor.buffer.contents(),
             "alpha\nalpha\ngamma",
             "the whole highlighted line is replaced, not the empty charwise span"
         );
-        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::Normal);
+        assert_eq!(app.modal_input.vim().unwrap().sub_mode, VimSubMode::Normal);
         assert!(app.editor.selection.is_none());
     }
 
@@ -1100,7 +1204,7 @@ mod vim_wiring_tests {
             active: 2,
         };
         app.editor.selection = Some(sel);
-        app.vim.as_mut().unwrap().sub_mode = VimSubMode::Visual;
+        app.modal_input.vim_mut().unwrap().sub_mode = VimSubMode::Visual;
         app.dispatch_action(Action::Copy, 40, 80);
         assert_eq!(app.editor.kill_ring, "alp");
         assert_eq!(

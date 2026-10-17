@@ -123,6 +123,7 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::ToggleAutosave
             | Action::ToggleVisualLineNav
             | Action::ToggleVimMode
+            | Action::ToggleHelixMode
             | Action::ToggleLimitWidth
             | Action::ToggleDiffOnChange
             // The remaining three open a modal that touches the buffer only on submit; the

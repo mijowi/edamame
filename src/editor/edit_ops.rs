@@ -874,17 +874,31 @@ fn delete_selection_text(state: &mut EditorState, sel: &Selection) {
 /// would only emit literal asterisks.  Selections containing other inline formatting are wrapped
 /// verbatim — doing better needs an AST-aware transform.
 fn toggle_wrap(state: &mut EditorState, marker: &str) {
-    let Some(sel) = state.selection else {
+    let Some((delta, selection)) = state
+        .selection
+        .and_then(|selection| wrap_plan(&state.buffer, selection, marker))
+    else {
         return;
     };
+    state.apply_delta(delta);
+    state.selection = Some(selection);
+    state.cursor.offset = selection.active;
+}
+
+/// Resolve formatting before mutation so modal callers can validate the complete replacement.
+pub(crate) fn wrap_plan(
+    buffer: &Buffer,
+    sel: Selection,
+    marker: &str,
+) -> Option<(EditDelta, Selection)> {
     let (start, end) = sel.range();
-    let end = end.min(state.buffer.len_chars());
+    let end = end.min(buffer.len_chars());
     if start >= end {
-        return;
+        return None;
     }
-    let text = state.buffer.slice_to_string(start, end);
+    let text = buffer.slice_to_string(start, end);
     if text.contains('\n') {
-        return;
+        return None;
     }
 
     // Markers are ASCII, so byte length == char count: valid for both rope offsets and slicing.
@@ -896,9 +910,9 @@ fn toggle_wrap(state: &mut EditorState, marker: &str) {
             let inner = text[mlen..text.len() - mlen].to_string();
             let n = inner.chars().count();
             (start, text, inner, start, n)
-        } else if outside_wrapped(&state.buffer, start, end, marker) {
+        } else if outside_wrapped(buffer, start, end, marker) {
             // Markers sit just outside the selection: `x` within `**x**` → `x`.
-            let removed = state.buffer.slice_to_string(start - mlen, end + mlen);
+            let removed = buffer.slice_to_string(start - mlen, end + mlen);
             let n = text.chars().count();
             (start - mlen, removed, text, start - mlen, n)
         } else {
@@ -908,18 +922,17 @@ fn toggle_wrap(state: &mut EditorState, marker: &str) {
             (start, text, inserted, start + mlen, n)
         };
 
-    state.apply_delta(EditDelta {
-        offset: remove_start,
-        removed,
-        inserted,
-    });
-
-    let inner_end = inner_start + inner_len;
-    state.selection = Some(Selection {
-        anchor: inner_start,
-        active: inner_end,
-    });
-    state.cursor.offset = inner_end;
+    Some((
+        EditDelta {
+            offset: remove_start,
+            removed,
+            inserted,
+        },
+        Selection {
+            anchor: inner_start,
+            active: inner_start + inner_len,
+        },
+    ))
 }
 
 /// True when `text` is *exactly* `marker…marker` with no further `marker` in between.  Italic
@@ -1086,13 +1099,13 @@ fn block_allows_inline_markdown_at(state: &mut EditorState, char_offset: usize) 
     )
 }
 
-/// Insert an image snippet at the cursor.  See [`insert_inline_snippet`] for the behavior.
+/// Insert an image snippet at the cursor. See [`apply_inline_snippet`] for the behavior.
 pub fn insert_image_at_cursor(
     state: &mut EditorState,
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
-    insert_inline_snippet(
+    apply_inline_snippet(
         state,
         "!",
         "alt text",
@@ -1102,19 +1115,40 @@ pub fn insert_image_at_cursor(
     )
 }
 
-/// Insert a link snippet at the cursor.  See [`insert_inline_snippet`] for the behavior.
+/// Insert a link snippet at the cursor. See [`apply_inline_snippet`] for the behavior.
 pub fn insert_link_at_cursor(
     state: &mut EditorState,
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
-    insert_inline_snippet(
+    apply_inline_snippet(
         state,
         "",
         "link text",
         SnippetUrl::Placeholder,
         viewport_height,
         viewport_width,
+    )
+}
+
+/// Plan the image/link placeholder snippet so App can validate the exact replacement before it
+/// mutates the buffer. `None` means the target block cannot host inline Markdown.
+pub(crate) fn placeholder_snippet_plan(
+    state: &mut EditorState,
+    is_image: bool,
+    viewport_height: usize,
+) -> Option<(EditDelta, Option<Selection>, usize)> {
+    let (prefix, placeholder) = if is_image {
+        ("!", "alt text")
+    } else {
+        ("", "link text")
+    };
+    inline_snippet_plan(
+        state,
+        prefix,
+        placeholder,
+        SnippetUrl::Placeholder,
+        viewport_height,
     )
 }
 
@@ -1157,7 +1191,7 @@ pub fn insert_image_reference_at_cursor(
         ) => SnippetUrl::Inline(crate::markdown::escape_destination_in_table(url)),
         _ => SnippetUrl::OwnParagraph(crate::markdown::escape_destination(url)),
     };
-    insert_inline_snippet(state, "!", "", url, viewport_height, viewport_width)
+    apply_inline_snippet(state, "!", "", url, viewport_height, viewport_width)
 }
 
 /// Whether [`insert_image_reference_at_cursor`] would insert here: the paste flow asks before it
@@ -1254,7 +1288,7 @@ enum SnippetUrl {
     OwnParagraph(String),
 }
 
-/// Shared body of the image / link snippet inserts.  Returns `false` — mode, selection and buffer
+/// Plan an image / link snippet. Returns `None` — mode, selection and buffer
 /// untouched — when the target block can't host inline Markdown (see
 /// [`cursor_block_allows_inline_markdown`]); the App-level handler flashes a warning there.
 ///
@@ -1263,35 +1297,25 @@ enum SnippetUrl {
 /// selection is dropped rather than wrapped — link text can't span blocks — so nothing is lost.
 ///
 /// `url` says what goes between the parentheses; see [`SnippetUrl`].
-fn insert_inline_snippet(
+fn inline_snippet_plan(
     state: &mut EditorState,
     prefix: &str,
     text_placeholder: &str,
     url: SnippetUrl,
     viewport_height: usize,
-    viewport_width: usize,
-) -> bool {
+) -> Option<(EditDelta, Option<Selection>, usize)> {
+    let anchor = snippet_anchor(state, viewport_height);
     // The pre-flight judges where the snippet will land without moving the cursor, so a denied
     // insert leaves the cursor, the mode and the selection alone.
-    if !block_allows_inline_markdown_at(state, snippet_anchor(state, viewport_height)) {
-        return false;
-    }
-    if state.mode == Mode::Preview {
-        sync_cursor_to_scroll(state, viewport_height);
+    if !block_allows_inline_markdown_at(state, anchor) {
+        return None;
     }
     let wrap = snippet_wrap(state);
-    state.selection = None;
-    enter_edit_if_preview(state, viewport_height);
     // `prefix`, the brackets and the placeholders are ASCII, so byte lengths double as char
     // counts; only the wrapped selection text needs `chars().count()`.
     let (offset, removed, visible_text, select_placeholder_url) = match wrap {
         Some((start, text)) => (start, text.clone(), text, true),
-        None => (
-            state.cursor.offset,
-            String::new(),
-            text_placeholder.to_owned(),
-            false,
-        ),
+        None => (anchor, String::new(), text_placeholder.to_owned(), false),
     };
     let dest = match &url {
         SnippetUrl::Placeholder => URL_PLACEHOLDER,
@@ -1307,13 +1331,7 @@ fn insert_inline_snippet(
     let inserted_len = inserted.chars().count();
     // The framing only ever adds newlines ahead of the reference.
     let lead = inserted.chars().take_while(|&c| c == '\n').count();
-    state.cursor.offset = offset;
-    state.apply_delta(EditDelta {
-        offset,
-        removed,
-        inserted,
-    });
-    if matches!(url, SnippetUrl::Placeholder) {
+    let (selection, cursor) = if matches!(url, SnippetUrl::Placeholder) {
         let (sel_start, sel_len) = if select_placeholder_url {
             (
                 offset + prefix.len() + 1 + visible_text.chars().count() + 2,
@@ -1323,16 +1341,52 @@ fn insert_inline_snippet(
             (offset + prefix.len() + 1, text_placeholder.len())
         };
         let sel_end = sel_start + sel_len;
-        state.selection = Some(Selection {
-            anchor: sel_start,
-            active: sel_end,
-        });
-        state.cursor.offset = sel_end;
+        (
+            Some(Selection {
+                anchor: sel_start,
+                active: sel_end,
+            }),
+            sel_end,
+        )
     } else if visible_text.is_empty() {
-        state.cursor.offset = offset + lead + prefix.len() + 1;
+        (None, offset + lead + prefix.len() + 1)
     } else {
-        state.cursor.offset = offset + inserted_len;
+        (None, offset + inserted_len)
+    };
+    Some((
+        EditDelta {
+            offset,
+            removed,
+            inserted,
+        },
+        selection,
+        cursor,
+    ))
+}
+
+/// Apply a planned snippet through the existing Markdown editor path.
+fn apply_inline_snippet(
+    state: &mut EditorState,
+    prefix: &str,
+    text_placeholder: &str,
+    url: SnippetUrl,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    let Some((delta, selection, cursor)) =
+        inline_snippet_plan(state, prefix, text_placeholder, url, viewport_height)
+    else {
+        return false;
+    };
+    if state.mode == Mode::Preview {
+        sync_cursor_to_scroll(state, viewport_height);
     }
+    state.selection = None;
+    enter_edit_if_preview(state, viewport_height);
+    state.cursor.offset = delta.offset;
+    state.apply_delta(delta);
+    state.selection = selection;
+    state.cursor.offset = cursor;
     state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
     state.ensure_cursor_visible(viewport_height, viewport_width);

@@ -22,10 +22,15 @@ pub struct KeybindsOverlayModal {
 }
 
 impl KeybindsOverlayModal {
-    pub fn new(keymap: &KeyMap, overrides: &KeyBindingOverrides, vim_enabled: bool) -> Self {
-        Self {
-            state: KeybindsState::open(keymap, overrides, vim_enabled),
-        }
+    pub fn new(
+        keymap: &KeyMap,
+        overrides: &KeyBindingOverrides,
+        modal_active: bool,
+        handler_label: &'static str,
+    ) -> Self {
+        let mut state = KeybindsState::open(keymap, overrides, modal_active);
+        state.handler_label = handler_label;
+        Self { state }
     }
 }
 

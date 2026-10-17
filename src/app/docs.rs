@@ -23,16 +23,14 @@ impl App {
         let buffer = Buffer::from_str(&id.source());
         let mut new_editor = self.editor_for_buffer(buffer);
         new_editor.readonly = true;
-        // Load-bearing under vim: `editor_for_buffer` already ran `leave_preview_under_vim`,
-        // which moved a vim session's editor to Rendered before `readonly` was set. Without
-        // this a vim user gets a cursor and raw reveal on a page nobody can edit.
+        // editor_for_buffer may already have left Preview for Vim/Helix before readonly was set.
+        // Restore browse-only rendering: no cursor or raw reveal on manual pages.
         new_editor.mode = crate::editor::Mode::Preview;
         self.editor = new_editor;
         self.file_path = None;
         self.open_doc = Some(id);
         self.view_state = EditorViewState::new();
-        // Vim-Normal and Preview are alternative resting modes; vim is parked, not destroyed.
-        self.sync_vim_suspension();
+        // The shared swap hook suspends Vim/Helix for this read-only page, keeping their registers.
         self.on_document_contents_swapped();
     }
 

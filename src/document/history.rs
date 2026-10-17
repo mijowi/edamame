@@ -84,6 +84,7 @@ impl EditDelta {
 pub struct History {
     undo_stack: Vec<EditDelta>,
     redo_stack: Vec<EditDelta>,
+    merge_barrier: bool,
 }
 
 impl History {
@@ -95,13 +96,19 @@ impl History {
     /// [`try_merge`] allows.
     pub fn record(&mut self, delta: EditDelta) {
         if let Some(top) = self.undo_stack.last_mut() {
-            if try_merge(top, &delta) {
+            if !self.merge_barrier && try_merge(top, &delta) {
                 self.redo_stack.clear();
                 return;
             }
         }
         self.undo_stack.push(delta);
         self.redo_stack.clear();
+        self.merge_barrier = false;
+    }
+
+    /// Keep a discrete range action separate from neighboring typing/deletion runs.
+    pub fn break_group(&mut self) {
+        self.merge_barrier = true;
     }
 
     /// Undo the most recent edit; returns the cursor to restore, `None` when nothing to undo.

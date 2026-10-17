@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use crate::config::{Action, CoalesceKind, Config, KeyBindingOverrides, KeyMap};
 use crate::editor::{edit_ops, mouse_ops, Mode};
 use crate::input::mode_handler::default::DefaultHandler;
-use crate::input::{vim_feed, VimOutcome, VimSubMode};
+use crate::input::{helix_feed, vim_feed, HelixOutcome, HelixSubMode, VimOutcome, VimSubMode};
 use crate::terminal::PointerShape;
 use crate::ui::editor_view::layout_doc_with_scrollbar;
 use crate::ui::text_input::PASTE_CHAR_CAP;
@@ -489,13 +489,10 @@ impl App {
         let max_width_enabled = self.config.editor.max_width_enabled;
         let max_width_cols = self.config.editor.max_width_cols;
         let hint = self.hint_content();
-        let vim_mode_label = self.vim.as_ref().map(|v| v.mode_label());
-        let visual_kind = self.vim.as_ref().and_then(|v| v.visual_kind());
-        let editor_cursor_style = super::cursor_style::editor_cursor_style(
-            self.theme,
-            self.editor.mode,
-            self.vim.as_ref().map(|v| v.sub_mode),
-        );
+        let modal_input = &self.modal_input;
+        let visual_kind = self.modal_input.vim().and_then(|v| v.visual_kind());
+        let editor_cursor_style =
+            super::cursor_style::editor_cursor_style(self.theme, self.editor.mode, modal_input);
         // Hide the modal cursor when the window has lost focus, mirroring
         // `EditorState::cursor_visible`.
         let modal_cursor_visible =
@@ -528,7 +525,7 @@ impl App {
                 capabilities: capabilities_ref,
                 is_scrolling,
                 hint,
-                vim_mode_label,
+                modal_input,
                 visual_kind,
                 editor_cursor_style,
                 max_width_enabled,
@@ -791,6 +788,7 @@ impl App {
     /// — is dropped without a redraw.  No modal reacts to it, and redrawing on each one repainted
     /// the whole dimmed screen for every cell the pointer crossed on its way to a button.
     fn dispatch_modal_mouse(&mut self, me: &MouseEvent) {
+        self.cancel_helix_pending();
         if me.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
             self.dispatch_modal_click(me.column, me.row);
             self.needs_draw = true;
@@ -931,6 +929,16 @@ impl App {
     /// hover-link tracking, and (for non-Moved events) dispatch through
     /// `MouseDispatcher` and `mouse_ops::apply`.
     pub(super) fn dispatch_mouse_event(&mut self, mouse_event: MouseEvent, dims: &DocDims) {
+        let before = (
+            self.editor.buffer.version(),
+            self.editor.cursor.offset,
+            self.editor.selection,
+        );
+        self.dispatch_mouse_event_inner(mouse_event, dims);
+        self.sync_helix_after_external(before);
+    }
+
+    fn dispatch_mouse_event_inner(&mut self, mouse_event: MouseEvent, dims: &DocDims) {
         // Clicks hit-test against `parsed.source_map` byte ranges, so a stale
         // map would resolve to the wrong block.  A click ends the typing burst
         // anyway, so the synchronous flush costs no visible latency.
@@ -1059,16 +1067,16 @@ impl App {
         if self.paste_into_cmdline(&text, dims) {
             return;
         }
-        if let Some(vim) = self.vim.as_ref() {
+        if let Some(vim) = self.modal_input.vim() {
             if vim.sub_mode != VimSubMode::Insert {
                 return;
             }
         }
-        edit_ops::paste_text(&mut self.editor, &text, dims.doc_height, dims.doc_width);
+        self.paste_document_text(&text, dims.doc_height, dims.doc_width);
         self.needs_draw = true;
     }
 
-    /// Insert `text` into an open vim `/` `?` `:` prompt, reporting whether
+    /// Insert `text` into an open modal `/` `?` `:` prompt, reporting whether
     /// there was one.  Shared by both ways a paste can arrive while the prompt
     /// is up — a bracketed paste and edamame's own paste chord — which landed in
     /// different places before (issue #17).
@@ -1080,7 +1088,17 @@ impl App {
     /// which `paste_str` turns into `\n` escapes.  Unbounded, `paste_str`'s
     /// per-char insert is quadratic — a 200 KB clipboard froze the UI ~9 s.
     fn paste_into_cmdline(&mut self, text: &str, dims: &DocDims) -> bool {
-        let Some(vim) = self.vim.as_mut() else {
+        if let Some(prompt) = self.modal_input.helix_mut().and_then(|h| h.prompt.as_mut()) {
+            let line = &mut prompt.line;
+            crate::input::vim::cmdline::paste_str_bounded(
+                line,
+                text,
+                crate::input::helix::state::PROMPT_CHAR_CAP,
+            );
+            self.needs_draw = true;
+            return true;
+        }
+        let Some(vim) = self.modal_input.vim_mut() else {
             return false;
         };
         let Some(cl) = vim.cmdline.as_mut() else {
@@ -1160,7 +1178,7 @@ impl App {
     /// A dispatch that opens a modal, sets a pending external-editor flag or
     /// queues a link follow requeues the remaining events so the next loop
     /// iteration routes them through the right dispatcher.
-    fn dispatch_key_batch(
+    pub(super) fn dispatch_key_batch(
         &mut self,
         events: Vec<Event>,
         dims: &DocDims,
@@ -1207,10 +1225,9 @@ impl App {
                 || self.search_flow_captures()
                 // Vim outside Insert must not coalesce: a held digit
                 // accumulates a count and bare keys are commands.
-                || self
-                    .vim
-                    .as_ref()
+                || self.modal_input.vim()
                     .is_some_and(|v| v.sub_mode != VimSubMode::Insert)
+                || self.modal_input.helix().is_some_and(|h| h.sub_mode != HelixSubMode::Insert || h.prompt.is_some())
             {
                 continue;
             }
@@ -1288,14 +1305,29 @@ impl App {
     /// external-editor drain deliberately isn't here — `dispatch_key_batch` runs
     /// it once per batch.
     pub(super) fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
-        // When vim is active it owns the key first, except in two flows that
+        // An active modal handler owns the key first, except in two flows that
         // hard-bind keys downstream in `DefaultHandler` (which runs *after* this
         // intercept) and would otherwise be shadowed: diff mode, and a
-        // *capturing* search flow — without the deferral vim Normal swallows
+        // *capturing* search flow — without deferral a modal handler swallows
         // `Esc` and traps the user.  A navigate-only search does not defer; vim
         // owns `n`/`N` and every other key over the matches.
-        let vim_deferred = self.editor.mode == Mode::Diff || self.search_flow_captures();
-        // An open vim command line captures every key, so the global keymap
+        if !self.modal_stack.is_empty() {
+            self.cancel_helix_pending();
+            match &event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    self.dispatch_modal_key(*key, dims.doc_height, dims.doc_width)
+                }
+                Event::Paste(text) => self.dispatch_modal_paste(text),
+                _ => {}
+            }
+            self.needs_draw = true;
+            return;
+        }
+        let modal_deferred = self.editor.mode == Mode::Diff || self.search_flow_captures();
+        if modal_deferred {
+            self.cancel_helix_pending();
+        }
+        // An open modal command line captures every key, so the global keymap
         // never runs while a prompt is up — including the paste chord.  That is
         // why ⌘V (an `Event::Paste`) filled the prompt while edamame's own paste
         // did nothing (issue #17).  Resolve just that action against the live
@@ -1303,8 +1335,9 @@ impl App {
         // prompt-paste path; everything else stays captured by `feed_cmdline`.
         if let Event::Key(key) = &event {
             if key.kind == KeyEventKind::Press
-                && !vim_deferred
-                && self.vim.as_ref().is_some_and(|v| v.cmdline.is_some())
+                && !modal_deferred
+                && (self.modal_input.vim().is_some_and(|v| v.cmdline.is_some())
+                    || self.modal_input.helix().is_some_and(|h| h.prompt.is_some()))
                 && keymap.action_for(key) == Some(&Action::Paste)
             {
                 let text = self.read_paste_text();
@@ -1313,8 +1346,38 @@ impl App {
             }
         }
         if let Event::Key(key) = &event {
-            if key.kind == KeyEventKind::Press && !vim_deferred {
-                if let Some(vim) = self.vim.as_mut() {
+            if key.kind == KeyEventKind::Press && !modal_deferred {
+                if let Some(helix) = self.modal_input.helix_mut() {
+                    match helix_feed(
+                        helix,
+                        &mut self.editor,
+                        *key,
+                        dims.doc_height,
+                        dims.doc_width,
+                    ) {
+                        HelixOutcome::Consumed => {
+                            self.needs_draw = true;
+                            return;
+                        }
+                        HelixOutcome::Save { then_quit } => {
+                            self.save_from_helix(then_quit);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        HelixOutcome::Quit => {
+                            self.dispatch_action(Action::Quit, dims.doc_height, dims.doc_width);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        HelixOutcome::Passthrough => {}
+                        HelixOutcome::Flash(message) => {
+                            self.flash(message, MessageKind::Info);
+                            self.needs_draw = true;
+                            return;
+                        }
+                    }
+                }
+                if let Some(vim) = self.modal_input.vim_mut() {
                     let key = *key;
                     match vim_feed(vim, &mut self.editor, key, dims.doc_height, dims.doc_width) {
                         VimOutcome::Pending | VimOutcome::Consumed => {
@@ -1473,7 +1536,11 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
-    use crate::app::test_utils::app_with_buffer;
+    fn app_with_buffer(text: &str, cursor: usize) -> crate::app::App {
+        let mut app = crate::app::test_utils::app_with_buffer(text, cursor);
+        crate::app::test_utils::close_startup_modals(&mut app);
+        app
+    }
     use crate::config::{KeyBindingOverrides, KeyMap};
     use crate::search::SearchState;
     use crate::ui::text_input::PASTE_CHAR_CAP;
@@ -1600,13 +1667,13 @@ mod tests {
         use crate::input::vim::state::{CmdLineKind, CmdLineState};
         let mut app = app_with_buffer("hello\n", 0);
         app.set_vim_enabled(true);
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
         }
         let before = app.editor.buffer.contents();
         app.dispatch_paste("wor".to_owned(), &dims());
         assert_eq!(app.editor.buffer.contents(), before, "buffer untouched");
-        let cl = app.vim.as_ref().unwrap().cmdline.as_ref().unwrap();
+        let cl = app.modal_input.vim().unwrap().cmdline.as_ref().unwrap();
         assert_eq!(cl.input, "wor");
         assert_eq!(cl.cursor, 3);
     }
@@ -1634,14 +1701,14 @@ mod tests {
         let mut app = app_with_buffer("hello\n", 0);
         app.set_vim_enabled(true);
         app.editor.kill_ring = "world".to_owned();
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::Ex));
         }
         let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
         let ctrl_v = Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
         app.dispatch_single_key(ctrl_v, &keymap, &dims());
 
-        let cl = app.vim.as_ref().unwrap().cmdline.as_ref().unwrap();
+        let cl = app.modal_input.vim().unwrap().cmdline.as_ref().unwrap();
         assert_eq!(cl.input, "world", "the chord fills the prompt");
         assert_eq!(cl.cursor, 5);
         assert_eq!(
@@ -1658,7 +1725,7 @@ mod tests {
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
         app.editor.kill_ring = "a\nb".to_owned();
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
         }
         let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
@@ -1666,7 +1733,13 @@ mod tests {
         app.dispatch_single_key(ctrl_v, &keymap, &dims());
 
         assert_eq!(
-            app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
+            app.modal_input
+                .vim()
+                .unwrap()
+                .cmdline
+                .as_ref()
+                .unwrap()
+                .input,
             r"a\nb"
         );
     }
@@ -1677,7 +1750,7 @@ mod tests {
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
         app.editor.mode = crate::editor::Mode::Rendered;
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.sub_mode = crate::input::VimSubMode::Insert;
         }
         app.editor.kill_ring = "X".to_owned();
@@ -1694,13 +1767,13 @@ mod tests {
         use crate::input::vim::state::{CmdLineKind, CmdLineState};
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::Ex));
         }
         let huge = "x".repeat(PASTE_CHAR_CAP + 500);
         app.dispatch_paste(huge, &dims());
 
-        let cl = app.vim.as_ref().unwrap().cmdline.as_ref().unwrap();
+        let cl = app.modal_input.vim().unwrap().cmdline.as_ref().unwrap();
         assert_eq!(cl.input.chars().count(), PASTE_CHAR_CAP);
         assert_eq!(cl.cursor, PASTE_CHAR_CAP);
     }
@@ -1713,14 +1786,14 @@ mod tests {
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
         app.editor.kill_ring = "é".repeat(PASTE_CHAR_CAP + 10);
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::Ex));
         }
         let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
         let ctrl_v = Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
         app.dispatch_single_key(ctrl_v, &keymap, &dims());
 
-        let cl = app.vim.as_ref().unwrap().cmdline.as_ref().unwrap();
+        let cl = app.modal_input.vim().unwrap().cmdline.as_ref().unwrap();
         assert_eq!(cl.input.chars().count(), PASTE_CHAR_CAP);
     }
 
@@ -1729,12 +1802,18 @@ mod tests {
         use crate::input::vim::state::{CmdLineKind, CmdLineState};
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
         }
         app.dispatch_paste("a\nb\r\nc".to_owned(), &dims());
         assert_eq!(
-            app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
+            app.modal_input
+                .vim()
+                .unwrap()
+                .cmdline
+                .as_ref()
+                .unwrap()
+                .input,
             r"a\nb\r\nc",
             "a multi-line paste becomes a single escaped search line"
         );
@@ -1745,12 +1824,18 @@ mod tests {
         use crate::input::vim::state::{CmdLineKind, CmdLineState};
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
-        if let Some(vim) = app.vim.as_mut() {
+        if let Some(vim) = app.modal_input.vim_mut() {
             vim.cmdline = Some(CmdLineState::new(CmdLineKind::Ex));
         }
         app.dispatch_paste("a\nb\r\nc".to_owned(), &dims());
         assert_eq!(
-            app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
+            app.modal_input
+                .vim()
+                .unwrap()
+                .cmdline
+                .as_ref()
+                .unwrap()
+                .input,
             "abc",
             "an ex command is not a search term — no escape syntax"
         );

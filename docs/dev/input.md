@@ -2,6 +2,8 @@
 
 > Part of the edamame contributor deep-dives. Index and project-wide conventions: [`AGENTS.md`](../../AGENTS.md). Sibling docs live in [`docs/dev/`](.).
 
+- **Modal input is one exclusive session.** `App::modal_input` holds exactly one of `ModalInput::Default`, `ModalInput::Vim`, or `ModalInput::Helix`; switching the configured handler replaces that session. Read-only pages park the active session while they own input. On return, Helix resumes in Normal mode, clears pending input and collapses its selection to the cursor. Raw and Rendered editor modes do not change which modal session owns input. The currently available Helix subset is described in [Helix mode](../helix-mode.md).
+
 
 - **Two-layer mouse dispatch.** `MouseDispatcher` (`src/input/mouse.rs`) is a pure state machine turning crossterm `MouseEvent`s into semantic `MouseAction`s; `mouse_ops::apply` mutates `EditorState`. Keep the split strict — coordinate translation in `mouse_ops::coord`, click counting in `MouseDispatcher`.
 - **Mouse enable is gated by capabilities.** `terminal::enable_mouse()` is called from `main` only when `capabilities.mouse`, and the app gates `MouseDispatcher::dispatch` on it too, so a fake mouse event can't drive the editor.
@@ -25,3 +27,15 @@
 - **The `✕` pair is scoped tighter, spatially and temporally.** The column-delete hitbox is `column_glyph_x` ±1, not the column's full width, so a click aimed at a border from the bottom row resizes rather than dropping a column (`column_glyph_x` is shared with `paint_handles`). `TABLE_DELETE_COOLDOWN` (250 ms) swallows a second delete landing too soon, so a habitual double-click removes one row. **The cooldown is anchored to the delete, not to the click chord** — `MULTI_CLICK_WINDOW` restarts on every press, so a chord gate never expires under steady clicking. `EditorState::last_table_delete_at` is stamped by `table_drag`'s two delete helpers, only on a delete that applied.
 - **Multi-click arms must dispatch table hits too, because a drag *is* a click-chord member otherwise.** `dispatch_table_click` is shared by the `Click` / `DoubleClick` / `TripleClick` arms, which behave identically: a table interaction is a gesture users retry, and the second press arrives as `DoubleClick`. `MouseDispatcher::dragged_since_down` closes the other half — a press that turned into a drag doesn't start a chord, so the retry is a fresh `Click`. Both halves are needed; the flag can't help a retry whose *first* press never dragged.
 
+
+Helix search/file prompts capture keys before Ctrl passthrough; only the live keymap's Paste action is resolved ahead of them, sharing the terminal-paste route. The document is untouched until a submitted action passes its own guards. See [helix-mode.md](helix-mode.md) and [vim-cmdline.md](vim-cmdline.md).
+
+## Modal session dispatch and batches
+
+`ModalInput` admits Default, Vim or Helix exclusively. Capturing modals win first, then diff/replacement-search, then an open modal prompt, the active reducer and the default handler. Helix passes Ctrl chords and unclaimed Alt chords to the application's keymap; `Alt-;` is its delivered Alt command. Function/page keys also retain their global bindings. Ordinary unsupported document keys remain consumed in Normal/Select.
+
+`dispatch_key_batch` samples the current interaction mode after each individually dispatched event. It coalesces only ordinary Insert text/deletes with no selection, drag, Preview or capturing flow; a transition back to Normal immediately ends eligibility. Opening a modal or queuing a navigation/external-editor flow requeues the remaining events in order. `dispatch_single_key` also honors an already-open modal, so individual and batch callers share priority. Tests use a fixed terminal viewport without querying or drawing to a live terminal.
+
+Capture cancels Helix counts, `g`, finds and replacement targets; a transient prompt cancellation restores its origin only while that buffer version is still current. Pointer/global document changes discard that origin and reconcile the current selection instead. Hover/scroll without cursor or buffer changes does not cancel a pending document sequence. Read-only documents park the whole exclusive session; replacing a document clears its transient state, and resuming reconstructs a Normal selection at the current cursor while retaining the internal register.
+
+External selection reconciliation accepts ordinary editor/mouse active endpoints and already-normalized Helix endpoints. If navigation restored a different cursor after loading, it collapses there instead of resurrecting the initial loaded range. Navigate-only search shares whole-match Helix selection; a replacement flow keeps its own capture and selection rules.

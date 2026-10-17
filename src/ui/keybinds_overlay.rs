@@ -70,6 +70,8 @@ pub enum FocusArea {
 
 /// Mutable state for an open keybinds overlay.
 pub struct KeybindsState {
+    /// Modal handler active when this overlay was opened.
+    pub handler_label: &'static str,
     /// Index into [`Self::rows`].  Invariant: never rests on a `Header` — every assignment site
     /// guards on the row being a `Binding` (a new site owes the same guard).  Kept across
     /// focus-area transitions so Tab-back lands on the user's last row.
@@ -98,10 +100,11 @@ pub struct KeybindsState {
 
 impl KeybindsState {
     /// Open with a draft cloned from the live keymap and overrides.
-    pub fn open(keymap: &KeyMap, overrides: &KeyBindingOverrides, vim_enabled: bool) -> Self {
-        let rows = build_rows(vim_enabled);
+    pub fn open(keymap: &KeyMap, overrides: &KeyBindingOverrides, modal_active: bool) -> Self {
+        let rows = build_rows(modal_active);
         let focus_offsets = compute_focus_offsets(&rows);
         let mut state = Self {
+            handler_label: "Default",
             focused: 0,
             focus_area: FocusArea::List,
             capturing: false,
@@ -392,11 +395,12 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         // Do NOT call ensure_visible here: it would undo wheel/PgUp/PgDn scrolls on every
         // redraw.  It runs only when focus moves (see `move_focus`).
 
+        let title = format!("Keybindings · {}", state.handler_label);
         let layout = draw_frame(
             rect,
             buf,
             FrameOpts {
-                title: "Keybindings",
+                title: &title,
                 kind: ModalKind::Normal,
                 show_close_hint: true,
                 content,
@@ -623,14 +627,14 @@ fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
     }
 }
 
-/// Build the row list from `CATEGORIES`.  With vim enabled the `ExitToPreview` row is dropped:
-/// NORMAL replaces Preview as the resting mode, so the action is a no-op.
-fn build_rows(vim_enabled: bool) -> Vec<Row> {
+/// Build the row list from `CATEGORIES`. A modal handler hides `ExitToPreview` because Normal
+/// replaces Preview as the resting mode, so the action is a no-op.
+fn build_rows(modal_active: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     for (title, bindings) in CATEGORIES {
         rows.push(Row::Header(title));
         for (action, label) in *bindings {
-            if vim_enabled && *action == Action::ExitToPreview {
+            if modal_active && *action == Action::ExitToPreview {
                 continue;
             }
             rows.push(Row::Binding {

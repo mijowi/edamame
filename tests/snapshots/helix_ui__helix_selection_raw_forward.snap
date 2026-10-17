@@ -1,0 +1,6 @@
+---
+source: tests/helix_ui.rs
+expression: "format!(\"{text}\\n{mask}\")"
+---
+ab日 éf    
+.^^^^.....

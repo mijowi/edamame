@@ -2,7 +2,10 @@
 //! and a [`RowKind`] whose function pointers tell the overlay how to read, write, and cycle the
 //! underlying config field.  Adding a setting should only touch this file.
 
-use crate::config::sections::{DEFAULT_HANDLER, MAX_WIDTH_COLS_MIN, VIM_HANDLER};
+use crate::config::sections::{
+    modal_handler_index, modal_handler_label, MAX_WIDTH_COLS_MIN, MODAL_HANDLERS,
+    MODAL_HANDLER_LABELS,
+};
 use crate::config::{Config, FiguresEnabled, ImagesEnabled, RemoteImagePolicy};
 use crate::ui::controls;
 
@@ -19,7 +22,7 @@ pub(crate) const LABEL_SYNTAX_HIGHLIGHTING: &str = "Syntax highlighting";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
 pub(crate) const LABEL_LINE_NUMBERS: &str = "Show line numbers";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
-pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
+pub(crate) const LABEL_EDITING_MODE: &str = "Editing mode";
 pub(crate) const LABEL_BLINK_CURSOR: &str = "Blink cursor";
 pub(crate) const LABEL_SHOW_IMAGES: &str = "Show images";
 pub(crate) const LABEL_SHOW_DIAGRAMS: &str = "Show figures";
@@ -643,25 +646,23 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: LABEL_VIM_MODE,
-            description: Some("\nUse Vim-style modal editing"),
+            label: LABEL_EDITING_MODE,
+            description: Some("\nChoose Default, Vim, or Helix modal editing"),
             describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                // Vim mode is stored as the modal handler name, not a bool, so these translate
-                // between the pills and `config.modal.handler`.
-                read: |c, _| bool_label(c.modal.handler == VIM_HANDLER).to_owned(),
+                read: |c, _| modal_handler_label(&c.modal.handler).to_owned(),
                 write_string: no_write,
                 read_value: Some(|c| {
-                    controls::ControlValue::Toggle(c.modal.handler == VIM_HANDLER)
+                    controls::ControlValue::Choice(modal_handler_index(&c.modal.handler))
                 }),
                 write_value: Some(|c, v| {
-                    if let controls::ControlValue::Toggle(b) = v {
-                        c.modal.handler = if b { VIM_HANDLER } else { DEFAULT_HANDLER }.to_owned();
+                    if let controls::ControlValue::Choice(i) = v {
+                        c.modal.handler = MODAL_HANDLERS[i].to_owned();
                     }
                 }),
-                options: Some(controls::Control::Toggle),
+                options: Some(controls::Control::Pill(&MODAL_HANDLER_LABELS)),
                 disabled: None,
             },
         },

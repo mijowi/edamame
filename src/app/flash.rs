@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use crate::config;
 use crate::config::KeyBindingOverrides;
 use crate::config::KeyMap;
+use crate::editor::Mode;
+use crate::ui::bottom_region;
 use crate::ui::{hint_line_for, HintContent, HintCtx, HintSet, ModalKind};
 
 use super::modal::{Modal, NoticeModal};
@@ -85,7 +87,7 @@ impl App {
                 chords: prompt.chords.clone(),
             };
         }
-        if let Some(cl) = self.vim.as_ref().and_then(|v| v.cmdline.as_ref()) {
+        if let Some(cl) = self.modal_input.cmdline() {
             return HintContent::CommandLine {
                 prefix: cl.kind.prefix(),
                 text: cl.input.clone(),
@@ -123,13 +125,22 @@ impl App {
             }
         };
         // `visual_line`: a single-line V-LINE selection is charwise-empty, so the hint line
-        // can't infer it from the selection alone.  `vim_enabled` drops the `Esc Preview`
+        // can't infer it from the selection alone.  `modal_enabled` drops the `Esc Preview`
         // chord, unreachable under vim.
         let ctx = HintCtx {
             nav_available: !self.nav_back.is_empty() || !self.nav_forward.is_empty(),
-            visual_line: self.vim.as_ref().is_some_and(|v| v.is_visual_line()),
-            vim_enabled: self.vim.is_some(),
+            visual_line: self.modal_input.vim().is_some_and(|v| v.is_visual_line()),
+            modal_enabled: self.modal_input.is_active(),
         };
+        if self.editor.mode != Mode::Diff && !self.search_flow_captures() {
+            if let Some(helix) = self.modal_input.helix() {
+                return HintContent::Chords(bottom_region::helix_hint_line_for(
+                    &self.editor,
+                    keymap,
+                    helix.sub_mode,
+                ));
+            }
+        }
         HintContent::Chords(hint_line_for(&self.editor, keymap, ctx))
     }
 
@@ -196,6 +207,7 @@ mod tests {
     use super::*;
     use crate::app::test_utils::make_app;
     use crate::config::Action;
+    use crate::input::ModalInput;
     use crate::ui::HintContent;
 
     #[test]
@@ -312,11 +324,11 @@ mod tests {
             anchor: 0,
             active: 0,
         });
-        app.vim = Some(VimState {
+        app.modal_input = ModalInput::Vim(Box::new(VimState {
             sub_mode: VimSubMode::VisualLine,
             visual_anchor: Some(0),
             ..Default::default()
-        });
+        }));
         match app.hint_content() {
             HintContent::Chords(set) => {
                 let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
@@ -328,7 +340,7 @@ mod tests {
             }
             other => panic!("expected Chords, got {other:?}"),
         }
-        app.vim = Some(VimState::default());
+        app.modal_input = ModalInput::Vim(Box::default());
         app.editor.selection = None;
         match app.hint_content() {
             HintContent::Chords(set) => {

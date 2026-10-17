@@ -123,6 +123,21 @@ pub fn paste_str(cl: &mut CmdLineState, text: &str) {
     }
 }
 
+/// Insert a transformed prompt paste without truncating the existing draft.
+pub fn paste_str_bounded(cl: &mut CmdLineState, text: &str, cap: usize) {
+    let mut incoming = CmdLineState::new(cl.kind);
+    let capped: String = text.chars().take(cap).collect();
+    paste_str(&mut incoming, &capped);
+    let available = cap.saturating_sub(cl.input.chars().count());
+    let mut payload: String = incoming.input.chars().take(available).collect();
+    if cl.kind.is_search() && payload.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1 {
+        payload.pop();
+    }
+    cl.input
+        .insert_str(str_byte_index(&cl.input, cl.cursor), &payload);
+    cl.cursor += payload.chars().count();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +259,23 @@ mod tests {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(feed_key(&mut s, ctrl_c), CmdLineStep::Editing);
         assert_eq!(s.input, "");
+    }
+    // Utility regression: a cap must not cut a search escape or delete the live draft's tail.
+    #[test]
+    fn bounded_paste_preserves_draft_and_escape_units() {
+        let mut s = cl();
+        paste_str(&mut s, "ab");
+        s.cursor = 1;
+        paste_str_bounded(&mut s, "x\n", 6);
+        assert_eq!(s.input, "ax\\nb");
+        let before = s.clone();
+        paste_str_bounded(&mut s, "large", 5);
+        assert_eq!(s, before);
+        let mut s = cl();
+        paste_str(&mut s, "a");
+        paste_str_bounded(&mut s, "\n", 2);
+        assert_eq!(s.input, "a");
+        paste_str_bounded(&mut s, "\n", 3);
+        assert_eq!(s.input, "a\\n");
     }
 }

@@ -35,6 +35,7 @@ edamame shows your document *rendered* with headings, drawn table grids, inline 
 - **Search and replace**, with smartcase navigation
 - **Diff review for external changes** — when something else writes your file, accept or reject each change hunk by hunk instead of losing work
 - **Vim mode**, optional — motions, operators, text objects, `:s` with a live preview
+- **Helix mode**, optional — basic selection-first editing with one selection ([scope and limitations](docs/helix-mode.md#scope-and-limitations))
 - **27 themes**, and a documented format for writing your own
 - **HTML export**, self-contained or linked
 - **Footnotes, task lists, list continuation and renumbering**
@@ -67,6 +68,7 @@ Tables are drawn, not printed as pipes. `Tab` walks the cells, rows and columns 
 - [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md) — every setting
 - [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md) — switching, and writing your own
 - [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md) — what's supported and how it differs from Vim
+- [Helix mode](https://github.com/mijowi/edamame/blob/main/docs/helix-mode.md) — available commands and Markdown adaptations
 - [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md) — what protects you when you open a document you didn't write
 
 ## Installation

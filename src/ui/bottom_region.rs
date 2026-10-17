@@ -15,6 +15,7 @@ use crate::config::keymap::format_key_compact;
 use crate::config::{Action, KeyMap, Theme};
 use crate::diff::Decision;
 use crate::editor::{EditorState, Mode};
+use crate::input::helix::is_app_shortcut;
 
 use super::status_bar::{StatusBar, StatusBarState};
 
@@ -59,7 +60,7 @@ pub enum HintContent {
         prompt: String,
         chords: Vec<HintChord>,
     },
-    /// Vim command line (`/` `?` `:`): a prefix glyph plus the typed text with a block cursor at
+    /// Modal command line (`/` `?` `:`): a prefix glyph plus the typed text with a block cursor at
     /// char index `cursor`.  `cursor_visible` is the blink phase.
     CommandLine {
         prefix: char,
@@ -78,9 +79,9 @@ pub struct HintCtx {
     /// True in vim's VisualLine sub-mode.  A single-line V-LINE selection is charwise-empty
     /// (`anchor == active`) yet paints the whole line, so `selection_size()` can't detect it.
     pub visual_line: bool,
-    /// True while the vim handler is active.  Vim consumes `Esc` in every sub-mode and never rests
+    /// True while a modal handler is active. It consumes `Esc` in every sub-mode and never rests
     /// in Preview, so the `ExitToPreview` chord is dropped from the baseline row.
-    pub vim_enabled: bool,
+    pub modal_enabled: bool,
 }
 
 /// Pick the default hint set for `state`, adapting to the cursor's Markdown context.  Pure, so it
@@ -197,7 +198,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 _ => "Raw",
             };
             let redo_entry = state.history.can_redo().then_some((Action::Redo, "Redo"));
-            let preview_entry = (!ctx.vim_enabled).then_some((Action::ExitToPreview, "Preview"));
+            let preview_entry = (!ctx.modal_enabled).then_some((Action::ExitToPreview, "Preview"));
             let baseline = [
                 Some((Action::ShowCommandPalette, "Menu")),
                 Some((Action::GoToSection, "Go to")),
@@ -250,6 +251,61 @@ fn nav_chord() -> HintChord {
 fn chord_for(keymap: &KeyMap, action: &Action, label: &str) -> Option<HintChord> {
     let ev = keymap.first_key_event_for(action)?;
     Some(HintChord::new(format_key_compact(&ev), label.to_owned()))
+}
+
+/// Helix document keys are internal; global chords are advertised only when they pass through.
+pub fn helix_hint_line_for(
+    state: &EditorState,
+    keymap: &KeyMap,
+    mode: crate::input::HelixSubMode,
+) -> HintSet {
+    use crate::input::HelixSubMode;
+    let entries: &[(&str, &str)] = match mode {
+        HelixSubMode::Insert => &[
+            ("Esc", "Normal"),
+            ("Enter", "New line"),
+            ("Tab", "Indent / cell"),
+        ],
+        HelixSubMode::Normal => &[
+            ("w/e/b", "Select"),
+            ("v", "Extend"),
+            ("d/c/y", "Edit"),
+            ("i", "Insert"),
+            ("/", "Find"),
+        ],
+        HelixSubMode::Select => &[
+            ("w/e/b", "Extend"),
+            ("v", "Normal"),
+            ("d/c/y", "Edit"),
+            (";", "Collapse"),
+            ("⌥;", "Flip"),
+        ],
+    };
+    let mut chords: Vec<_> = entries
+        .iter()
+        .map(|(key, label)| HintChord::new(*key, *label))
+        .collect();
+    for (action, label) in [
+        (Action::ShowCommandPalette, "Menu"),
+        (Action::Save, "Save"),
+        (Action::Copy, "Copy"),
+        (Action::Paste, "Paste"),
+    ] {
+        if let Some(key) = keymap.first_key_event_for(&action) {
+            if is_app_shortcut(key, mode) {
+                chords.push(HintChord::new(format_key_compact(&key), label));
+            }
+        }
+    }
+    HintSet {
+        prelude: None,
+        chords,
+        search_match: state
+            .search
+            .as_ref()
+            .filter(|s| !s.matches.is_empty())
+            .map(|s| (s.focused_idx + 1, s.matches.len())),
+    }
 }
 
 /// [`chord_for`] over a slice, collecting the successful lookups in order.
@@ -673,6 +729,38 @@ mod tests {
 
     fn keymap() -> KeyMap {
         KeyMap::build(&KeyBindingOverrides::default()).unwrap()
+    }
+
+    // Utility regression: hints advertise only shortcuts that can reach the application.
+    #[test]
+    fn helix_hints_hide_reserved_global_chords() {
+        use crate::input::HelixSubMode;
+        for (binding, normal, insert) in [
+            ("alt+;", false, true),
+            ("ctrl+alt+;", true, true),
+            ("f12", true, true),
+            ("x", false, false),
+        ] {
+            let mut map = keymap();
+            map.rebind(&Action::Copy, binding, &mut KeyBindingOverrides::default())
+                .unwrap();
+            for mode in [
+                HelixSubMode::Normal,
+                HelixSubMode::Select,
+                HelixSubMode::Insert,
+            ] {
+                let hints = helix_hint_line_for(&state("abc"), &map, mode);
+                assert_eq!(
+                    hints.chords.iter().any(|chord| chord.label == "Copy"),
+                    if mode == HelixSubMode::Insert {
+                        insert
+                    } else {
+                        normal
+                    },
+                    "{binding}: {mode:?}"
+                );
+            }
+        }
     }
 
     // ── hint_line_for ─────────────────────────────────────────────
@@ -1265,7 +1353,7 @@ mod tests {
                 &st,
                 &keymap(),
                 HintCtx {
-                    vim_enabled: true,
+                    modal_enabled: true,
                     ..Default::default()
                 },
             );
@@ -1428,7 +1516,7 @@ mod tests {
                         cursor_col: Some(1),
                         section_path: Vec::new(),
                         diff_progress: None,
-                        vim_mode_label: None,
+                        modal_input: &crate::input::ModalInput::Default,
                     },
                     hint,
                     theme: t,

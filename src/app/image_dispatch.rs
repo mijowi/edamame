@@ -258,6 +258,7 @@ impl App {
     /// Nothing is dispatched here; the per-frame dispatch picks the URLs up once an answer
     /// permits.  Push order mirrors `App::new`: remote at the bottom, images on top.
     pub(super) fn on_document_contents_swapped(&mut self) {
+        self.sync_modal_suspension();
         self.images_dirty = true;
         self.queue_remote_image_prompt();
         self.queue_diagrams_enabled_prompt();

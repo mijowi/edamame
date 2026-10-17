@@ -1,5 +1,5 @@
 //! Settings overlay: a curated subset of `config.toml` editable in place.  Esoteric
-//! options (developer logging, modal handler name, image cell ceilings) stay file-only so
+//! options (developer logging, image cell ceilings) stay file-only so
 //! the overlay remains simpler than the TOML.
 //!
 //! Rows: two "open externally" actions, a blank divider, then editable settings in
@@ -44,9 +44,9 @@ use self::rows::{build_rows, RowAction, RowDef};
 #[allow(unused_imports)]
 pub(crate) use self::rows::{
     HEADER_NOTE, LABEL_AUTOSAVE, LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_DIFF_ON_CHANGE,
-    LABEL_LIMIT_WIDTH, LABEL_LINE_NUMBERS, LABEL_MATH_PREVIEW, LABEL_REFLOW, LABEL_SCROLL_SPEED,
-    LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES, LABEL_SHOW_REMOTE_IMAGES, LABEL_SYNTAX_HIGHLIGHTING,
-    LABEL_TABLE_BUTTONS, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    LABEL_EDITING_MODE, LABEL_LIMIT_WIDTH, LABEL_LINE_NUMBERS, LABEL_MATH_PREVIEW, LABEL_REFLOW,
+    LABEL_SCROLL_SPEED, LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES, LABEL_SHOW_REMOTE_IMAGES,
+    LABEL_SYNTAX_HIGHLIGHTING, LABEL_TABLE_BUTTONS, LABEL_VISUAL_LINE_NAV,
 };
 
 /// All row labels in display order, dividers included; pinned by the App-level
@@ -676,16 +676,31 @@ mod tests {
     }
 
     #[test]
-    fn cycle_toggles_vim_mode_handler() {
+    fn cycle_editing_mode_handler_pill() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Vim mode");
-        assert_eq!(config.modal.handler, "default"); // default: off
+        focus_row(&mut state, &config, "Editing mode");
+        assert_eq!(config.modal.handler, "default");
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
         assert_eq!(config.modal.handler, "vim");
         state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.modal.handler, "helix");
+        state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(config.modal.handler, "default");
+    }
+
+    #[test]
+    fn click_cycles_editing_mode_pill_through_all_handlers() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 120, 40);
+        let rect = rect_for(&state, "Editing mode");
+        for expected in ["vim", "helix", "default"] {
+            let response = state.handle_click(rect.x, rect.y, &mut config);
+            assert!(matches!(response, SettingsResponse::FieldChanged(_)));
+            assert_eq!(config.modal.handler, expected);
+        }
     }
 
     #[test]
@@ -871,7 +886,7 @@ mod tests {
                 "Show table buttons",
                 "Syntax highlighting",
                 "Use visual line navigation",
-                "Vim mode",
+                "Editing mode",
             ]
         );
     }

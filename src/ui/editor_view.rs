@@ -9,6 +9,7 @@ use crate::config::sections::MAX_WIDTH_COLS_MIN;
 use crate::config::Theme;
 use crate::editor::vim_ops::VisualKind;
 use crate::editor::{EditorState, Mode};
+use crate::input::ModalInput;
 use crate::terminal::Capabilities;
 
 use super::{
@@ -44,14 +45,13 @@ pub struct EditorView<'a> {
     pub is_scrolling: bool,
     /// What the hint line should display for this frame.
     pub hint: HintContent,
-    /// Vim sub-mode badge when the vim handler is active; `None` leaves the status bar showing
-    /// the rendering-mode badge.
-    pub vim_mode_label: Option<&'a str>,
+    /// Active modal session, used to derive the status badge's label and style.
+    pub modal_input: &'a ModalInput,
     /// The active vim Visual flavor, so `RenderedView` / `RawView` can widen the half-open
     /// `selection` for the highlight overlay only — inclusive charwise, whole lines in
     /// VisualLine.
     pub visual_kind: Option<VisualKind>,
-    /// Block-cursor style for this frame, already resolved against the view mode and vim
+    /// Block-cursor style for this frame, already resolved against the view mode and modal
     /// sub-mode, so the sub-views paint it directly.
     pub editor_cursor_style: Style,
     /// Cap the document area to `max_width_cols` and center it horizontally.
@@ -458,7 +458,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_col: Some(cursor_col + 1),
                 section_path,
                 diff_progress,
-                vim_mode_label: self.vim_mode_label,
+                modal_input: self.modal_input,
             },
             hint: self.hint,
             theme: self.theme,

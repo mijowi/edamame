@@ -10,14 +10,14 @@ This page documents **what is included** and, just as importantly, **how the inc
 
 Vim mode is off by default. Turn it on in any of these ways:
 
-- **First-run welcome modal** — toggle "Vim mode" when edamame first starts. This persists the setting.
+- **Welcome modal or Settings** — choose **Vim** in the **Editing mode** pill. This persists the setting.
 - **Config file** — set the modal handler in `~/.config/edamame/config.toml`:
 
   ```toml
   [modal]
-  handler = "vim"   # "default" (the standard chord keymap) or "vim"
+  handler = "vim"   # "default", "vim", or "helix"
   ```
-- **From the command palette** — "Toggle Vim mode"
+- **From the command palette** — "Toggle Vim mode" (retained for existing keybindings)
 
 Restart isn't required when toggling from the welcome modal or command palette; a config-file edit takes effect the next time the config is loaded.
 

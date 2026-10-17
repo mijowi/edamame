@@ -166,6 +166,8 @@ pub enum Action {
     ToggleVisualLineNav,
     /// Toggle Vim modal editing (`config.modal.handler`); rebuilds the live `VimState`.
     ToggleVimMode,
+    /// Toggle selection-first Helix modal editing.
+    ToggleHelixMode,
     /// Toggle `config.editor.max_width_enabled` (content-width limit).
     ToggleLimitWidth,
     /// Toggle `config.editor.diff_on_change` (hunk-by-hunk review vs. silent reload).
@@ -330,7 +332,7 @@ action_variants! {
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable, InsertImage, InsertLink, PasteImage,
     ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
-    ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
+    ToggleVisualLineNav, ToggleVimMode, ToggleHelixMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,
     FixListNumbering,
     GoToSection,

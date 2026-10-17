@@ -9,6 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::Theme;
 use crate::editor::Mode;
+use crate::input::{HelixSubMode, ModalInput, VimSubMode};
 
 /// Data the status bar needs for rendering.
 pub struct StatusBarState<'a> {
@@ -42,9 +43,8 @@ pub struct StatusBarState<'a> {
     pub section_path: Vec<String>,
     /// `(resolved, total)` hunk counts in diff mode, rendered beside the mode badge.
     pub diff_progress: Option<(usize, usize)>,
-    /// Vim sub-mode badge (`NORMAL` / `INSERT` / …); outranks the rendering-mode badge except
-    /// in [`Mode::Diff`] — see `render`.
-    pub vim_mode_label: Option<&'a str>,
+    /// Active modal session; its badge outranks the rendering-mode badge except in [`Mode::Diff`].
+    pub modal_input: &'a ModalInput,
 }
 
 /// A single-row status bar widget.
@@ -87,13 +87,15 @@ impl<'a> Widget for StatusBar<'a> {
             None => st,
         };
 
-        // The vim sub-mode badge wins over the mode badge, except in `Mode::Diff`: the
-        // diff-review keymap owns every key (`vim_deferred` in `App::dispatch_single_key`),
-        // so a `NORMAL` badge would advertise a handler that isn't live. Resolved here so a
-        // `StatusBarState` built elsewhere can't bypass it.
-        let vim_label = s.vim_mode_label.filter(|_| !matches!(s.mode, Mode::Diff));
-        let (mode_text, mode_style) = match vim_label {
-            Some(label) => (format!(" {} ", label), vim_badge_style(theme, label)),
+        // Diff owns input, so its badge wins over the modal sub-mode. Enforce this here so
+        // independently built StatusBarState values cannot advertise a deferred handler.
+        let badge = if s.mode == Mode::Diff {
+            None
+        } else {
+            modal_badge(theme, s.modal_input)
+        };
+        let (mode_text, mode_style) = match badge {
+            Some((label, style)) => (format!(" {} ", label), style),
             None => (format!(" {} ", s.mode), theme.status_mode_style(s.mode)),
         };
         let mode_width = UnicodeWidthStr::width(mode_text.as_str());
@@ -192,14 +194,27 @@ impl<'a> Widget for StatusBar<'a> {
     }
 }
 
-/// Vim sub-mode badge style; the editor cursor mirrors the same fields so chip and cursor
-/// agree.
-fn vim_badge_style(theme: &Theme, label: &str) -> Style {
-    match label {
-        "INSERT" => theme.status_mode_vim_insert,
-        "VISUAL" | "V-LINE" => theme.status_mode_vim_visual,
-        _ => theme.status_mode_vim_normal,
-    }
+/// Resolve presentation from typed state; the cursor reuses the style without parsing labels.
+pub(crate) fn modal_badge(theme: &Theme, input: &ModalInput) -> Option<(&'static str, Style)> {
+    Some(match input {
+        ModalInput::Default => return None,
+        ModalInput::Vim(state) => (
+            state.mode_label(),
+            match state.sub_mode {
+                VimSubMode::Normal | VimSubMode::OperatorPending => theme.status_mode_vim_normal,
+                VimSubMode::Insert => theme.status_mode_vim_insert,
+                VimSubMode::Visual | VimSubMode::VisualLine => theme.status_mode_vim_visual,
+            },
+        ),
+        ModalInput::Helix(state) => (
+            state.mode_label(),
+            match state.sub_mode {
+                HelixSubMode::Normal => theme.status_mode_vim_normal,
+                HelixSubMode::Insert => theme.status_mode_vim_insert,
+                HelixSubMode::Select => theme.status_mode_vim_visual,
+            },
+        ),
+    })
 }
 
 /// Choose which breadcrumb segments fit `budget`, in document order. Segments drop from the
@@ -271,7 +286,7 @@ mod tests {
             cursor_col: None,
             section_path: Vec::new(),
             diff_progress: None,
-            vim_mode_label: None,
+            modal_input: &ModalInput::Default,
         }
     }
 
@@ -330,7 +345,7 @@ mod tests {
         let output = render_bar(
             StatusBarState {
                 diff_progress: Some((3, 7)),
-                vim_mode_label: Some("NORMAL"),
+                modal_input: &ModalInput::Vim(Box::default()),
                 ..base_state(Mode::Diff, "f.md")
             },
             60,
@@ -353,7 +368,7 @@ mod tests {
     fn vim_badge_still_wins_outside_diff_mode() {
         let output = render_bar(
             StatusBarState {
-                vim_mode_label: Some("NORMAL"),
+                modal_input: &ModalInput::Vim(Box::default()),
                 ..base_state(Mode::Rendered, "f.md")
             },
             60,
@@ -368,25 +383,53 @@ mod tests {
         );
     }
 
+    // Utility coverage for every typed badge, independently of its display text.
     #[test]
-    fn vim_badge_uses_per_sub_mode_colors() {
+    fn modal_badges_use_per_sub_mode_colors() {
+        use crate::input::{HelixState, VimState};
+
         let t = Theme::default();
-        assert_eq!(
-            super::vim_badge_style(&t, "NORMAL"),
-            t.status_mode_vim_normal
-        );
-        assert_eq!(
-            super::vim_badge_style(&t, "INSERT"),
-            t.status_mode_vim_insert
-        );
-        assert_eq!(
-            super::vim_badge_style(&t, "VISUAL"),
-            t.status_mode_vim_visual
-        );
-        assert_eq!(
-            super::vim_badge_style(&t, "V-LINE"),
-            t.status_mode_vim_visual
-        );
+        assert_eq!(modal_badge(&t, &ModalInput::Default), None);
+        for (sub_mode, label, expected) in [
+            (VimSubMode::Normal, "NORMAL", t.status_mode_vim_normal),
+            (
+                VimSubMode::OperatorPending,
+                "NORMAL",
+                t.status_mode_vim_normal,
+            ),
+            (VimSubMode::Insert, "INSERT", t.status_mode_vim_insert),
+            (VimSubMode::Visual, "VISUAL", t.status_mode_vim_visual),
+            (VimSubMode::VisualLine, "V-LINE", t.status_mode_vim_visual),
+        ] {
+            let input = ModalInput::Vim(Box::new(VimState {
+                sub_mode,
+                ..VimState::default()
+            }));
+            assert_eq!(modal_badge(&t, &input), Some((label, expected)));
+        }
+        for (sub_mode, label, expected) in [
+            (
+                HelixSubMode::Normal,
+                "HELIX NORMAL",
+                t.status_mode_vim_normal,
+            ),
+            (
+                HelixSubMode::Insert,
+                "HELIX INSERT",
+                t.status_mode_vim_insert,
+            ),
+            (
+                HelixSubMode::Select,
+                "HELIX SELECT",
+                t.status_mode_vim_visual,
+            ),
+        ] {
+            let input = ModalInput::Helix(Box::new(HelixState {
+                sub_mode,
+                ..HelixState::default()
+            }));
+            assert_eq!(modal_badge(&t, &input), Some((label, expected)));
+        }
     }
 
     #[test]

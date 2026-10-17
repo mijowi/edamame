@@ -17,3 +17,7 @@ A rendered GFM table's `|` delimiters and alignment row are auto-managed chrome,
 - **Visual `p` asks about the payload, not the register.** `run_visual_paste` builds `text` first and hands `paste_over_range_refusal` that string plus the selection's linewise flag; passing `vim.register.{text,linewise}` lets both mismatches through (a `dd`'d row over a charwise in-cell selection carries `|` and a newline mid-cell; a charwise prose register over a VisualLine row replaces that row with a non-row). A new paste path owes the guard the bytes it is about to write.
 - **Only the table's own lines are read out of the rope.** `table_edit_ops::locate_table` asks the parse which lines the table spans (`row_map::table_lines`) and slices just those, rather than calling `Buffer::contents()` — `cell_scope` is on the per-keystroke motion path.
 
+
+## Helix callers
+
+Helix reuses `cell_scope`, the structural range guard and the table/list opening primitives. It passes its already half-open selection directly, without Vim Visual widening. Its replacement entry also checks the final payload and complete-row insertion destination before mutation, including clipboard/terminal paste and global editing chords. `x/X` keep source-line semantics. Empty cells have an empty Helix selection rather than an inclusive padding glyph. See [helix-mode.md](helix-mode.md) for the selection and transaction contracts.

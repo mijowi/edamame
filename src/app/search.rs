@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::Action;
 use crate::document::EditDelta;
+use crate::editor::helix_ops;
+use crate::input::HelixSubMode;
 use crate::search::SearchState;
 use crate::ui::ModalKind;
 
@@ -61,7 +63,16 @@ impl App {
                 return;
             }
         };
+        let preserve = !state.is_replace_flow()
+            && self
+                .modal_input
+                .helix()
+                .is_some_and(|h| h.sub_mode != HelixSubMode::Insert);
+        let previous_selection = self.editor.selection;
         self.editor.enter_search(state);
+        if preserve {
+            self.editor.selection = previous_selection;
+        }
         if self
             .editor
             .search
@@ -84,6 +95,7 @@ impl App {
             self.editor.mode = crate::editor::Mode::Rendered;
         }
         self.editor.sync_cursor_to_search_focus();
+        self.sync_helix_search_selection();
         // `enter_search` set `pending_focus_scroll`; `prepare_viewport` scrolls the match in.
         self.needs_draw = true;
     }
@@ -242,10 +254,27 @@ impl App {
                 s.retreat_focus();
             }
         }
-        self.editor.sync_cursor_to_search_focus();
+        if !self.sync_helix_search_selection() {
+            self.editor.sync_cursor_to_search_focus();
+        }
         self.editor
             .scroll_focused_match_into_view(doc_height, doc_width);
         self.needs_draw = true;
+    }
+
+    fn sync_helix_search_selection(&mut self) -> bool {
+        if self.search_flow_captures() {
+            return false;
+        }
+        let Some(helix) = self.modal_input.helix() else {
+            return false;
+        };
+        if helix.sub_mode == HelixSubMode::Insert {
+            return false;
+        }
+        let extend = helix.sub_mode == HelixSubMode::Select;
+        let _ = helix_ops::search::select_focused(&mut self.editor, extend);
+        true
     }
 
     /// Replace the focused match as one undo step, move focus to the next match, and arm the
@@ -392,6 +421,7 @@ mod tests {
     use super::SEARCH_ADVANCE_DELAY;
     use crate::app::test_utils::app_with_buffer;
     use crate::config::Action;
+    use crate::input::ModalInput;
 
     /// An app with `src` loaded and an active flow (a replace flow when `replace` is non-empty).
     fn app_in_search(src: &str, query: &str, replace: &str) -> crate::app::App {
@@ -693,7 +723,9 @@ mod tests {
         app.editor.cursor.offset = 17;
         app.editor.update_cursor_block();
 
-        let mut vim = app.vim.take().unwrap();
+        let ModalInput::Vim(mut vim) = std::mem::take(&mut app.modal_input) else {
+            panic!("vim active")
+        };
         let out = vim_feed(
             &mut vim,
             &mut app.editor,
@@ -701,7 +733,7 @@ mod tests {
             24,
             80,
         );
-        app.vim = Some(vim);
+        app.modal_input = ModalInput::Vim(vim);
         let VimOutcome::EnterSearch { forward, query } = out else {
             panic!("# should emit EnterSearch, got {out:?}");
         };

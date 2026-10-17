@@ -87,7 +87,8 @@ appearance = "dark"
 # ── Modal ─────────────────────────────────────────────────────────────────────
 # [modal]
 
-# Editing handler: "default" (chord shortcuts) or "vim" (modal editing — see docs/vim-mode.md).
+# Editing handler: "default", "vim" (see docs/vim-mode.md), or "helix" (see docs/helix-mode.md).
+# Helix: basic selection-first editing, one selection; see the manual for unsupported sequences.
 # handler = "default"
 
 # ── Table ─────────────────────────────────────────────────────────────────────

@@ -12,12 +12,11 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
-    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_MATH_PREVIEW, LABEL_REFLOW, LABEL_SCROLL_SPEED,
-    LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES, LABEL_SHOW_REMOTE_IMAGES, LABEL_SYNTAX_HIGHLIGHTING,
-    LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_EDITING_MODE, LABEL_MATH_PREVIEW, LABEL_REFLOW,
+    LABEL_SCROLL_SPEED, LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES, LABEL_SHOW_REMOTE_IMAGES,
+    LABEL_SYNTAX_HIGHLIGHTING, LABEL_VISUAL_LINE_NAV,
 };
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
@@ -81,10 +80,7 @@ pub(crate) fn apply_live_update(label: &str, app: &mut App) {
         LABEL_VISUAL_LINE_NAV => {
             app.editor.visual_line_nav = app.config.editor.visual_line_nav;
         }
-        LABEL_VIM_MODE => {
-            // Rebuild the live VimState so vim editing turns on/off without a restart.
-            app.set_vim_enabled(app.config.modal.handler == VIM_HANDLER);
-        }
+        LABEL_EDITING_MODE => app.set_modal_handler(&app.config.modal.handler.clone()),
         // These rows emit `FieldChanged` only on a real transition, never for a no-op cycle.
         LABEL_SHOW_IMAGES => app.apply_images_setting_change(),
         LABEL_SHOW_REMOTE_IMAGES => app.apply_remote_policy_change(),
@@ -168,7 +164,7 @@ mod tests {
         LABEL_SHOW_REMOTE_IMAGES,
         LABEL_SYNTAX_HIGHLIGHTING,
         LABEL_VISUAL_LINE_NAV,
-        LABEL_VIM_MODE,
+        LABEL_EDITING_MODE,
     ];
 
     /// Labels read live, with no arm in [`apply_live_update`].  Together with
@@ -257,18 +253,22 @@ mod tests {
     }
 
     #[test]
-    fn live_update_toggles_vim_state_on_and_off() {
+    fn live_update_switches_modal_handler() {
         let mut app = make_app();
-        // make_app starts with the default handler → no vim state.
-        assert!(app.vim.is_none());
+        assert!(app.modal_input.vim().is_none());
 
         app.config.modal.handler = "vim".into();
-        apply_live_update(LABEL_VIM_MODE, &mut app);
-        assert!(app.vim.is_some(), "vim mode on builds VimState");
+        apply_live_update(LABEL_EDITING_MODE, &mut app);
+        assert!(app.modal_input.vim().is_some(), "Vim handler is active");
+
+        app.config.modal.handler = "helix".into();
+        apply_live_update(LABEL_EDITING_MODE, &mut app);
+        assert!(app.modal_input.helix().is_some(), "Helix handler is active");
 
         app.config.modal.handler = "default".into();
-        apply_live_update(LABEL_VIM_MODE, &mut app);
-        assert!(app.vim.is_none(), "vim mode off clears VimState");
+        apply_live_update(LABEL_EDITING_MODE, &mut app);
+        assert!(app.modal_input.vim().is_none());
+        assert!(app.modal_input.helix().is_none());
     }
 
     #[test]

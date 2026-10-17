@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 
 use crate::clipboard::TextRead;
 use crate::config::Action;
-use crate::editor::edit_ops;
+use crate::document;
+use crate::editor::{edit_ops, helix_ops, vim_ops, Mode};
 use crate::image::paste;
+use crate::input::HelixSubMode;
 use crate::ui::ModalKind;
 
 use super::{App, MessageKind};
@@ -19,9 +21,7 @@ impl App {
     /// when it holds none (no OS clipboard, or a non-text payload).
     fn paste_source_text(&self, read: TextRead) -> String {
         match read {
-            TextRead::Text(text) if !text.is_empty() => {
-                crate::document::buffer::normalize_newlines(text)
-            }
+            TextRead::Text(text) if !text.is_empty() => document::buffer::normalize_newlines(text),
             _ => self.editor.kill_ring.clone(),
         }
     }
@@ -41,8 +41,7 @@ impl App {
         let Some(text) = self.editor.pending_clipboard_write.take() else {
             return;
         };
-        let external =
-            crate::document::buffer::encode_newlines(&text, self.editor.buffer.line_ending());
+        let external = document::buffer::encode_newlines(&text, self.editor.buffer.line_ending());
         self.clipboard.write_text(external);
         self.flash("Copied", MessageKind::Info);
     }
@@ -73,7 +72,7 @@ impl App {
             };
             if !(bitmaps && may_hold_bitmap) {
                 let text = self.paste_source_text(read);
-                edit_ops::paste_text(&mut self.editor, &text, doc_height, doc_width);
+                self.paste_document_text(&text, doc_height, doc_width);
                 self.needs_draw = true;
                 return;
             }
@@ -91,7 +90,69 @@ impl App {
     pub(super) fn paste_kill_ring(&mut self) {
         let text = self.editor.kill_ring.clone();
         let (h, w) = (self.last_doc_height, self.last_doc_width);
-        edit_ops::paste_text(&mut self.editor, &text, h, w);
+        self.paste_document_text(&text, h, w);
+    }
+
+    /// The document paste path shared by terminal text, clipboard text and async fallback.
+    pub(super) fn paste_document_text(&mut self, text: &str, h: usize, w: usize) {
+        if self.editor.readonly || self.editor.mode == Mode::Diff || self.search_flow_captures() {
+            return;
+        }
+        if self
+            .modal_input
+            .helix()
+            .is_some_and(|h| h.sub_mode != HelixSubMode::Insert)
+        {
+            if text.is_empty() {
+                return;
+            }
+            let text = document::buffer::normalize_newlines(text.to_owned());
+            match helix_ops::actions::replace_selection(&mut self.editor, &text) {
+                Ok(()) => {
+                    let helix = self.modal_input.helix_mut().expect("active Helix");
+                    helix.sub_mode = HelixSubMode::Normal;
+                    helix.selection_linewise = false;
+                    helix.reset_pending();
+                }
+                Err(message) => self.flash(message.to_string(), MessageKind::Info),
+            }
+            self.editor.ensure_cursor_visible(h, w);
+        } else {
+            edit_ops::paste_text(&mut self.editor, text, h, w);
+        }
+        self.needs_draw = true;
+    }
+
+    pub(super) fn dispatch_helix_clipboard(&mut self, action: &Action, h: usize, w: usize) -> bool {
+        if self.editor.mode == Mode::Diff
+            || !self
+                .modal_input
+                .helix()
+                .is_some_and(|s| s.sub_mode != HelixSubMode::Insert)
+        {
+            return false;
+        }
+        let operator = match action {
+            Action::Copy => vim_ops::Operator::Yank,
+            Action::Cut => vim_ops::Operator::Delete,
+            _ => return false,
+        };
+        match helix_ops::apply_operator(&mut self.editor, operator, false) {
+            Ok(result) => {
+                if !result.register_text.is_empty() {
+                    self.editor.kill_ring = result.register_text.clone();
+                    self.editor.pending_clipboard_write = Some(result.register_text);
+                    self.flush_clipboard_write();
+                }
+                if operator == vim_ops::Operator::Delete {
+                    self.modal_input.helix_mut().expect("active Helix").sub_mode =
+                        HelixSubMode::Normal;
+                }
+            }
+            Err(message) => self.flash(message.to_string(), MessageKind::Info),
+        }
+        self.editor.ensure_cursor_visible(h, w);
+        true
     }
 
     /// Check the image can land at the cursor *before* anything is written, then ask where to

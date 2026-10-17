@@ -21,7 +21,7 @@ A welcome screen appears the first time you run edamame. It shows a short introd
 - **Theme** — choose light or dark mode and one of edamame's dozens of built-in themes
 - **Images** and **Figures** — whether to render them inline. *Figures* covers both ` ```mermaid ` diagrams and `$$...$$` math. Each can be *Ask*, *Always* or *Never*, and they're independent.
 - **Remote images** — whether to fetch images from the web. Leave this on "Ask" if you are concerned about e.g. tracking pixels in documents you open. See [security.md](security.md).
-- **Vim mode** — edamame supports a focused subset of vim features. See [vim-mode.md](vim-mode.md).
+- **Editing mode** — choose Default, Vim or Helix. Vim provides a focused subset of Vim; Helix provides basic selection-first editing with one selection; many native commands are unavailable. See [vim-mode.md](vim-mode.md) and [Helix scope and limitations](helix-mode.md#scope-and-limitations).
 - **Check for updates** — edamame checks GitHub once a day so it can notify you of a new release. This is on by default, but the first check doesn't occur until after the welcome screen is dismissed. 
 
 ![edamame's welcome screen on first launch](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/welcome.jpg)
@@ -75,7 +75,7 @@ Preview  ──any key──▶  Edit  ──Ctrl-`──▶  Raw
 
 `Esc` from anywhere returns to Preview. Switching modes keeps your place on screen, so nothing jumps.
 
-*(In vim mode, Normal mode takes Preview's place — there is no separate Preview.)*
+*(In Vim or Helix mode, Normal takes Preview's place — there is no separate Preview.)*
 
 ---
 
@@ -167,4 +167,5 @@ Docs are not editable and open in **Preview mode**. The pages you read are the o
 - [configuration.md](configuration.md) — every setting
 - [themes.md](themes.md) — switching themes and writing your own
 - [vim-mode.md](vim-mode.md) — modal editing, and how it differs from real Vim
+- [helix-mode.md](helix-mode.md) — the available single-selection Helix-style commands and adaptations
 - [security.md](security.md) — what protects you when you open a document you didn't write

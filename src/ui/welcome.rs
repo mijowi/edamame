@@ -19,6 +19,7 @@ use ratatui::{
     widgets::{Block, Paragraph, StatefulWidget, Widget, Wrap},
 };
 
+use crate::config::sections::{modal_handler_index, MODAL_HANDLERS, MODAL_HANDLER_LABELS};
 use crate::config::{FiguresEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::Capabilities;
 use crate::ui::cap_summary::{cap_row_height, render_cap_row as shared_render_cap_row, CapSummary};
@@ -37,7 +38,7 @@ pub enum WelcomeFocus {
     Images,
     RemoteImages,
     Diagrams,
-    VimMotions,
+    EditingMode,
     CheckUpdates,
     ShowAgain,
     Save,
@@ -48,7 +49,7 @@ const FOCUS_ORDER: [WelcomeFocus; 8] = [
     WelcomeFocus::Diagrams,
     WelcomeFocus::Images,
     WelcomeFocus::RemoteImages,
-    WelcomeFocus::VimMotions,
+    WelcomeFocus::EditingMode,
     WelcomeFocus::CheckUpdates,
     WelcomeFocus::ShowAgain,
     WelcomeFocus::Save,
@@ -85,9 +86,8 @@ pub struct WelcomeState {
     pub images: ImagesEnabled,
     pub remote: RemoteImagePolicy,
     pub diagrams: FiguresEnabled,
-    /// "Use Vim motions" toggle; Save flips `config.modal.handler` to `"vim"` and activates
-    /// modal editing for the running session.
-    pub use_vim: bool,
+    /// Current Default / Vim / Helix handler choice.
+    pub handler: String,
     /// "Check for updates" toggle, mirroring `config.editor.check_for_updates`.  The startup
     /// check parks while this modal is on the stack and re-reads the setting after it closes, so
     /// a decline here prevents the request rather than following one already sent.
@@ -128,7 +128,7 @@ pub struct WelcomeState {
     pub images_rect: Option<Rect>,
     pub remote_rect: Option<Rect>,
     pub diagrams_rect: Option<Rect>,
-    pub vim_rect: Option<Rect>,
+    pub handler_rect: Option<Rect>,
     pub check_updates_rect: Option<Rect>,
     pub show_again_rect: Option<Rect>,
     pub save_button_rect: Option<Rect>,
@@ -148,7 +148,7 @@ impl WelcomeState {
         images: ImagesEnabled,
         remote: RemoteImagePolicy,
         diagrams: FiguresEnabled,
-        use_vim: bool,
+        handler: &str,
         check_for_updates: bool,
     ) -> Self {
         let full_color = caps.full_color();
@@ -166,7 +166,7 @@ impl WelcomeState {
             images,
             remote,
             diagrams,
-            use_vim,
+            handler: MODAL_HANDLERS[modal_handler_index(handler)].to_owned(),
             check_for_updates,
             dont_show_again: true,
             dismissable: false,
@@ -179,7 +179,7 @@ impl WelcomeState {
             images_rect: None,
             remote_rect: None,
             diagrams_rect: None,
-            vim_rect: None,
+            handler_rect: None,
             check_updates_rect: None,
             show_again_rect: None,
             save_button_rect: None,
@@ -261,11 +261,14 @@ impl WelcomeState {
                     self.diagrams = pill_value(&DIAGRAMS_ORDER, i);
                 }
             }
-            WelcomeFocus::VimMotions => {
-                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
-                    Control::Toggle.apply(ControlValue::Toggle(self.use_vim), input)
+            WelcomeFocus::EditingMode => {
+                if let ControlEvent::Changed(ControlValue::Choice(i)) =
+                    Control::Pill(&MODAL_HANDLER_LABELS).apply(
+                        ControlValue::Choice(modal_handler_index(&self.handler)),
+                        input,
+                    )
                 {
-                    self.use_vim = v;
+                    self.handler = MODAL_HANDLERS[i].to_owned();
                 }
             }
             WelcomeFocus::CheckUpdates => {
@@ -361,8 +364,8 @@ impl WelcomeState {
             self.apply_input(ControlInput::Activate);
             return WelcomeResponse::Continue;
         }
-        if rect_contains(self.vim_rect, col, row) {
-            self.focused = WelcomeFocus::VimMotions;
+        if rect_contains(self.handler_rect, col, row) {
+            self.focused = WelcomeFocus::EditingMode;
             self.apply_input(ControlInput::Activate);
             return WelcomeResponse::Continue;
         }
@@ -418,7 +421,7 @@ the line the cursor is on; RAW is unformatted \n\
 • GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
 • Diff mode — review external file changes hunk by hunk\n\
 • Command palette for access to commands and settings (Ctrl-P)\n\
-• Vim mode — optional Vim-style editing (see docs for what's supported)";
+• Editing mode — Default, Vim, or Helix (see docs for what's supported)";
 /// Hint shown below the capability summary when any capability is degraded.
 const DEGRADED_HINT: &str = "✗ — Consider upgrading to a modern terminal, \
 such as foot, Ghostty, kitty, or WezTerm, for a better experience.";
@@ -832,22 +835,24 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
-        // ── Vim motions toggle ──────────────────────────────────────
+        // ── Editing mode pill ────────────────────────────────────────
+        let handler_w = controls::pill_width(&MODAL_HANDLER_LABELS) as u16;
         let toggle_w = controls::toggle_width() as u16;
-        state.focus_offsets[WelcomeFocus::VimMotions.order_index()] = y;
-        state.vim_rect = render_control_row(
+        state.focus_offsets[WelcomeFocus::EditingMode.order_index()] = y;
+        state.handler_rect = render_control_row(
             &mut scratch,
             scratch_rect,
             y,
-            "Vim mode",
-            controls::toggle_spans(
-                state.use_vim,
-                state.focused == WelcomeFocus::VimMotions,
+            "Editing mode",
+            controls::pill_spans(
+                &MODAL_HANDLER_LABELS,
+                modal_handler_index(&state.handler),
+                state.focused == WelcomeFocus::EditingMode,
                 false,
                 self.theme,
             ),
-            toggle_w,
-            state.focused == WelcomeFocus::VimMotions,
+            handler_w,
+            state.focused == WelcomeFocus::EditingMode,
             false,
             self.theme,
         );
@@ -857,7 +862,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             body_x,
             y,
             body_w,
-            "Enable Vim-style modal editing",
+            "Choose Default, Vim, or Helix modal editing",
             muted_style,
             self.theme,
         );
@@ -952,7 +957,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.theme_button_rect = translate_rect(state.theme_button_rect, body, scroll);
         state.save_button_rect = translate_rect(state.save_button_rect, body, scroll);
         state.show_again_rect = translate_rect(state.show_again_rect, body, scroll);
-        state.vim_rect = translate_rect(state.vim_rect, body, scroll);
+        state.handler_rect = translate_rect(state.handler_rect, body, scroll);
         state.check_updates_rect = translate_rect(state.check_updates_rect, body, scroll);
         state.images_rect = translate_rect(state.images_rect, body, scroll);
         state.remote_rect = translate_rect(state.remote_rect, body, scroll);
@@ -1136,6 +1141,7 @@ fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::sections::{DEFAULT_HANDLER, HELIX_HANDLER, VIM_HANDLER};
     use crate::terminal::{Capabilities, ColorDepth, ImageProtocol};
 
     fn caps_full() -> Capabilities {
@@ -1174,7 +1180,7 @@ mod tests {
             ImagesEnabled::Ask,
             RemoteImagePolicy::Ask,
             FiguresEnabled::Ask,
-            false,
+            DEFAULT_HANDLER,
             true,
         )
     }
@@ -1228,7 +1234,7 @@ mod tests {
             KeyCode::Tab,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert_eq!(s.focused, WelcomeFocus::VimMotions);
+        assert_eq!(s.focused, WelcomeFocus::EditingMode);
     }
 
     #[test]
@@ -1303,50 +1309,66 @@ mod tests {
     }
 
     #[test]
-    fn space_toggles_vim_motions() {
+    fn editing_mode_pill_cycles_all_handlers_with_keyboard() {
         let caps = caps_full();
         let mut s = make_state(&caps);
-        assert!(!s.use_vim, "vim motions default off");
-        s.focused = WelcomeFocus::VimMotions;
+        assert_eq!(s.handler, DEFAULT_HANDLER);
+        s.focused = WelcomeFocus::EditingMode;
         s.handle_key(&KeyEvent::new(
             KeyCode::Char(' '),
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(s.use_vim);
+        assert_eq!(s.handler, VIM_HANDLER);
         s.handle_key(&KeyEvent::new(
             KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(!s.use_vim, "Enter toggles back off");
+        assert_eq!(s.handler, HELIX_HANDLER);
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(s.handler, DEFAULT_HANDLER, "pill wraps after Helix");
     }
 
     #[test]
-    fn toggle_arrows_are_direction_bound() {
-        // Left sets off, Right sets on, everywhere; only Space/Enter flip.
+    fn click_cycles_editing_mode_pill_through_all_handlers() {
         let caps = caps_full();
         let mut s = make_state(&caps);
-        s.focused = WelcomeFocus::VimMotions;
-        assert!(!s.use_vim);
+        render_rows(&mut s);
+        let rect = s.handler_rect.expect("editing mode pill is rendered");
+        for expected in [VIM_HANDLER, HELIX_HANDLER, DEFAULT_HANDLER] {
+            assert_eq!(s.handle_click(rect.x, rect.y), WelcomeResponse::Continue);
+            assert_eq!(s.handler, expected);
+        }
+    }
+
+    #[test]
+    fn editing_mode_pill_arrows_wrap() {
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        s.focused = WelcomeFocus::EditingMode;
+        assert_eq!(s.handler, DEFAULT_HANDLER);
         s.handle_key(&KeyEvent::new(
             KeyCode::Left,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(!s.use_vim, "Left means off, even when already off");
+        assert_eq!(s.handler, HELIX_HANDLER, "Left wraps to Helix");
         s.handle_key(&KeyEvent::new(
             KeyCode::Right,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(s.use_vim, "Right means on");
+        assert_eq!(s.handler, DEFAULT_HANDLER);
         s.handle_key(&KeyEvent::new(
             KeyCode::Right,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(s.use_vim, "Right when already on is a no-op");
+        assert_eq!(s.handler, VIM_HANDLER);
         s.handle_key(&KeyEvent::new(
             KeyCode::Left,
             crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(!s.use_vim, "Left means off");
+        assert_eq!(s.handler, DEFAULT_HANDLER);
     }
 
     #[test]
@@ -1368,9 +1390,9 @@ mod tests {
         ] {
             assert!(s.row_disabled(row), "{row:?} must be disabled");
         }
-        assert_eq!(s.focused, WelcomeFocus::VimMotions);
+        assert_eq!(s.focused, WelcomeFocus::EditingMode);
         for row in [
-            WelcomeFocus::VimMotions,
+            WelcomeFocus::EditingMode,
             WelcomeFocus::ShowAgain,
             WelcomeFocus::Save,
         ] {
@@ -1469,7 +1491,7 @@ mod tests {
         assert!(s.images_rect.is_none());
         assert!(s.remote_rect.is_none());
         assert!(s.diagrams_rect.is_none());
-        assert!(s.vim_rect.is_some());
+        assert!(s.handler_rect.is_some());
         assert!(s.save_button_rect.is_some());
         for row in 0..RENDER_AREA.height {
             for col in 0..RENDER_AREA.width {

@@ -17,7 +17,7 @@ No hardcoded colors exist outside the theme constructors — every UI site reads
 
 The cursor is a uniform **block** at every insertion point — the cell is recolored and the character under it stays visible. There is no bar/caret shape; context is signaled by *color*, not shape.
 
-In the editor there is **no dedicated cursor field**. The color is derived from the status-line mode chip so the two can never disagree: every branch reads a `status_mode_*` style minus the chip's `BOLD`, resolved in one place, `app::cursor_style::editor_cursor_style`. Under the default handler the color follows the *view* mode; under the vim handler it follows the *sub-mode* (`status_mode_vim_*`), with `status_mode_raw` surfacing only in INSERT.
+In the editor there is **no dedicated cursor field**. The color is derived from typed modal state: `ui::status_bar::modal_badge` resolves the badge text and `status_mode_*` style from `ModalInput` and the Vim/Helix sub-mode enums. Display labels never select a style. `app::cursor_style::editor_cursor_style` reuses the style without the chip's `BOLD`, with two view-specific rules: Preview uses its browse style, and Vim INSERT in Raw uses `status_mode_raw`. Under the default handler the color follows the *view* mode; Helix keeps its sub-mode color in Rendered and Raw. The status bar gives Diff precedence over every modal badge.
 
 Modal text inputs are the one exception: they use `theme.cursor`, a unified `accent` block, because they aren't tied to editor mode. Monochrome falls back to `REVERSED`.
 

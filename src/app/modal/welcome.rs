@@ -10,7 +10,6 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::terminal::Capabilities;
 use crate::ui::{WelcomeResponse, WelcomeState, WelcomeView};
@@ -60,7 +59,7 @@ impl WelcomeModal {
                 config.images.enabled,
                 config.images.remote_policy,
                 config.figures.enabled,
-                config.modal.handler == VIM_HANDLER,
+                &config.modal.handler,
                 config.editor.check_for_updates,
             )
             .with_dismissable(dismissable),
@@ -147,7 +146,7 @@ impl WelcomeModal {
         let images = self.state.images;
         let remote = self.state.remote;
         let diagrams = self.state.diagrams;
-        let use_vim = self.state.use_vim;
+        let handler = self.state.handler.clone();
         let check_for_updates = self.state.check_for_updates;
         let dont_show_again = self.state.dont_show_again;
         let image_capable = self.state.image_capable;
@@ -161,7 +160,7 @@ impl WelcomeModal {
             }
             // Terminal-independent, and this both persists `modal.handler` and
             // updates the running session's modal-editing state.
-            app.set_vim_enabled(use_vim);
+            app.set_modal_handler(&handler);
             // Likewise: a network preference, not a rendering capability.
             app.config.editor.check_for_updates = check_for_updates;
             app.config.editor.show_welcome = !dont_show_again;
@@ -191,6 +190,7 @@ mod tests {
 
     use super::*;
     use crate::app::test_utils::make_app;
+    use crate::config::sections::HELIX_HANDLER;
     use crate::terminal::{Capabilities, ColorDepth};
     use crate::ui::WelcomeFocus;
 
@@ -238,11 +238,11 @@ mod tests {
             .handle_key(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(!modal.state.check_for_updates, "the row flipped");
 
-        // The vim toggle sits directly above it and must be unaffected.
-        let vim_before = app.config.modal.handler.clone();
+        // The editing-mode pill sits directly above it and must be unaffected.
+        let handler_before = app.config.modal.handler.clone();
         save(&mut modal, &mut app);
         assert!(!app.config.editor.check_for_updates);
-        assert_eq!(app.config.modal.handler, vim_before);
+        assert_eq!(app.config.modal.handler, handler_before);
     }
 
     #[test]
@@ -251,6 +251,16 @@ mod tests {
         let mut modal = WelcomeModal::new(&caps_full(), &app.config);
         save(&mut modal, &mut app);
         assert!(app.config.editor.check_for_updates);
+    }
+
+    #[test]
+    fn save_persists_and_activates_helix_handler() {
+        let (_iso, mut app) = isolated_app();
+        let mut modal = WelcomeModal::new(&caps_full(), &app.config);
+        modal.state.handler = HELIX_HANDLER.to_owned();
+        save(&mut modal, &mut app);
+        assert_eq!(app.config.modal.handler, HELIX_HANDLER);
+        assert!(app.modal_input.helix().is_some());
     }
 
     #[test]

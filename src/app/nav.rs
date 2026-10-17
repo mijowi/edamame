@@ -512,7 +512,6 @@ impl App {
         // The counterpart of `load_doc_into_editor`'s park: a vim session
         // suspended for a read-only document comes back with the next editable
         // one.
-        self.sync_vim_suspension();
         // Marks the image cache dirty and re-evaluates the per-document media
         // prompts; a session answer already given is not re-asked.
         self.on_document_contents_swapped();
@@ -672,7 +671,7 @@ impl App {
         self.editor.mode = dest.mode;
         // An entry pushed before a mid-session vim toggle carries `Preview`,
         // which vim has no way back out of.
-        super::leave_preview_under_vim(&self.config, &mut self.editor);
+        super::leave_preview_under_modal(&self.config, &mut self.editor);
         self.editor.update_cursor_block();
         // Preview decouples scroll from the cursor, so the restored scroll is
         // authoritative there; elsewhere the cursor drives.
