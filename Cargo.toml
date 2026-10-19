@@ -242,7 +242,7 @@ ratex-svg = "=0.1.14"
 # formula glyphs with the theme's text colour.  Transitive via
 # ratex-layout but declared explicitly — same convention as `resvg` /
 # `usvg` above.
-ratex-types = "=0.1.14"
+ratex-types = "=0.1.15"
 
 # Big-text H1 headings.  Tracks the ratatui 0.30 line via 0.8+; `font8x8`
 # glyphs painted as Octant blocks, 4 cells wide × 2 tall per glyph.
