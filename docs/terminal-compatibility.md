@@ -101,7 +101,8 @@ edamame works under tmux, with two caveats worth knowing:
 **Windows is a best-effort platform.** edamame passes its test suite on Windows in CI, and each release has a prebuilt Windows binary, but nobody smoke-tests the running program, so everything on this page that depends on the terminal — images, mouse, the keyboard protocol, the clipboard, opening links, the external editor — is unverified there. If you run it, an [issue](https://github.com/mijowi/edamame/issues) with `edamame --doctor` output is the most useful thing you can send, whether or not something is wrong.
 
 - **Use [Windows Terminal](https://github.com/microsoft/terminal).** The legacy console (`conhost.exe`) has no alternate screen and no mouse reporting worth relying on; the TUI depends on both. Windows Terminal 1.22 and later can display Sixel images; it does not speak the Kitty graphics protocol.
-- **Config lives at `C:\Users\<you>\.config\edamame`**, not under `%APPDATA%` — see [configuration.md](configuration.md#where-config-lives).
+- **The binary is unsigned.** The first time you run `edamame.exe` from the release `.zip`, Windows SmartScreen may warn that it is from an unknown publisher; choose "More info" → "Run anyway". The `.sha256` file next to each release archive lets you confirm the download first (`Get-FileHash edamame-x86_64-pc-windows-msvc.zip`).
+- **Config lives in `C:\Users\<you>\.config\edamame`** and application state in `%APPDATA%` — see [configuration.md](configuration.md#where-config-lives).
 - **`CRLF` files are preserved as `CRLF`**, and a new file gets `CRLF` on Windows — see [editing.md](editing.md).
 
 **WSL runs the Linux build**, so it's supported the way Linux is, with three limitations that come from WSL itself rather than from edamame:

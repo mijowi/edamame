@@ -135,6 +135,8 @@ curl -LsSf https://raw.githubusercontent.com/mijowi/edamame/main/uninstall.sh | 
 
 It removes the binary (unless Homebrew or Cargo manages it, in which case it prints the right command instead) and then **asks** before touching your config and data — keeping them by default. Add `--purge` to remove everything without prompting, or `--yes` to remove only the binary.
 
+The uninstall script does not run on Windows, so instead delete `edamame.exe` from wherever you unpacked it, and optionally the config folder `%USERPROFILE%\.config\edamame` and the data folder `%APPDATA%\edamame`.
+
 ## Terminal support
 
 edamame runs anywhere, but a few things depend on your terminal:
