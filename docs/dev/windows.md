@@ -6,7 +6,7 @@ Windows is a **best-effort** platform until a Windows contributor shows up. This
 
 - edamame **must compile, lint, and pass its test suite** on `x86_64-pc-windows-msvc`. CI enforces that on every push and pull request, and a red Windows run blocks a merge like any other. "Best-effort" describes what we *verify*, not what we tolerate in CI. If a Linux-only contributor is stalled by a Windows-only failure, the escape hatch is a `#[cfg(not(windows))]` on the test with a comment saying why — never `continue-on-error`, which reports a red check on every PR even though the workflow passes.
 - **Nobody runs the program on Windows.** Terminal behavior — ConPTY setup and restore, Windows Terminal vs. conhost, image protocols, the OS clipboard, `start`-based link opening, the `$EDITOR`-less external-editor path, `git difftool` walks — is unverified, and the user docs say so. Windows bug reports are triaged like any other.
-- **No Windows binary is shipped.** `dist-workspace.toml` has no Windows target; users build from source. Shipping one is a separate decision from supporting the platform, revisited when someone can actually run what comes out.
+- **A Windows binary is shipped, unverified.** `dist-workspace.toml` builds `x86_64-pc-windows-msvc`, and each release carries it as a `.zip` archive. No installer covers it: `shell` and `homebrew` are Unix-only. The binary is the same code the `windows` CI job tests, but nobody runs it before a release, so it carries the same best-effort stance as a source build.
 - **WSL is Linux.** It runs the Linux build and is covered by the Linux job. Its own limitations (documented for users in [terminal-compatibility.md](../terminal-compatibility.md#windows-and-wsl)) come from WSL itself and are not tracked as edamame bugs.
 
 Interactive testing without a Windows machine — a local KVM VM with a Microsoft eval image, or an Actions runner with an RDP tunnel — was deliberately deferred: it is the route to promoting Windows to supported, but not worth the recurring cost for a platform nobody on the project uses.
@@ -65,4 +65,4 @@ The first full Windows run failed seven lib tests and, without `--no-fail-fast`,
 - **Issue #2** ("Windows testing") — close with a pointer to this file once the stance is published.
 - Port the seven `export::custom` tests — needs a Windows contributor, or the deferred VM.
 - The `/dev/null` vs. `nul` question for `--diff` under Git for Windows — same.
-- A Windows entry in `dist-workspace.toml` — only after someone has run a binary.
+- Smoke-test a released Windows binary — needs a Windows contributor, or the deferred VM.
