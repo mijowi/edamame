@@ -234,9 +234,9 @@ sha2 = "0.11"
 # depends on `render_to_svg`/`SvgOptions` and on the `KaTeX_*` face-table
 # names (only the latter has a test guard), so a silent 0.1.x bump could
 # break either.  Same exact-pin convention as the mermaid-rs-renderer pin.
-ratex-parser = "=0.1.14"
-ratex-layout = "=0.1.14"
-ratex-svg = "=0.1.14"
+ratex-parser = "=0.1.15"
+ratex-layout = "=0.1.15"
+ratex-svg = "=0.1.15"
 # `ratex_layout::layout_options::LayoutOptions::with_color` takes
 # `ratex_types::color::Color`, so we reach the type directly to tint
 # formula glyphs with the theme's text colour.  Transitive via
