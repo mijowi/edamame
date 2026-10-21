@@ -12,6 +12,14 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - Releases now include a prebuilt Windows binary (`x86_64`), as a `.zip` archive. Windows is still a best-effort platform.
 
+### Security
+
+Updated dependencies to include these fixes:
+
+- Fixed security flaws in the math renderer that a crafted formula in a document could trigger (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+- Fixed a flaw in HTML export's sanitizer that could let crafted raw HTML in a document through into the exported file.
+- Fixed a TLS flaw in the connection used for remote images and the update check.
+
 ## [0.1.6] - 2026-10-14
 
 ### Changed
