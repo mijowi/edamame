@@ -19,7 +19,7 @@ use anyhow::Result;
 
 use super::help::VERSION;
 use crate::config::Config;
-use crate::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
+use crate::terminal::{self, is_windows_terminal, Capabilities, ColorDepth, TerminalSetup};
 use crate::ui::cap_summary::{CapRow, CapSummary};
 
 /// Value printed for any fact the environment doesn't carry.
@@ -204,8 +204,9 @@ fn parse_plist_value(text: &str, key: &str) -> Option<String> {
 }
 
 /// The terminal emulator's name and version, from the environment.  `$LC_TERMINAL` is iTerm2's
-/// own marker, which — unlike `$TERM_PROGRAM` — survives ssh.  kitty, alacritty, and foot set none
-/// of these and read as unknown.
+/// own marker, which — unlike `$TERM_PROGRAM` — survives ssh.  Windows Terminal sets neither and is
+/// named from `$WT_SESSION`, without a version.  kitty, alacritty, and foot set none of these and
+/// read as unknown.
 ///
 /// This is exactly the pair `Capabilities::fingerprint` omits so a version bump can't re-trigger
 /// the new-terminal notice; here the version is the point.
@@ -225,6 +226,7 @@ fn terminal_program() -> String {
     match (name, version) {
         (Some(n), Some(v)) => format!("{n} {v}"),
         (Some(n), None) => n,
+        (None, _) if is_windows_terminal() => "Windows Terminal".to_owned(),
         (None, _) => UNKNOWN.to_owned(),
     }
 }
@@ -406,5 +408,17 @@ mod tests {
                 "{label} carries the user's home directory: {value:?}"
             );
         }
+    }
+    /// Windows Terminal sets no `$TERM_PROGRAM`; the report must still name it
+    #[test]
+    fn windows_terminal_is_named_from_wt_session() {
+        use crate::test_env::{env_lock, EnvGuard};
+        let _lock = env_lock();
+        let _g1 = EnvGuard::unset("TERM_PROGRAM");
+        let _g2 = EnvGuard::unset("LC_TERMINAL");
+        let _g3 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000");
+        assert_eq!(terminal_program(), "Windows Terminal");
+        let _g4 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        assert!(terminal_program().starts_with("WezTerm"));
     }
 }

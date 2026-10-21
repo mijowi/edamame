@@ -11,6 +11,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 ### Added
 
 - Releases now include a prebuilt Windows binary (`x86_64`), as a `.zip` archive. Windows is still a best-effort platform.
+- Windows Terminal is detected, giving it 24-bit color, Sixel images, and mouse support on native Windows and under WSL.
 
 ## [0.1.6] - 2026-10-14
 

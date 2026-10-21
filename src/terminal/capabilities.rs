@@ -163,8 +163,14 @@ impl Capabilities {
     /// detection: the env-level identity plus the detected capability tuple (so two
     /// environments that probe differently count as different terminals) plus a tmux
     /// marker.  `$TERM_PROGRAM_VERSION` is excluded, or every minor update would re-notify.
+    /// Windows Terminal stands in for an empty `$TERM_PROGRAM` by name — never by its
+    /// `$WT_SESSION` value, which differs per tab and would re-notify in every one.
     pub fn fingerprint(&self) -> String {
-        let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
+        let term_program = match env::var("TERM_PROGRAM") {
+            Ok(tp) if !tp.is_empty() => tp,
+            _ if is_windows_terminal() => "WindowsTerminal".to_owned(),
+            _ => String::new(),
+        };
         let term = env::var("TERM").unwrap_or_default();
         let tmux = if env::var("TMUX").is_ok() { "tmux" } else { "" };
         let color = match self.color_depth {
@@ -199,7 +205,15 @@ impl Default for Capabilities {
 /// Infer color depth from environment variables: `$COLORTERM` first, then `$TERM`'s
 /// conventional `-256color` suffix, then 8/16-color.
 fn detect_color_depth(term: &str) -> ColorDepth {
-    if term == "dumb" || term.is_empty() {
+    if term == "dumb" {
+        return ColorDepth::NoColor;
+    }
+    // Ahead of the empty-`$TERM` check: native Windows sets no `$TERM` at all, and Windows
+    // Terminal has had 24-bit color since 1.0.
+    if is_windows_terminal() {
+        return ColorDepth::TrueColor;
+    }
+    if term.is_empty() {
         return ColorDepth::NoColor;
     }
     let colorterm = env::var("COLORTERM")
@@ -231,12 +245,14 @@ fn detect_color_depth(term: &str) -> ColorDepth {
 }
 
 /// Infer mouse support from `$TERM`.  Essentially every xterm-compatible terminal has it;
-/// the exceptions are `dumb`, empty, and `linux` (the framebuffer console).
+/// the exceptions are `dumb`, empty, and `linux` (the framebuffer console).  Windows Terminal
+/// is the one empty-`$TERM` case that has it: crossterm captures the mouse there through the
+/// console API, which never consults `$TERM`.
 fn detect_mouse(term: &str) -> bool {
-    if term == "dumb" || term == "linux" || term.is_empty() {
+    if term == "dumb" || term == "linux" {
         return false;
     }
-    true
+    !term.is_empty() || is_windows_terminal()
 }
 
 /// True when the active locale advertises UTF-8.
@@ -268,6 +284,14 @@ fn halfblocks_from(font_size: ratatui_image::FontSize) -> Picker {
     let mut picker = Picker::from_fontsize(font_size);
     picker.set_protocol_type(ProtocolType::Halfblocks);
     picker
+}
+
+/// True when running under Windows Terminal, which sets neither `$TERM_PROGRAM` nor
+/// `$COLORTERM` — only its per-tab `$WT_SESSION` GUID.  The variable reaches WSL too: Windows
+/// Terminal lists it in `$WSLENV`.  Like `$KITTY_WINDOW_ID` it is inherited by anything started
+/// from the tab, which is the same staleness every identity hint here accepts.
+pub fn is_windows_terminal() -> bool {
+    env::var_os("WT_SESSION").is_some_and(|v| !v.is_empty())
 }
 
 /// True when we are talking to iTerm2.app, directly or over ssh — `$LC_TERMINAL` is
@@ -655,8 +679,26 @@ mod tests {
 
     #[test]
     fn color_depth_no_color_for_dumb_terminal() {
+        let _lock = env_lock();
+        let _g = EnvGuard::unset("WT_SESSION");
         assert_eq!(detect_color_depth("dumb"), ColorDepth::NoColor);
         assert_eq!(detect_color_depth(""), ColorDepth::NoColor);
+    }
+
+    #[test]
+    fn color_depth_truecolor_for_windows_terminal() {
+        // Native Windows sets neither `$TERM` nor `$COLORTERM` (issue #89); under WSL `$TERM` is
+        // set but `$COLORTERM` still is not.
+        let _lock = env_lock();
+        let _g1 = EnvGuard::unset("COLORTERM");
+        let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
+        let _g3 = EnvGuard::unset("WEZTERM_PANE");
+        let _g4 = EnvGuard::unset("TERM_PROGRAM");
+        let _g5 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000");
+        assert_eq!(detect_color_depth(""), ColorDepth::TrueColor);
+        assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::TrueColor);
+        // An explicit `TERM=dumb` still wins.
+        assert_eq!(detect_color_depth("dumb"), ColorDepth::NoColor);
     }
 
     #[test]
@@ -676,6 +718,7 @@ mod tests {
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
+        let _g5 = EnvGuard::unset("WT_SESSION");
         assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::Ansi256);
     }
 
@@ -686,6 +729,7 @@ mod tests {
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
+        let _g5 = EnvGuard::unset("WT_SESSION");
         assert_eq!(detect_color_depth("xterm"), ColorDepth::Ansi16);
     }
 
@@ -708,6 +752,7 @@ mod tests {
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::set("TERM_PROGRAM", "Apple_Terminal");
+        let _g5 = EnvGuard::unset("WT_SESSION");
         assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::Ansi256);
     }
 
@@ -729,9 +774,19 @@ mod tests {
 
     #[test]
     fn mouse_false_for_dumb_and_linux() {
+        let _lock = env_lock();
+        let _g = EnvGuard::unset("WT_SESSION");
         assert!(!detect_mouse("dumb"));
         assert!(!detect_mouse("linux"));
         assert!(!detect_mouse(""));
+    }
+
+    #[test]
+    fn mouse_true_for_windows_terminal_without_term() {
+        let _lock = env_lock();
+        let _g = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000");
+        assert!(detect_mouse(""));
+        assert!(!detect_mouse("dumb"), "an explicit TERM=dumb still wins");
     }
 
     #[test]
@@ -831,5 +886,19 @@ mod tests {
         let inside = caps.fingerprint();
         assert_ne!(outside, inside);
         assert!(inside.contains("tmux"));
+    }
+
+    #[test]
+    fn fingerprint_names_windows_terminal_without_its_session_id() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::unset("TERM_PROGRAM");
+        let _g2 = EnvGuard::unset("TMUX");
+        let caps = Capabilities::minimal();
+        let _tab1 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000001");
+        let first = caps.fingerprint();
+        let _tab2 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000002");
+        let second = caps.fingerprint();
+        assert_eq!(first, second, "a new tab is not a new terminal");
+        assert!(first.starts_with("WindowsTerminal|"));
     }
 }
