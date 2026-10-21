@@ -69,6 +69,11 @@ PREV=0.0.9       # the previous release: the benchmark baseline to compare again
 
 10. Verify: `gh release view v$VERSION`, `brew upgrade edamame`, `cargo info edamame`, and the docs.rs build.
 
+11. Rebase `develop` so it has the release commit and does not diverge from `main`.
+    ```bash
+    git rebase main
+    ```
+
 ### Prerequisites
 
 1. **The tap repo must exist** — `github.com/mijowi/homebrew-tap`, empty is fine. The `publish-homebrew-formula` job pushes `edamame.rb` into it.
