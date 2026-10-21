@@ -67,7 +67,7 @@ toml_edit = "0.25"
 serde_ignored = "0.1"
 
 # Platform paths (XDG_CONFIG_HOME etc.)
-dirs = "6"
+dirs = "7"
 
 # Error handling
 thiserror = "2"
