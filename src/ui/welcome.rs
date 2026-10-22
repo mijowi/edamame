@@ -1147,6 +1147,7 @@ mod tests {
             halfblocks_picker: None,
             unicode_full: true,
             keyboard_enhancement: true,
+            windows_terminal_keys: false,
         }
     }
 

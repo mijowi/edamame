@@ -36,7 +36,7 @@ Most of the 27 built-in themes pick 24-bit colors, which a 256-color terminal qu
 
 **That switch lasts for the session only.** Your `config.toml` keeps the theme you chose, so one config shared between a capable machine and a limited one is never clobbered. `256 Dark`, `256 Light` and `Monochrome Dark` are the three themes designed for weaker terminals; they're exempt from the substitution.
 
-Most terminals advertise truecolor by setting `COLORTERM=truecolor` (or `24bit`). If yours supports it but edamame reports 256 colors, that variable is usually what's missing — check whether it survives your shell startup, and see [tmux and multiplexers](#tmux-and-multiplexers) if you run one.
+Most terminals advertise truecolor by setting `COLORTERM=truecolor` (or `24bit`). A few that don't are recognized by their own markers instead — kitty, WezTerm, iTerm2, Ghostty, and Windows Terminal. If yours supports it but edamame reports 256 colors, `COLORTERM` is usually what's missing — check whether it survives your shell startup, and see [tmux and multiplexers](#tmux-and-multiplexers) if you run one.
 
 See [themes.md](themes.md) for the theme list and how to write your own.
 
@@ -63,7 +63,7 @@ Affected defaults:
 - `Ctrl-B` / `Ctrl-I` (bold / italic — these collide with `Tab` and a control byte rather than vanishing)
 - The `Alt-Shift-*` table chords
 
-Terminals with support include kitty, Ghostty, WezTerm, foot, and recent Alacritty. Apple Terminal does not have it.
+Terminals with support include kitty, Ghostty, WezTerm, foot, and recent Alacritty. Apple Terminal does not have it. On native Windows, Windows Terminal doesn't need it: it sends key input with its modifiers intact, so every chord reaches edamame. Other Windows terminals, such as VS Code's, may not, and are reported as legacy encoding.
 
 **Workarounds, in order of least effort:** run the command from the palette (`Ctrl-P`); or rebind to a plain `Ctrl`+letter, which works everywhere — `ToggleRawMode = "ctrl+y"` is a good substitute. See [keybindings.md](keybindings.md#changing-a-keybinding).
 
@@ -85,7 +85,7 @@ Apple Terminal sends nothing that distinguishes `Option-←` from `←`, so no a
 
 ## Unicode
 
-Table borders, list markers and the cursor block are drawn with box-drawing and geometric characters. edamame reads your locale (`LANG` / `LC_ALL` / `LC_CTYPE`) to decide whether they're safe; a locale that doesn't name UTF-8 is reported as a ✗ on the capabilities notice. If borders come out as garbage, setting `LANG=en_US.UTF-8` (or your own language's UTF-8 locale) is the fix.
+Table borders, list markers and the cursor block are drawn with box-drawing and geometric characters. edamame reads your locale (`LANG` / `LC_ALL` / `LC_CTYPE`) to decide whether they're safe; a locale that doesn't name UTF-8 is reported as a ✗ on the capabilities notice. If borders come out as garbage, setting `LANG=en_US.UTF-8` (or your own language's UTF-8 locale) is the fix. Native Windows has no locale variables and needs none — edamame writes to the console in UTF-16 — so missing glyphs there come from the font.
 
 ## tmux and multiplexers
 

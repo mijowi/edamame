@@ -19,7 +19,9 @@ use anyhow::Result;
 
 use super::help::VERSION;
 use crate::config::Config;
-use crate::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
+use crate::terminal::{
+    self, active_locale, is_windows_terminal, Capabilities, ColorDepth, TerminalSetup,
+};
 use crate::ui::cap_summary::{CapRow, CapSummary};
 
 /// Value printed for any fact the environment doesn't carry.
@@ -138,8 +140,8 @@ fn system_facts() -> Vec<(&'static str, String)> {
     vec![
         ("OS:", format!("{} ({})", os_version(), env::consts::ARCH)),
         ("Terminal:", terminal_program()),
-        ("TERM:", env_or_unknown("TERM")),
-        ("COLORTERM:", env_or_unknown("COLORTERM")),
+        ("TERM:", env_or_unset("TERM")),
+        ("COLORTERM:", env_or_unset("COLORTERM")),
         ("Locale:", locale()),
         (
             "tmux:",
@@ -152,11 +154,18 @@ fn system_facts() -> Vec<(&'static str, String)> {
     ]
 }
 
-fn env_or_unknown(key: &str) -> String {
-    env::var(key)
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| UNKNOWN.to_owned())
+fn env_or_unset(key: &str) -> String {
+    env_value_or_unset(env::var(key))
+}
+
+/// An empty value reads as unset, as it does to capability detection.  `unknown` is kept for the
+/// one case that genuinely is: a value that is not valid Unicode.
+fn env_value_or_unset(value: Result<String, env::VarError>) -> String {
+    match value {
+        Ok(v) if !v.is_empty() => v,
+        Ok(_) | Err(env::VarError::NotPresent) => "unset".to_owned(),
+        Err(env::VarError::NotUnicode(_)) => UNKNOWN.to_owned(),
+    }
 }
 
 /// A human-readable OS name and version, read from the platform's metadata file rather than by
@@ -204,8 +213,9 @@ fn parse_plist_value(text: &str, key: &str) -> Option<String> {
 }
 
 /// The terminal emulator's name and version, from the environment.  `$LC_TERMINAL` is iTerm2's
-/// own marker, which — unlike `$TERM_PROGRAM` — survives ssh.  kitty, alacritty, and foot set none
-/// of these and read as unknown.
+/// own marker, which — unlike `$TERM_PROGRAM` — survives ssh.  Windows Terminal sets neither and is
+/// named from `$WT_SESSION`, without a version.  kitty, alacritty, and foot set none of these and
+/// read as unset.
 ///
 /// This is exactly the pair `Capabilities::fingerprint` omits so a version bump can't re-trigger
 /// the new-terminal notice; here the version is the point.
@@ -225,21 +235,26 @@ fn terminal_program() -> String {
     match (name, version) {
         (Some(n), Some(v)) => format!("{n} {v}"),
         (Some(n), None) => n,
-        (None, _) => UNKNOWN.to_owned(),
+        (None, _) if is_windows_terminal() => "Windows Terminal".to_owned(),
+        (None, _) => "unset (TERM_PROGRAM, LC_TERMINAL)".to_owned(),
     }
 }
 
-/// The active locale and which variable supplied it, walking the same precedence as
-/// `capabilities::detect_unicode_full` so a puzzling Unicode row can be traced to its variable.
+/// The active locale and which variable supplied it — the same lookup the Unicode row is decided
+/// by, so a puzzling row can be traced to its variable.
 fn locale() -> String {
-    for var in ["LC_ALL", "LC_CTYPE", "LANG"] {
-        if let Ok(v) = env::var(var) {
-            if !v.is_empty() {
-                return format!("{v} ({var})");
-            }
-        }
+    locale_report(active_locale(), cfg!(windows))
+}
+
+/// Formats [`locale`]'s finding.  On native Windows the Unicode row comes from the UTF-16 console,
+/// so a locale set there (Git Bash / MSYS sets `LANG`) is shown but marked as unused.
+fn locale_report(found: Option<(&str, String)>, windows: bool) -> String {
+    match (found, windows) {
+        (Some((var, v)), false) => format!("{v} ({var})"),
+        (Some((var, v)), true) => format!("{v} ({var}; unused on Windows)"),
+        (None, false) => "unset (LC_ALL, LC_CTYPE, LANG)".to_owned(),
+        (None, true) => "n/a (Windows console is UTF-16)".to_owned(),
     }
-    format!("{UNKNOWN} (LC_ALL, LC_CTYPE, LANG all unset)")
 }
 
 #[cfg(test)]
@@ -406,5 +421,55 @@ mod tests {
                 "{label} carries the user's home directory: {value:?}"
             );
         }
+    }
+
+    /// Windows Terminal sets no `$TERM_PROGRAM`; the report must still name it.
+    #[test]
+    fn windows_terminal_is_named_from_wt_session() {
+        use crate::test_env::{env_lock, EnvGuard};
+        let _lock = env_lock();
+        let _g1 = EnvGuard::unset("TERM_PROGRAM");
+        let _g2 = EnvGuard::unset("LC_TERMINAL");
+        let _g3 = EnvGuard::unset("TMUX");
+        let _g4 = EnvGuard::unset("STY");
+        let _g5 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000");
+        assert_eq!(terminal_program(), "Windows Terminal");
+        let _g6 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        assert!(terminal_program().starts_with("WezTerm"));
+    }
+
+    #[test]
+    fn unnamed_terminal_says_which_variables_were_missing() {
+        use crate::test_env::{env_lock, EnvGuard};
+        let _lock = env_lock();
+        let _g1 = EnvGuard::unset("TERM_PROGRAM");
+        let _g2 = EnvGuard::unset("LC_TERMINAL");
+        let _g3 = EnvGuard::unset("WT_SESSION");
+        assert_eq!(terminal_program(), "unset (TERM_PROGRAM, LC_TERMINAL)");
+    }
+
+    #[test]
+    fn locale_on_windows_is_shown_but_marked_unused() {
+        let lang = || Some(("LANG", "en_US.UTF-8".to_owned()));
+        assert_eq!(locale_report(lang(), false), "en_US.UTF-8 (LANG)");
+        assert_eq!(
+            locale_report(lang(), true),
+            "en_US.UTF-8 (LANG; unused on Windows)"
+        );
+        assert_eq!(locale_report(None, false), "unset (LC_ALL, LC_CTYPE, LANG)");
+        assert!(locale_report(None, true).starts_with("n/a"));
+    }
+
+    /// An absent variable is a fact, not a gap in the report.
+    #[test]
+    fn absent_and_empty_variables_read_as_unset() {
+        use std::env::VarError;
+        assert_eq!(env_value_or_unset(Ok("xterm".into())), "xterm");
+        assert_eq!(env_value_or_unset(Ok(String::new())), "unset");
+        assert_eq!(env_value_or_unset(Err(VarError::NotPresent)), "unset");
+        assert_eq!(
+            env_value_or_unset(Err(VarError::NotUnicode(Default::default()))),
+            UNKNOWN
+        );
     }
 }
