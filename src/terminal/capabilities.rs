@@ -78,13 +78,16 @@ pub struct Capabilities {
     /// scrolling — halfblocks are position-independent and cheap to cell-copy — and
     /// upgrades back once the view quiesces.  `None` iff image support is absent.
     pub halfblocks_picker: Option<Picker>,
-    /// Whether the locale env vars advertise UTF-8; a proxy for "full Unicode support".
+    /// Whether the terminal can be sent full Unicode (see `detect_unicode_full`).
     pub unicode_full: bool,
     /// Whether `supports_keyboard_enhancement()` answered affirmatively.  Without it the
     /// terminal is limited to the legacy control-byte encoding, which can represent
     /// neither shifted modifier combinations nor `Ctrl` with a non-alphabetic key, so
     /// features relying on those (e.g. `Ctrl-Shift-Z` redo) must degrade.
     pub keyboard_enhancement: bool,
+    /// Native Windows under Windows Terminal, whose key events lose no chords even without
+    /// `keyboard_enhancement` (see `cap_summary::keyboard_row`).
+    pub windows_terminal_keys: bool,
 }
 
 impl Capabilities {
@@ -110,6 +113,7 @@ impl Capabilities {
             halfblocks_picker,
             unicode_full,
             keyboard_enhancement: kbd_enhancement,
+            windows_terminal_keys: detect_windows_terminal_keys(),
         }
     }
 
@@ -135,6 +139,7 @@ impl Capabilities {
             color_depth: detect_color_depth(&term),
             mouse: detect_mouse(&term),
             unicode_full: detect_unicode_full(),
+            windows_terminal_keys: detect_windows_terminal_keys(),
             ..Self::minimal()
         }
     }
@@ -156,6 +161,7 @@ impl Capabilities {
             halfblocks_picker: None,
             unicode_full: false,
             keyboard_enhancement: false,
+            windows_terminal_keys: false,
         }
     }
 
@@ -208,13 +214,13 @@ fn detect_color_depth(term: &str) -> ColorDepth {
     if term == "dumb" {
         return ColorDepth::NoColor;
     }
-    // Ahead of the empty-`$TERM` check: native Windows sets no `$TERM` at all, and Windows
-    // Terminal has had 24-bit color since 1.0.
-    if is_windows_terminal() {
-        return ColorDepth::TrueColor;
-    }
     if term.is_empty() {
-        return ColorDepth::NoColor;
+        // Native Windows sets no `$TERM` at all; Windows Terminal has had 24-bit color since 1.0.
+        return if is_windows_terminal() {
+            ColorDepth::TrueColor
+        } else {
+            ColorDepth::NoColor
+        };
     }
     let colorterm = env::var("COLORTERM")
         .unwrap_or_default()
@@ -227,7 +233,10 @@ fn detect_color_depth(term: &str) -> ColorDepth {
     }
     // Some modern terminals support truecolor with `$COLORTERM` unset (e.g. a remote
     // session that stripped it).
-    if env::var("KITTY_WINDOW_ID").is_ok() || env::var("WEZTERM_PANE").is_ok() {
+    if env::var("KITTY_WINDOW_ID").is_ok()
+        || env::var("WEZTERM_PANE").is_ok()
+        || is_windows_terminal()
+    {
         return ColorDepth::TrueColor;
     }
     if let Ok(tp) = env::var("TERM_PROGRAM") {
@@ -255,17 +264,33 @@ fn detect_mouse(term: &str) -> bool {
     !term.is_empty() || is_windows_terminal()
 }
 
-/// True when the active locale advertises UTF-8.
+/// True when the terminal can be sent full Unicode.  Always on native Windows: the standard
+/// library writes to a console as UTF-16 (`WriteConsoleW`), so neither a locale — Windows has no
+/// locale variables — nor the console code page is involved.  WSL is Linux and reads its locale.
 fn detect_unicode_full() -> bool {
-    for var in ["LC_ALL", "LC_CTYPE", "LANG"] {
-        if let Ok(v) = env::var(var) {
-            let upper = v.to_ascii_uppercase();
-            if upper.contains("UTF-8") || upper.contains("UTF8") {
-                return true;
-            }
-        }
-    }
-    false
+    cfg!(windows) || locale_is_utf8()
+}
+
+/// True on native Windows under Windows Terminal.  WSL is excluded: it reads keys through a
+/// Linux pty, where `keyboard_enhancement` is the whole story.
+fn detect_windows_terminal_keys() -> bool {
+    cfg!(windows) && is_windows_terminal()
+}
+
+/// True when the active locale advertises UTF-8.
+fn locale_is_utf8() -> bool {
+    active_locale().is_some_and(|(_, v)| {
+        let upper = v.to_ascii_uppercase();
+        upper.contains("UTF-8") || upper.contains("UTF8")
+    })
+}
+
+/// The locale in effect and the variable supplying it: the first non-empty of `$LC_ALL`,
+/// `$LC_CTYPE`, `$LANG`, the POSIX precedence for character encoding.
+pub fn active_locale() -> Option<(&'static str, String)> {
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|var| Some((var, env::var(var).ok().filter(|v| !v.is_empty())?)))
 }
 
 /// A picker **guaranteed** to encode halfblocks, at the terminal's real `font_size`.
@@ -288,10 +313,15 @@ fn halfblocks_from(font_size: ratatui_image::FontSize) -> Picker {
 
 /// True when running under Windows Terminal, which sets neither `$TERM_PROGRAM` nor
 /// `$COLORTERM` — only its per-tab `$WT_SESSION` GUID.  The variable reaches WSL too: Windows
-/// Terminal lists it in `$WSLENV`.  Like `$KITTY_WINDOW_ID` it is inherited by anything started
-/// from the tab, which is the same staleness every identity hint here accepts.
+/// Terminal lists it in `$WSLENV`.  It is also inherited by anything started from the tab, so
+/// it yields to whatever the app is actually talking to: another terminal naming itself in
+/// `$TERM_PROGRAM` (`code .` opening VS Code), or a multiplexer — tmux (`$TMUX`, which before
+/// 3.2 sets no `$TERM_PROGRAM`) or GNU screen (`$STY`, which never does).
 pub fn is_windows_terminal() -> bool {
     env::var_os("WT_SESSION").is_some_and(|v| !v.is_empty())
+        && env::var_os("TERM_PROGRAM").is_none_or(|v| v.is_empty())
+        && env::var_os("TMUX").is_none()
+        && env::var_os("STY").is_none()
 }
 
 /// True when we are talking to iTerm2.app, directly or over ssh — `$LC_TERMINAL` is
@@ -685,6 +715,17 @@ mod tests {
         assert_eq!(detect_color_depth(""), ColorDepth::NoColor);
     }
 
+    /// A Windows Terminal tab with nothing inherited on top of it: `$WT_SESSION` set, and none
+    /// of the variables `is_windows_terminal` yields to.  Hold `env_lock` across it.
+    fn windows_terminal_env() -> [EnvGuard; 4] {
+        [
+            EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000"),
+            EnvGuard::unset("TERM_PROGRAM"),
+            EnvGuard::unset("TMUX"),
+            EnvGuard::unset("STY"),
+        ]
+    }
+
     #[test]
     fn color_depth_truecolor_for_windows_terminal() {
         // Native Windows sets neither `$TERM` nor `$COLORTERM` (issue #89); under WSL `$TERM` is
@@ -693,8 +734,7 @@ mod tests {
         let _g1 = EnvGuard::unset("COLORTERM");
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
-        let _g4 = EnvGuard::unset("TERM_PROGRAM");
-        let _g5 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000");
+        let _wt = windows_terminal_env();
         assert_eq!(detect_color_depth(""), ColorDepth::TrueColor);
         assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::TrueColor);
         // An explicit `TERM=dumb` still wins.
@@ -784,9 +824,56 @@ mod tests {
     #[test]
     fn mouse_true_for_windows_terminal_without_term() {
         let _lock = env_lock();
-        let _g = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000000");
+        let _wt = windows_terminal_env();
         assert!(detect_mouse(""));
         assert!(!detect_mouse("dumb"), "an explicit TERM=dumb still wins");
+    }
+
+    #[test]
+    fn inherited_wt_session_yields_to_a_named_terminal() {
+        // `code .` from a Windows Terminal tab, or tmux ≥ 3.2 under WSL, inherits `$WT_SESSION`.
+        let _lock = env_lock();
+        let _wt = windows_terminal_env();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "");
+        assert!(is_windows_terminal(), "an empty TERM_PROGRAM names nothing");
+        for other in ["vscode", "tmux"] {
+            let _g2 = EnvGuard::set("TERM_PROGRAM", other);
+            assert!(!is_windows_terminal(), "{other}");
+        }
+    }
+
+    #[test]
+    fn inherited_wt_session_yields_to_a_multiplexer() {
+        // tmux < 3.2 and GNU screen set no `$TERM_PROGRAM`, and may not pass 24-bit color on.
+        let _lock = env_lock();
+        let _wt = windows_terminal_env();
+        let _g1 = EnvGuard::unset("COLORTERM");
+        let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
+        let _g3 = EnvGuard::unset("WEZTERM_PANE");
+        {
+            let _g = EnvGuard::set("TMUX", "/tmp/tmux-1000/default,1234,0");
+            assert!(!is_windows_terminal(), "tmux");
+            assert_eq!(detect_color_depth("tmux-256color"), ColorDepth::Ansi256);
+        }
+        {
+            let _g = EnvGuard::set("STY", "1234.pts-0.host");
+            assert!(!is_windows_terminal(), "screen");
+            assert_eq!(detect_color_depth("screen-256color"), ColorDepth::Ansi256);
+        }
+        assert!(is_windows_terminal());
+    }
+
+    #[test]
+    fn locale_follows_posix_precedence() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("LC_ALL", "C");
+        let _g2 = EnvGuard::unset("LC_CTYPE");
+        let _g3 = EnvGuard::set("LANG", "en_US.UTF-8");
+        assert_eq!(active_locale(), Some(("LC_ALL", "C".to_owned())));
+        assert!(!locale_is_utf8(), "LC_ALL overrides LANG");
+        let _g4 = EnvGuard::set("LC_ALL", "");
+        assert_eq!(active_locale(), Some(("LANG", "en_US.UTF-8".to_owned())));
+        assert!(locale_is_utf8(), "an empty variable is skipped");
     }
 
     #[test]
@@ -802,6 +889,7 @@ mod tests {
         let _g1 = EnvGuard::set("LANG", "en_US.UTF-8");
         let _g2 = EnvGuard::unset("LC_ALL");
         let _g3 = EnvGuard::unset("LC_CTYPE");
+        assert!(locale_is_utf8());
         assert!(detect_unicode_full());
     }
 
@@ -811,7 +899,9 @@ mod tests {
         let _g1 = EnvGuard::set("LANG", "C");
         let _g2 = EnvGuard::unset("LC_ALL");
         let _g3 = EnvGuard::unset("LC_CTYPE");
-        assert!(!detect_unicode_full());
+        assert!(!locale_is_utf8());
+        // The Windows console takes UTF-16 whatever the locale says (issue #89).
+        assert_eq!(detect_unicode_full(), cfg!(windows));
     }
 
     #[test]
@@ -838,6 +928,7 @@ mod tests {
             halfblocks_picker: None,
             unicode_full: true,
             keyboard_enhancement: true,
+            windows_terminal_keys: false,
         };
         assert_eq!(caps.fingerprint(), caps.fingerprint());
     }
@@ -856,6 +947,7 @@ mod tests {
             halfblocks_picker: None,
             unicode_full: true,
             keyboard_enhancement: true,
+            windows_terminal_keys: false,
         };
         let mouseless = Capabilities {
             mouse: false,
@@ -891,8 +983,7 @@ mod tests {
     #[test]
     fn fingerprint_names_windows_terminal_without_its_session_id() {
         let _lock = env_lock();
-        let _g1 = EnvGuard::unset("TERM_PROGRAM");
-        let _g2 = EnvGuard::unset("TMUX");
+        let _wt = windows_terminal_env();
         let caps = Capabilities::minimal();
         let _tab1 = EnvGuard::set("WT_SESSION", "5a5c6f4e-0000-4000-8000-000000000001");
         let first = caps.fingerprint();

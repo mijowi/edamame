@@ -43,7 +43,9 @@ Why `cargo-xwin` and when to run both passes are in [`AGENTS.md`](../../AGENTS.m
 
 Every layer `cargo test` reaches through `TestBackend` — parser, renderer, editing model, diff, source map, modals — is platform-neutral and is proven on Windows by the job above. What remains unproven:
 
-- Terminal setup and restore through ConPTY; `Picker::from_query_stdio` and the image protocols. Windows Terminal sets no `TERM` or `COLORTERM`, so `capabilities::is_windows_terminal` (`WT_SESSION`) is what claims truecolor and mouse support there — and truecolor is what lets the image probe's answer be used at all. Sixel is still left to the probe: it arrived only in 1.22, and the probe also supplies the font size. On native Windows no locale variable is set, so the Unicode row still reads as unsupported. Windows Terminal ≥ 1.22 has Sixel and no Kitty graphics, and its DA1 answer — sixel support — does survive ConPTY; conhost has neither an alternate screen nor mouse reporting worth relying on.
+- Terminal setup and restore through ConPTY; `Picker::from_query_stdio` and the image protocols. Windows Terminal ≥ 1.22 has Sixel and no Kitty graphics, and its DA1 answer survives ConPTY; conhost has neither an alternate screen nor mouse reporting worth relying on. Windows Terminal sets no `TERM` or `COLORTERM`, so `capabilities::is_windows_terminal` (`WT_SESSION`, unless `TERM_PROGRAM` names another terminal or tmux / screen is running) is what claims truecolor and mouse support, and truecolor is what lets the probe's Sixel answer be used.
+  - The Unicode row is claimed on any native Windows console, since the standard library writes UTF-16 there. The reporter of #89 confirmed it.
+  - The Keyboard row is claimed only under Windows Terminal, for the reason in `cap_summary::keyboard_row`. That rests on reading crossterm's Windows parser; nobody has tested it.
 - `open::that` (`cmd /C start`) for links and non-Markdown files.
 - The external editor: `Command::new($EDITOR)` with the suspend/resume dance, and the `open::that` fallback when `$VISUAL` / `$EDITOR` are unset — which on Windows is the common case.
 - `arboard` at runtime.

@@ -64,24 +64,8 @@ impl CapSummary {
         } else {
             ("not supported".to_owned(), false)
         };
-        let (kbd, kbd_ok) = if caps.keyboard_enhancement {
-            ("Kitty keyboard protocol".to_owned(), true)
-        } else {
-            // Deliberately not a list of chords: too many to enumerate without going stale.
-            // Affected chords never reach the app; all stay reachable from the command palette.
-            (
-                "legacy encoding — some Ctrl / Alt / Shift chords can't be sent".to_owned(),
-                false,
-            )
-        };
-        let (uni, uni_ok) = if caps.unicode_full {
-            ("UTF-8 locale".to_owned(), true)
-        } else {
-            (
-                "non-UTF-8 locale — some glyphs may not render".to_owned(),
-                false,
-            )
-        };
+        let (kbd, kbd_ok) = keyboard_row(caps.keyboard_enhancement, caps.windows_terminal_keys);
+        let (uni, uni_ok) = unicode_row(caps.unicode_full, cfg!(windows));
 
         Self {
             rows: vec![
@@ -117,6 +101,44 @@ impl CapSummary {
     /// True iff every captured capability is in its "ok" state.
     pub fn all_ok(&self) -> bool {
         self.rows.iter().all(|r| r.ok)
+    }
+}
+
+/// The Keyboard row.
+///
+/// Native Windows never reports keyboard enhancement — crossterm's `supports_keyboard_enhancement`
+/// is a constant `false` there — yet under Windows Terminal nothing is missing: it sends ConPTY
+/// lossless key events (win32-input-mode), so the console input records crossterm reads carry
+/// every chord the Kitty protocol exists to disambiguate.  Other hosts (VS Code, Alacritty, ssh)
+/// send plain VT input that ConPTY can only translate lossily, so they keep the warning — as does
+/// conhost, which is lossless but cannot be told apart from them.  One launched from a Windows
+/// Terminal tab without naming itself in `$TERM_PROGRAM` inherits `$WT_SESSION` and is
+/// misreported as Windows Terminal; that is rare enough to accept.
+fn keyboard_row(keyboard_enhancement: bool, windows_terminal_keys: bool) -> (String, bool) {
+    if keyboard_enhancement {
+        ("Kitty keyboard protocol".to_owned(), true)
+    } else if windows_terminal_keys {
+        ("Windows Terminal key events".to_owned(), true)
+    } else {
+        // Deliberately not a list of chords: too many to enumerate without going stale.
+        // Affected chords never reach the app; all stay reachable from the command palette.
+        (
+            "legacy encoding — some Ctrl / Alt / Shift chords can't be sent".to_owned(),
+            false,
+        )
+    }
+}
+
+/// The Unicode row.  `windows` only names the source: there `unicode_full` comes from the UTF-16
+/// console rather than a locale (see `capabilities::detect_unicode_full`).
+fn unicode_row(unicode_full: bool, windows: bool) -> (String, bool) {
+    match (unicode_full, windows) {
+        (true, true) => ("Windows console (UTF-16)".to_owned(), true),
+        (true, false) => ("UTF-8 locale".to_owned(), true),
+        (false, _) => (
+            "non-UTF-8 locale — some glyphs may not render".to_owned(),
+            false,
+        ),
     }
 }
 
@@ -349,5 +371,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn windows_terminal_key_events_are_not_a_keyboard_warning() {
+        // Issue #89: crossterm reports no keyboard enhancement on Windows; Windows Terminal
+        // needs none.
+        let (value, ok) = keyboard_row(false, true);
+        assert!(ok, "{value}");
+        assert!(!value.contains("legacy"), "{value}");
+        assert!(
+            !keyboard_row(false, false).1,
+            "elsewhere, other Windows hosts included, it is still a warning"
+        );
+        assert_eq!(keyboard_row(true, true), keyboard_row(true, false));
+    }
+
+    #[test]
+    fn unicode_row_names_its_source() {
+        assert_eq!(unicode_row(true, false).0, "UTF-8 locale");
+        let (value, ok) = unicode_row(true, true);
+        assert!(ok && !value.contains("locale"), "{value}");
+        assert!(!unicode_row(false, false).1);
     }
 }

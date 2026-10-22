@@ -11,7 +11,12 @@ Each released version's section is also what ships as the GitHub release notes: 
 ### Added
 
 - Releases now include a prebuilt Windows binary (`x86_64`), as a `.zip` archive. Windows is still a best-effort platform.
-- Windows Terminal is detected, giving it 24-bit color, Sixel images, and mouse support on native Windows and under WSL.
+- Windows Terminal is detected, giving it 24-bit color and mouse support on native Windows and under WSL, and Sixel images from Windows Terminal 1.22.
+
+### Fixed
+
+- On native Windows, the capabilities notice and `--doctor` no longer warn about Unicode, or the keyboard (in Windows Terminal).
+- `--doctor` reports an absent `TERM` or `COLORTERM` as `unset` rather than `unknown`.
 
 ### Security
 
