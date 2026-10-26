@@ -40,6 +40,40 @@ impl EditDelta {
         out
     }
 
+    /// One **byte**-offset delta with the effect of `first` followed by `second`, where `between`
+    /// is the text after `first` and before `second` — so that
+    /// `compose(a, b, t1).apply_to_string(t0) == b.apply_to_string(t1)` with
+    /// `t1 = a.apply_to_string(t0)`.  The result spans the union of the two edits, which lets a
+    /// follow-up rewrite (list renumbering) join the edit that caused it as one undo step
+    /// without a copy of the pre-edit document.
+    ///
+    /// # Panics
+    ///
+    /// If either delta does not fit `between` as described.
+    pub fn compose(first: &Self, second: &Self, between: &str) -> Self {
+        // Both spans in `between` coordinates: what `first` wrote, what `second` replaces.
+        let (a_lo, a_hi) = (first.offset, first.offset + first.inserted.len());
+        let (b_lo, b_hi) = (second.offset, second.offset + second.removed.len());
+        let lo = a_lo.min(b_lo);
+        let hi = a_hi.max(b_hi);
+
+        let mut removed = String::with_capacity(hi - lo);
+        removed.push_str(&between[lo..a_lo]);
+        removed.push_str(&first.removed);
+        removed.push_str(&between[a_hi..hi]);
+
+        let mut inserted = String::with_capacity(hi - lo);
+        inserted.push_str(&between[lo..b_lo]);
+        inserted.push_str(&second.inserted);
+        inserted.push_str(&between[b_hi..hi]);
+
+        Self {
+            offset: lo,
+            removed,
+            inserted,
+        }
+    }
+
     /// Minimal **byte**-offset delta turning `old` into `new` (common prefix and suffix trimmed
     /// on char boundaries); `None` when identical. Collapses a simulated multi-step rewrite into
     /// one undo step. `diff(old, new)?.apply_to_string(old) == new` holds for every pair.
@@ -82,8 +116,40 @@ impl EditDelta {
 /// *before* recording it; `undo` / `redo` apply the stored delta themselves.
 #[derive(Debug, Clone, Default)]
 pub struct History {
-    undo_stack: Vec<EditDelta>,
-    redo_stack: Vec<EditDelta>,
+    undo_stack: Vec<Entry>,
+    redo_stack: Vec<Entry>,
+    /// Set by [`Self::break_group`]: the next [`Self::record`] starts a new entry.
+    merge_barrier: bool,
+}
+
+/// One undo step.  `cursors` overrides [`EditDelta::undo_cursor`] / [`EditDelta::redo_cursor`]
+/// as `(undo, redo)` for a composed step ([`History::push_composed`]), whose span runs past
+/// where its edit happened — on to the last line a renumbering touched.
+#[derive(Debug, Clone)]
+struct Entry {
+    delta: EditDelta,
+    cursors: Option<(usize, usize)>,
+}
+
+impl Entry {
+    fn undo_cursor(&self) -> usize {
+        self.cursors
+            .map_or_else(|| self.delta.undo_cursor(), |(undo, _)| undo)
+    }
+
+    fn redo_cursor(&self) -> usize {
+        self.cursors
+            .map_or_else(|| self.delta.redo_cursor(), |(_, redo)| redo)
+    }
+}
+
+impl From<EditDelta> for Entry {
+    fn from(delta: EditDelta) -> Self {
+        Self {
+            delta,
+            cursors: None,
+        }
+    }
 }
 
 impl History {
@@ -92,34 +158,75 @@ impl History {
     }
 
     /// Record a completed edit, clearing the redo stack. Merges into the previous entry when
-    /// [`try_merge`] allows.
+    /// [`try_merge`] allows and no [`Self::break_group`] barrier stands between them.  A composed
+    /// step is never extended: its cursor overrides would no longer match.
     pub fn record(&mut self, delta: EditDelta) {
         if let Some(top) = self.undo_stack.last_mut() {
-            if try_merge(top, &delta) {
+            if !self.merge_barrier && top.cursors.is_none() && try_merge(&mut top.delta, &delta) {
                 self.redo_stack.clear();
                 return;
             }
         }
-        self.undo_stack.push(delta);
+        self.undo_stack.push(delta.into());
         self.redo_stack.clear();
+        self.merge_barrier = false;
+    }
+
+    /// Keep the next recorded edit out of the current entry, however contiguous it is.  A
+    /// one-shot barrier, cleared by the next [`Self::record`] — so a discrete command (vim's
+    /// `x`, `p`) is its own undo step while typing between barriers still merges.
+    pub fn break_group(&mut self) {
+        self.merge_barrier = true;
+    }
+
+    /// The newest undo entry while it is still *open* — no [`Self::break_group`] since it was
+    /// recorded — so a follow-up rewrite may join it.  `None` once a barrier stands, which in vim
+    /// means the entry predates the current command: a command that edited nothing leaves its
+    /// leading barrier pending, and nothing it triggers then folds into an unrelated older step.
+    pub fn open_step(&self) -> Option<&EditDelta> {
+        if self.merge_barrier {
+            return None;
+        }
+        self.undo_stack.last().map(|entry| &entry.delta)
+    }
+
+    /// Replace the two newest entries — an edit and the follow-up just recorded after it — with
+    /// `composed` ([`EditDelta::compose`] of the pair), as one step.  Undo restores the edit's
+    /// own undo cursor rather than the end of the composed span; redo restores `redo_cursor`.
+    /// The step stays open, so a further follow-up can join it in turn.
+    ///
+    /// # Panics
+    ///
+    /// If fewer than two entries are on the undo stack.
+    pub fn push_composed(&mut self, composed: EditDelta, redo_cursor: usize) {
+        self.undo_stack.pop().expect("a follow-up entry");
+        let first = self.undo_stack.pop().expect("an edit entry");
+        self.undo_stack.push(Entry {
+            delta: composed,
+            cursors: Some((first.undo_cursor(), redo_cursor)),
+        });
+        self.redo_stack.clear();
+        self.merge_barrier = false;
     }
 
     /// Undo the most recent edit; returns the cursor to restore, `None` when nothing to undo.
     pub fn undo(&mut self, buf: &mut Buffer) -> Option<usize> {
-        let delta = self.undo_stack.pop()?;
+        let entry = self.undo_stack.pop()?;
+        let delta = &entry.delta;
         apply_delta(buf, delta.offset, &delta.inserted, &delta.removed);
-        let cursor = delta.undo_cursor();
-        self.redo_stack.push(delta);
+        let cursor = entry.undo_cursor();
+        self.redo_stack.push(entry);
         Some(cursor)
     }
 
     /// Redo the most recently undone edit; returns the cursor to restore, `None` when nothing
     /// to redo.
     pub fn redo(&mut self, buf: &mut Buffer) -> Option<usize> {
-        let delta = self.redo_stack.pop()?;
+        let entry = self.redo_stack.pop()?;
+        let delta = &entry.delta;
         apply_delta(buf, delta.offset, &delta.removed, &delta.inserted);
-        let cursor = delta.redo_cursor();
-        self.undo_stack.push(delta);
+        let cursor = entry.redo_cursor();
+        self.undo_stack.push(entry);
         Some(cursor)
     }
 
@@ -144,7 +251,7 @@ impl History {
     pub fn reset_with(&mut self, delta: EditDelta) {
         self.undo_stack.clear();
         self.redo_stack.clear();
-        self.undo_stack.push(delta);
+        self.undo_stack.push(delta.into());
     }
 }
 
@@ -338,9 +445,139 @@ mod tests {
                 }
             }
         }
+
+        /// Whatever the two edits' overlap — disjoint either way round, nested, or touching —
+        /// the composition reproduces their sequence.
+        #[test]
+        fn proptest_compose_matches_applying_both_in_turn(
+            t0 in r"[abé😀漢\n]{0,16}",
+            t1 in r"[abé😀漢\n]{0,16}",
+            t2 in r"[abé😀漢\n]{0,16}",
+        ) {
+            let (Some(a), Some(b)) = (EditDelta::diff(&t0, &t1), EditDelta::diff(&t1, &t2)) else {
+                return Ok(());
+            };
+            let composed = EditDelta::compose(&a, &b, &t1);
+            prop_assert_eq!(composed.apply_to_string(&t0), t2);
+        }
+    }
+
+    #[test]
+    fn compose_spans_both_edits() {
+        // Delete line 2, then renumber the line that moved up.
+        let t0 = "1. a\n2. b\n3. c\n";
+        let a = EditDelta::diff(t0, "1. a\n3. c\n").expect("differs");
+        let b = EditDelta::diff("1. a\n3. c\n", "1. a\n2. c\n").expect("differs");
+        let composed = EditDelta::compose(&a, &b, "1. a\n3. c\n");
+        assert_eq!(composed.apply_to_string(t0), "1. a\n2. c\n");
     }
 
     // ── History ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn break_group_keeps_contiguous_edits_apart() {
+        let mut h = History::new();
+        let mut b = buf("abcdef");
+        // Two forward deletes at the same offset (vim `x` `x`).
+        for removed in ["a", "b"] {
+            b.remove(0, 1);
+            h.break_group();
+            h.record(EditDelta {
+                offset: 0,
+                removed: removed.into(),
+                inserted: String::new(),
+            });
+        }
+        assert_eq!(h.undo_depth(), 2);
+        h.undo(&mut b);
+        assert_eq!(b.contents(), "bcdef");
+    }
+
+    #[test]
+    fn break_group_is_one_shot() {
+        let mut h = History::new();
+        h.break_group();
+        for (i, c) in "abc".chars().enumerate() {
+            h.record(EditDelta {
+                offset: i,
+                removed: String::new(),
+                inserted: c.to_string(),
+            });
+        }
+        assert_eq!(h.undo_depth(), 1, "typing after the barrier still merges");
+    }
+
+    #[test]
+    fn open_step_closes_at_a_barrier() {
+        let mut h = History::new();
+        assert!(h.open_step().is_none());
+        h.record(EditDelta {
+            offset: 0,
+            removed: String::new(),
+            inserted: "a".into(),
+        });
+        assert!(h.open_step().is_some());
+        h.break_group();
+        assert!(h.open_step().is_none(), "the entry predates the barrier");
+    }
+
+    #[test]
+    fn push_composed_restores_the_first_edits_undo_cursor() {
+        let mut h = History::new();
+        let mut b = buf("1. a\n2. b\n3. c\n");
+        // Delete line 2, then renumber the line that moved up — composed into one step.
+        let delete = EditDelta {
+            offset: 5,
+            removed: "2. b\n".into(),
+            inserted: String::new(),
+        };
+        b.remove(5, 10);
+        h.record(delete.clone());
+        let renumber = EditDelta {
+            offset: 5,
+            removed: "3".into(),
+            inserted: "2".into(),
+        };
+        b.remove(5, 6);
+        b.insert(5, "2");
+        h.break_group();
+        h.record(renumber.clone());
+        let composed = EditDelta::compose(&delete, &renumber, "1. a\n3. c\n");
+        h.push_composed(composed, 7);
+        assert_eq!(h.undo_depth(), 1);
+
+        assert_eq!(h.undo(&mut b), Some(delete.undo_cursor()));
+        assert_eq!(b.contents(), "1. a\n2. b\n3. c\n");
+        assert_eq!(h.redo(&mut b), Some(7));
+        assert_eq!(b.contents(), "1. a\n2. c\n");
+    }
+
+    #[test]
+    fn a_composed_step_is_never_extended() {
+        let mut h = History::new();
+        for c in ["a", "b"] {
+            h.break_group();
+            h.record(EditDelta {
+                offset: 0,
+                removed: String::new(),
+                inserted: c.into(),
+            });
+        }
+        h.push_composed(
+            EditDelta {
+                offset: 0,
+                removed: String::new(),
+                inserted: "ba".into(),
+            },
+            1,
+        );
+        h.record(EditDelta {
+            offset: 2,
+            removed: String::new(),
+            inserted: "c".into(),
+        });
+        assert_eq!(h.undo_depth(), 2);
+    }
 
     #[test]
     fn undo_empty_stack_returns_none() {

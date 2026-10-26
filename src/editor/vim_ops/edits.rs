@@ -13,17 +13,21 @@ use crate::editor::list_edit;
 use crate::editor::vim_ops::motion::{first_non_blank, line_end_offset};
 use crate::editor::{EditorState, Mode};
 
-/// Paste the register `text` `count` times.  `after` selects `p` over `P`; `linewise`
-/// selects the open-a-new-line behavior.  A no-op for an empty register.
-pub fn paste(editor: &mut EditorState, text: &str, linewise: bool, count: u32, after: bool) {
+/// Paste `text` — the register, already repeated for a count (see
+/// [`repeat_for_paste`](crate::editor::edit_ops::repeat_for_paste)).  `after` selects `p` over
+/// `P`; `linewise` selects the open-a-new-line behavior.  A no-op for empty text.
+pub fn paste(editor: &mut EditorState, text: &str, linewise: bool, after: bool) {
     if text.is_empty() {
         return;
     }
-    let repeated = text.repeat(count.max(1) as usize);
     if linewise {
-        paste_linewise(editor, &repeated, after);
+        paste_linewise(editor, text, after);
     } else {
-        paste_charwise(editor, &repeated, after);
+        paste_charwise(editor, text, after);
+    }
+    if text.contains('\n') {
+        // Pasted lines can land inside an ordered list, or carry items of their own.
+        renumber_list_at_cursor(editor);
     }
 }
 
@@ -403,8 +407,9 @@ pub fn indent_lines(
 
 /// `o` / `O` inside a Markdown list: continue with a fresh empty item instead of a bare
 /// newline, auto-renumbering an ordered list.  `O` continues from the *previous* item so
-/// the new marker lands above the current one.  `false` (not in a list, Raw mode, or `O`
-/// on the first item) means the caller should fall back to a plain newline open.
+/// the new marker lands above the current one; on the first item, which has none, it copies
+/// that item's marker above it instead.  `false` (not in a list, or Raw mode) means the caller
+/// should fall back to a plain newline open.
 pub fn open_list_continue(editor: &mut EditorState, below: bool) -> bool {
     if editor.mode == Mode::Raw {
         return false;
@@ -417,13 +422,13 @@ pub fn open_list_continue(editor: &mut EditorState, below: bool) -> bool {
     let Some(item_idx) = list_edit::cursor_item_idx(&info, byte) else {
         return false;
     };
-    // `O` on the first item has no earlier item to split from.
     let at = if below {
         info.items[item_idx].line_end
     } else if item_idx > 0 {
         info.items[item_idx - 1].line_end
     } else {
-        return false;
+        open_first_list_item(editor, &info, &source);
+        return true;
     };
     let Some(res) = list_edit::continue_item(&info, &source, at) else {
         return false;
@@ -432,9 +437,34 @@ pub fn open_list_continue(editor: &mut EditorState, below: bool) -> bool {
     true
 }
 
-/// Renumber the ordered list around the cursor after a linewise delete.  A no-op for
-/// bullet lists, already-sequential lists, Raw mode, or a cursor outside a list, so it is
-/// safe after *any* linewise operator.  Delegates to
+/// `O` on a list's first item: there is no earlier item to continue from, so insert an empty
+/// copy of the first item's marker line (indent, marker, and an unchecked `[ ] ` for a task
+/// list) before it, then renumber — the copied `1.` pushes the old first item to `2.`.  One
+/// undo step: the renumbering folds into the insertion.
+fn open_first_list_item(editor: &mut EditorState, info: &list_edit::ListInfo, source: &str) {
+    let item = &info.items[0];
+    let mut line = source[item.start..item.marker_end].to_owned();
+    if item.task.is_some() {
+        line.push_str("[ ] ");
+    }
+    let landing = item.start + line.len();
+    line.push('\n');
+    apply_byte_delta(
+        editor,
+        EditDelta {
+            offset: item.start,
+            removed: String::new(),
+            inserted: line,
+        },
+        landing,
+    );
+    renumber_list_at_cursor(editor);
+}
+
+/// Renumber the ordered list around the cursor after a linewise edit, as part of that edit's
+/// undo step.  A no-op for bullet lists, already-sequential lists, Raw mode, or a cursor
+/// outside a list, so it is safe after *any* linewise operator or paste — but only directly
+/// after an edit, since the renumbering joins the newest undo entry.  Delegates to
 /// [`edit_ops::list_renumber_at_cursor`](crate::editor::edit_ops::list_renumber_at_cursor).
 pub fn renumber_list_at_cursor(editor: &mut EditorState) {
     crate::editor::edit_ops::list_renumber_at_cursor(editor);

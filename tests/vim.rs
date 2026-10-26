@@ -18,7 +18,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use edamame::config::{Action, KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::{Buffer, Selection};
 use edamame::editor::vim_ops::visual_charwise_range;
-use edamame::editor::{EditorState, Mode};
+use edamame::editor::{edit_ops, EditorState, Mode};
 use edamame::input::{vim_feed, VimOutcome, VimState, VimSubMode};
 use edamame::search::SearchState;
 
@@ -5098,4 +5098,209 @@ fn a_counted_join_that_does_reach_the_table_is_refused() {
     let out = feed_keys(&mut vim, &mut st, "3J");
     assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
     assert_eq!(st.buffer.contents(), src);
+}
+
+// ── Undo grouping, first-item `O`, paste renumbering and size cap (#91–#94) ─────
+
+fn keys(vim: &mut VimState, st: &mut EditorState, s: &str) {
+    for c in s.chars() {
+        feed(vim, st, ch(c));
+    }
+}
+
+fn at_line(text: &str, line: usize) -> EditorState {
+    let mut st = state(text);
+    st.cursor.offset = st.buffer.line_to_char(line);
+    st.update_cursor_block();
+    st
+}
+
+#[test]
+fn consecutive_x_are_separate_undo_steps() {
+    let mut st = state("abcdef");
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "xx");
+    assert_eq!(st.buffer.contents(), "cdef");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "bcdef");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "abcdef");
+}
+
+#[test]
+fn consecutive_charwise_pastes_are_separate_undo_steps() {
+    let mut st = state("ab");
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "ylpp");
+    assert_eq!(st.buffer.contents(), "aaab");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "aab");
+}
+
+#[test]
+fn a_paste_does_not_merge_into_the_typing_before_it() {
+    let mut st = state("");
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "i");
+    // Insert typing passes through to the editing pipeline, so drive it directly.
+    assert_eq!(feed(&mut vim, &mut st, ch('a')), VimOutcome::Passthrough);
+    edit_ops::apply(&mut st, Action::InsertChar('a'), VH, VW);
+    feed(&mut vim, &mut st, esc());
+    keys(&mut vim, &mut st, "ylp");
+    assert_eq!(st.buffer.contents(), "aa");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "a");
+}
+
+#[test]
+fn insert_typing_after_o_stays_one_undo_step() {
+    let mut st = state("x");
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "o");
+    for c in "ab".chars() {
+        feed(&mut vim, &mut st, ch(c));
+        edit_ops::apply(&mut st, Action::InsertChar(c), VH, VW);
+    }
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(st.buffer.contents(), "x\nab");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "x");
+}
+
+#[test]
+fn capital_o_on_the_first_bullet_item_opens_an_item_above() {
+    let mut st = at_line("- a\n- b\n", 0);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "O");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "- \n- a\n- b\n");
+    assert_eq!(st.cursor.offset, 2, "on the new item's content");
+}
+
+#[test]
+fn capital_o_on_the_first_ordered_item_renumbers_in_one_undo() {
+    let mut st = at_line("1. a\n2. b\n", 0);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "O");
+    assert_eq!(st.buffer.contents(), "1. \n2. a\n3. b\n");
+    assert_eq!(st.cursor.offset, 3);
+    feed(&mut vim, &mut st, esc());
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n");
+}
+
+#[test]
+fn capital_o_on_the_first_task_item_opens_an_unchecked_task() {
+    let mut st = at_line("- [x] a\n", 0);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "O");
+    assert_eq!(st.buffer.contents(), "- [ ] \n- [x] a\n");
+}
+
+#[test]
+fn capital_o_on_a_nested_first_item_keeps_its_indent() {
+    let mut st = at_line("- a\n    - b\n", 1);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "O");
+    assert_eq!(st.buffer.contents(), "- a\n    - \n    - b\n");
+}
+
+#[test]
+fn dd_and_its_renumbering_undo_together() {
+    let mut st = at_line("1. a\n2. b\n3. c\n4. d\n", 1);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "dd");
+    assert_eq!(st.buffer.contents(), "1. a\n2. c\n3. d\n");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n3. c\n4. d\n");
+    feed(&mut vim, &mut st, ctrl('r'));
+    edit_ops::apply(&mut st, Action::Redo, VH, VW);
+    assert_eq!(st.buffer.contents(), "1. a\n2. c\n3. d\n");
+}
+
+#[test]
+fn undo_and_redo_of_dd_in_a_list_restore_the_cursor_near_the_edit() {
+    let mut st = at_line("1. a\n2. b\n3. c\n4. d\n5. e\n", 1);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "dd");
+    let after_dd = st.cursor.offset;
+    keys(&mut vim, &mut st, "u");
+    // The line delete's own undo cursor (the end of the restored line), not the far end of the
+    // renumbered span.
+    assert_eq!(st.buffer.char_to_line(st.cursor.offset), 2);
+    feed(&mut vim, &mut st, ctrl('r'));
+    edit_ops::apply(&mut st, Action::Redo, VH, VW);
+    assert_eq!(st.cursor.offset, after_dd);
+}
+
+#[test]
+fn yy_does_not_renumber() {
+    // A hand-numbered list stays as written until something edits it.
+    let mut st = at_line("1. a\n5. b\n", 0);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "yy");
+    assert_eq!(st.buffer.contents(), "1. a\n5. b\n");
+}
+
+#[test]
+fn linewise_paste_renumbers_in_one_undo() {
+    let mut st = at_line("1. a\n2. b\n3. c\n", 0);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "yyp");
+    assert_eq!(st.buffer.contents(), "1. a\n2. a\n3. b\n4. c\n");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n3. c\n");
+}
+
+#[test]
+fn linewise_paste_above_renumbers() {
+    let mut st = at_line("1. a\n2. b\n", 1);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "yyP");
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n3. b\n");
+}
+
+#[test]
+fn visual_line_paste_renumbers() {
+    let mut st = at_line("1. a\n2. b\n3. c\n", 0);
+    let mut vim = VimState::default();
+    // Yank two items, then paste them over the last one.
+    keys(&mut vim, &mut st, "yjjjVp");
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n3. a\n4. b\n");
+    keys(&mut vim, &mut st, "u");
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n3. c\n");
+}
+
+#[test]
+fn counted_paste_past_the_size_cap_is_refused() {
+    // 10 kB × 9999 ≈ 100 MB, past the 64 MiB cap.
+    let line = "a".repeat(10_000);
+    let mut st = state(&line);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "yy9999");
+    let out = feed(&mut vim, &mut st, ch('p'));
+    assert!(matches!(out, VimOutcome::Flash(_)), "refused: {out:?}");
+    assert_eq!(st.buffer.contents(), line);
+    assert!(!st.history.can_undo());
+}
+
+#[test]
+fn a_refused_paste_does_not_leave_preview() {
+    let line = "a".repeat(10_000);
+    let mut st = state(&line);
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "yy");
+    st.mode = Mode::Preview;
+    keys(&mut vim, &mut st, "9999");
+    let out = feed(&mut vim, &mut st, ch('p'));
+    assert!(matches!(out, VimOutcome::Flash(_)), "refused: {out:?}");
+    assert_eq!(st.mode, Mode::Preview);
+}
+
+#[test]
+fn counted_paste_under_the_size_cap_still_works() {
+    let mut st = state("ab");
+    let mut vim = VimState::default();
+    keys(&mut vim, &mut st, "yl3p");
+    assert_eq!(st.buffer.contents(), "aaaab");
 }

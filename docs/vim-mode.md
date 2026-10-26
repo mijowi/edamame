@@ -112,8 +112,8 @@ Notes on differences from standard Vim:
 Notes on differences:
 
 - **`cw` on a non-blank behaves like `ce`** (it keeps the trailing space), matching Vim's special case.
-- **Each operator is a single undo step.** `3dw` deletes three words and is undone by one `u`. (The exception: `dd` in an ordered list does the delete and then renumbers as a second step, matching edamame's non-vim delete.)
-- **`p`/`P` honor the linewise/charwise distinction.** A line yanked with `yy`/`dd` pastes onto its own new line; a charwise yank pastes inline.
+- **Each command is a single undo step.** `3dw` deletes three words and is undone by one `u`; `x` `x` is two steps, as in vim. Text typed in one Insert session is one step, and joins the line `o`/`O` opened. When an edit renumbers an ordered list, the renumbering is part of the same step; `o`/`O` that renumber stay a step of their own, so `u` first removes the typed text and then the new item.
+- **`p`/`P` honor the linewise/charwise distinction.** A line yanked with `yy`/`dd` pastes onto its own new line; a charwise yank pastes inline. A counted paste is refused if the result would exceed 64 MiB.
 - **The vim register is separate from the system clipboard.** `y`/`d`/`p` use an internal unnamed register; `dd` then `Ctrl-V` will **not** share content. This is deliberate — see [Clipboard](#clipboard-vim-register-vs-system-clipboard).
 - **Dot-repeat (`.`) is not implemented.**
 - **Named registers, marks (`` m ``/`` ` ``/`'`), and macros are not implemented.**
@@ -122,8 +122,8 @@ Notes on differences:
 
 These commands integrate with edamame's Markdown structure:
 
-- **`o`/`O` continue lists.** Pressing `o` after `1. Item` inserts `2. ` automatically; bullet lists copy their marker. (`O` on the very first item of a list falls back to a plain open-above.)
-- **`dd` renumbers** the surrounding ordered list after deleting a line.
+- **`o`/`O` continue lists.** Pressing `o` after `1. Item` inserts `2. ` automatically; bullet lists copy their marker, and task lists add an unchecked `[ ] `. `O` on the first item opens a new first item and renumbers the rest.
+- **`dd` and linewise pastes renumber** the surrounding ordered list: `yyp` on `1. a` gives `2. a` below it.
 - **`>>`/`<<` nest list items.** A bare `>>`/`<<` on a list item nests/un-nests it structurally (with ordered renumber), rather than just adding spaces. A counted `N>>`, a non-list line, or Raw mode falls back to plain space-based indentation.
 
 ---

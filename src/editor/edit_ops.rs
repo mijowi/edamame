@@ -1479,6 +1479,47 @@ pub(super) fn apply_byte_delta(
     state.update_cursor_block();
 }
 
+/// [`apply_byte_delta`], but recorded as part of the newest undo entry rather than a step of its
+/// own: a follow-up rewrite (list renumbering) that one undo must revert together with the edit
+/// that caused it.  `source` is the buffer's current contents, which `byte_delta` is against.
+///
+/// Falls back to a step of its own when there is no [open](crate::document::History::open_step)
+/// entry — none at all, or a barrier recorded since — or when that entry does not describe how
+/// `source` came about (its inserted text is not where it says).
+fn fold_byte_delta_into_last_step(
+    state: &mut EditorState,
+    byte_delta: EditDelta,
+    source: &str,
+    cursor_byte_target: usize,
+) {
+    if state.readonly {
+        return;
+    }
+    let composed = state.history.open_step().and_then(|last| {
+        let rope = state.buffer.rope();
+        let offset = rope.try_char_to_byte(last.offset).ok()?;
+        if source.get(offset..offset + last.inserted.len()) != Some(last.inserted.as_str()) {
+            return None;
+        }
+        let last_byte = EditDelta {
+            offset,
+            ..last.clone()
+        };
+        let composed = EditDelta::compose(&last_byte, &byte_delta, source);
+        // Text before the composed span is untouched by both edits, so the offset converts alike.
+        Some(EditDelta {
+            offset: rope.byte_to_char(composed.offset),
+            ..composed
+        })
+    });
+    // Apply the follow-up as a step of its own, then swap the pair for the composed step.
+    state.history.break_group();
+    apply_byte_delta(state, byte_delta, cursor_byte_target);
+    if let Some(composed) = composed {
+        state.history.push_composed(composed, state.cursor.offset);
+    }
+}
+
 // ── List editing helpers ──────────────────────────────────────────────────────
 //
 // These look up the list at the cursor and route byte-oriented `list_edit` deltas through
@@ -1569,6 +1610,19 @@ fn list_toggle_checkbox(state: &mut EditorState) {
     apply_byte_delta(state, res.delta, res.cursor_byte);
 }
 
+/// Flashed when a counted paste would exceed [`MAX_PASTE_BYTES`](crate::constants::MAX_PASTE_BYTES).
+pub const PASTE_TOO_LARGE: &str = "Paste too large";
+
+/// `text` repeated `count` times (at least once), or `None` when the result would exceed
+/// [`MAX_PASTE_BYTES`](crate::constants::MAX_PASTE_BYTES) — checked before anything is allocated.
+pub fn repeat_for_paste(text: &str, count: usize) -> Option<String> {
+    let count = count.max(1);
+    text.len()
+        .checked_mul(count)
+        .filter(|&n| n <= crate::constants::MAX_PASTE_BYTES)
+        .map(|_| text.repeat(count))
+}
+
 /// Silent post-edit renumber of the ordered list around the cursor.  No-op for bullet lists, in
 /// Raw, or outside a list.
 ///
@@ -1576,6 +1630,9 @@ fn list_toggle_checkbox(state: &mut EditorState) {
 /// keystroke) and renumbers the whole surrounding *block*, spanning loose-list blank gaps because
 /// pulldown-cmark renders those as one sequence.  The block walk rather than a flat per-indent
 /// pass is what keeps the outer sequence right when a delete lands the cursor on a nested child.
+///
+/// The renumbering joins the newest undo step, so call this directly after the edit that may
+/// have disturbed the numbering; see [`fold_byte_delta_into_last_step`].
 pub(crate) fn list_renumber_at_cursor(state: &mut EditorState) {
     // Raw defers to plain text, same bail-out as `current_list`.
     if state.mode == Mode::Raw {
@@ -1584,7 +1641,8 @@ pub(crate) fn list_renumber_at_cursor(state: &mut EditorState) {
     let source = state.buffer.contents();
     let byte_before = cursor_byte(state);
     if let Some(delta) = list_edit::renumber_list_block(&source, byte_before) {
-        apply_byte_delta(state, delta, byte_before);
+        // The renumbering belongs to the edit that disturbed it: one undo restores both.
+        fold_byte_delta_into_last_step(state, delta, &source, byte_before);
     }
 }
 
@@ -1756,8 +1814,9 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::paste_text;
-    use crate::config::Theme;
+    use super::{apply, list_renumber_at_cursor, paste_text, repeat_for_paste};
+    use crate::config::{Action, Theme};
+    use crate::constants::MAX_PASTE_BYTES;
     use crate::document::Buffer;
     use crate::editor::{EditorState, Mode};
 
@@ -1792,5 +1851,62 @@ mod tests {
         let out = dir.path().join("out.md");
         state.buffer.save_copy(&out).expect("save");
         assert_eq!(std::fs::read(&out).expect("read"), b"X\r\na\r\nb\r\n");
+    }
+
+    #[test]
+    fn repeat_for_paste_refuses_past_the_cap_without_allocating() {
+        assert_eq!(repeat_for_paste("ab", 3).as_deref(), Some("ababab"));
+        assert_eq!(
+            repeat_for_paste("ab", 0).as_deref(),
+            Some("ab"),
+            "count 0 pastes once"
+        );
+        let unit = "a".repeat(1024);
+        assert!(repeat_for_paste(&unit, MAX_PASTE_BYTES / 1024).is_some());
+        assert!(repeat_for_paste(&unit, MAX_PASTE_BYTES / 1024 + 1).is_none());
+        assert!(
+            repeat_for_paste("ab", usize::MAX).is_none(),
+            "overflow is refused too"
+        );
+    }
+
+    #[test]
+    fn delete_line_and_its_renumbering_are_one_undo_step() {
+        let mut state = EditorState::new(Buffer::from_str("1. a\n2. b\n3. c\n"), theme());
+        state.mode = Mode::Rendered;
+        state.cursor.offset = state.buffer.line_to_char(1);
+        state.update_cursor_block();
+        apply(&mut state, Action::DeleteLine, 24, 80);
+        assert_eq!(state.buffer.contents(), "1. a\n2. c\n");
+        apply(&mut state, Action::Undo, 24, 80);
+        assert_eq!(state.buffer.contents(), "1. a\n2. b\n3. c\n");
+    }
+
+    #[test]
+    fn renumbering_after_a_barrier_does_not_join_the_older_step() {
+        // An edit outside the list, then a command that edits nothing (its leading barrier still
+        // pending) and renumbers: the renumbering must not fold into the unrelated typing.
+        let mut state = EditorState::new(Buffer::from_str("1. a\n5. b\n\nx"), theme());
+        state.mode = Mode::Rendered;
+        state.cursor.offset = state.buffer.len_chars();
+        state.update_cursor_block();
+        apply(&mut state, Action::InsertChar('y'), 24, 80);
+        state.history.break_group();
+        state.cursor.offset = 0;
+        state.update_cursor_block();
+        list_renumber_at_cursor(&mut state);
+        assert_eq!(state.buffer.contents(), "1. a\n2. b\n\nxy");
+        assert_eq!(state.history.undo_depth(), 2);
+        apply(&mut state, Action::Undo, 24, 80);
+        assert_eq!(state.buffer.contents(), "1. a\n5. b\n\nxy");
+    }
+
+    #[test]
+    fn renumbering_with_no_history_is_its_own_step() {
+        let mut state = EditorState::new(Buffer::from_str("1. a\n5. b\n"), theme());
+        state.mode = Mode::Rendered;
+        list_renumber_at_cursor(&mut state);
+        assert_eq!(state.buffer.contents(), "1. a\n2. b\n");
+        assert_eq!(state.history.undo_depth(), 1);
     }
 }

@@ -15,6 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Action;
 use crate::document::{prev_grapheme_offset, EditDelta, Selection};
+use crate::editor::edit_ops::{repeat_for_paste, PASTE_TOO_LARGE};
 use crate::editor::vim_ops::{
     cell_scope, clear_substitute_preview, clear_table_cell, delete_table_row, doubled_line_range,
     end_incsearch, execute_operator, execute_substitute, first_non_blank, indent_lines,
@@ -82,20 +83,33 @@ pub fn vim_feed(
     viewport_height: usize,
     viewport_width: usize,
 ) -> VimOutcome {
+    // Each Normal / Visual / ex command is its own undo step, so a barrier goes on both sides:
+    // `x` `x` must not merge as one forward-delete run, nor `p` into the typing before it.
+    // Insert-mode typing keeps merging, and so does the text typed after `o` into the newline
+    // `o` opened — the trailing barrier is skipped when the command entered Insert.
+    let command = vim.cmdline.is_some() || vim.sub_mode != VimSubMode::Insert;
+    if command {
+        editor.history.break_group();
+    }
     // An active command line (`/` `?`, and `:` in CP9) captures every key
     // until the user submits (Enter) or cancels (Esc / Backspace past the
     // start), so it is checked before any sub-mode dispatch.
-    if vim.cmdline.is_some() {
-        return feed_cmdline(vim, editor, key, viewport_height, viewport_width);
-    }
-    match vim.sub_mode {
-        VimSubMode::Insert => feed_insert(vim, editor, key, viewport_height, viewport_width),
-        VimSubMode::Visual | VimSubMode::VisualLine => {
-            feed_visual(vim, editor, key, viewport_height, viewport_width)
+    let outcome = if vim.cmdline.is_some() {
+        feed_cmdline(vim, editor, key, viewport_height, viewport_width)
+    } else {
+        match vim.sub_mode {
+            VimSubMode::Insert => feed_insert(vim, editor, key, viewport_height, viewport_width),
+            VimSubMode::Visual | VimSubMode::VisualLine => {
+                feed_visual(vim, editor, key, viewport_height, viewport_width)
+            }
+            // Normal and OperatorPending share an entry; `feed_normal` branches on `pending_op`.
+            _ => feed_normal(vim, editor, key, viewport_height, viewport_width),
         }
-        // Normal and OperatorPending share an entry; `feed_normal` branches on `pending_op`.
-        _ => feed_normal(vim, editor, key, viewport_height, viewport_width),
+    };
+    if command && vim.sub_mode != VimSubMode::Insert {
+        editor.history.break_group();
     }
+    outcome
 }
 
 // ── Insert ──────────────────────────────────────────────────────────────────
@@ -635,7 +649,7 @@ fn run_visual_operator(
         let res = execute_operator(editor, op, range);
         vim.visual_anchor = None;
         editor.selection = None;
-        fold_op_result(vim, editor, res, vh, vw);
+        fold_op_result(vim, editor, op, res, vh, vw);
     });
     outcome
 }
@@ -751,6 +765,10 @@ fn run_visual_paste(
         }
         ensure_editing(editor);
         replace_range_with(editor, range.start, range.end, &text);
+        if text.contains('\n') {
+            // As for `p`: whole lines dropped into or over an ordered list.
+            renumber_list_at_cursor(editor);
+        }
         leave_visual_to_normal(vim, editor, vh, vw);
     });
     outcome
@@ -1272,7 +1290,7 @@ fn table_doubled_operator(
     };
     match outcome {
         TableOpOutcome::Applied(res) => {
-            fold_op_result(vim, editor, res, vh, vw);
+            fold_op_result(vim, editor, operator, res, vh, vw);
             Some(VimOutcome::Consumed)
         }
         TableOpOutcome::Refused(reason) => {
@@ -1304,7 +1322,7 @@ fn run_operator(
         return VimOutcome::Flash(reason.message().to_owned());
     }
     let res = execute_operator(editor, op, range);
-    fold_op_result(vim, editor, res, vh, vw);
+    fold_op_result(vim, editor, op, res, vh, vw);
     VimOutcome::Consumed
 }
 
@@ -1324,13 +1342,15 @@ fn mutating_table_break(editor: &EditorState, op: Operator, range: &OpRange) -> 
 fn fold_op_result(
     vim: &mut VimState,
     editor: &mut EditorState,
+    op: Operator,
     res: OpResult,
     vh: usize,
     vw: usize,
 ) {
     // A linewise edit can disturb an ordered list's numbering; renumber as the non-vim delete
-    // path does.
-    if res.linewise {
+    // path does, folded into the operator's own undo step.  `yy` edits nothing, so there is no
+    // step to fold into and nothing it could have disturbed.
+    if res.linewise && op != Operator::Yank {
         renumber_list_at_cursor(editor);
     }
     if !res.register_text.is_empty() {
@@ -1361,6 +1381,10 @@ fn paste_register(
     if vim.register.text.is_empty() {
         return VimOutcome::Consumed;
     }
+    // Refused before anything changes, the switch out of Preview included.
+    let Some(text) = repeat_for_paste(&vim.register.text, count as usize) else {
+        return VimOutcome::Flash(PASTE_TOO_LARGE.to_owned());
+    };
     // Inside a table the ordinary "line after the cursor's" landing spot sits above the
     // alignment row when the cursor is on the header, wedging a data row into the table's
     // declaration.  `table_paste_plan` picks a legal row boundary and refuses a non-row
@@ -1369,7 +1393,6 @@ fn paste_register(
         TablePaste::Refused => return VimOutcome::Flash(TABLE_PASTE_REFUSAL.to_owned()),
         TablePaste::RowsAt(at) => {
             ensure_editing(editor);
-            let text = vim.register.text.repeat(count.max(1) as usize);
             insert_table_rows(editor, at, &text);
             after_edit(editor, vh, vw);
             return VimOutcome::Consumed;
@@ -1377,13 +1400,7 @@ fn paste_register(
         TablePaste::NotATable => {}
     }
     ensure_editing(editor);
-    paste(
-        editor,
-        &vim.register.text,
-        vim.register.linewise,
-        count,
-        after,
-    );
+    paste(editor, &text, vim.register.linewise, after);
     after_edit(editor, vh, vw);
     VimOutcome::Consumed
 }

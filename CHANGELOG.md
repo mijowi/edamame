@@ -17,6 +17,11 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - On native Windows, the capabilities notice and `--doctor` no longer warn about Unicode, or the keyboard (in Windows Terminal).
 - `--doctor` reports an absent `TERM` or `COLORTERM` as `unset` rather than `unknown`.
+- Vim: each command is its own undo step, so `x` `x` no longer undoes as one.
+- Vim: `O` on a list's first item opens a new item above it instead of a plain line.
+- Vim: a counted paste too large to build (over 64 MiB) is refused instead of exhausting memory.
+- Vim: a paste that spans lines renumbers the ordered list it lands in.
+- One undo now reverts an edit together with the list renumbering it caused.
 
 ### Security
 
