@@ -87,11 +87,12 @@ pub struct InlineColMap {
 /// A walk's output: each rendered char with its raw char, before any soft break is dropped,
 /// and the raw chars of the breaks among them, all of them and the soft ones.  An entry with no
 /// char is a break inside a link that shows its URL fallback: it renders nothing, but still ends
-/// its line.
+/// its line.  `one_paragraph`: whether the text parsed as a single paragraph and nothing else.
 struct Walked {
     entries: Vec<(usize, Option<char>)>,
     breaks: Vec<usize>,
     soft: Vec<usize>,
+    one_paragraph: bool,
 }
 
 impl InlineColMap {
@@ -105,13 +106,6 @@ impl InlineColMap {
     fn walk(raw_line: &str, labels: Option<&RefLabels>) -> Walked {
         let mut walk = CharMapWalk::new(raw_line);
 
-        let opts = Options::ENABLE_TABLES
-            | Options::ENABLE_FOOTNOTES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_SMART_PUNCTUATION
-            | Options::ENABLE_MATH;
-
         // A reference the document defines resolves to an empty destination: only its text
         // renders, so the destination never matters.
         let resolve = |link: BrokenLink<'_>| {
@@ -119,13 +113,16 @@ impl InlineColMap {
                 .filter(|l| l.has_link(&link.reference))
                 .map(|_| (CowStr::Borrowed(""), CowStr::Borrowed("")))
         };
-        let parser = Parser::new_with_broken_link_callback(raw_line, opts, Some(resolve));
+        let parser =
+            Parser::new_with_broken_link_callback(raw_line, parse_options(), Some(resolve));
         // The open link: where the walk stood at its start, its destination and its range.
         let mut link = None;
         // Text pieces joined as the parser joins them, so `==` pairs the same way: see
         // [`TextRun`].  Every other event ends the run.
         let mut text: Option<TextRun<'_>> = None;
+        let mut one_paragraph = OneParagraph::default();
         for (event, range) in parser.into_offset_iter() {
+            one_paragraph.see(&event);
             if !matches!(event, Event::Text(_)) {
                 if let Some(run) = text.take() {
                     walk.push_text(raw_line, run.range.clone(), run.text());
@@ -176,30 +173,78 @@ impl InlineColMap {
             entries,
             breaks: walk.breaks,
             soft: walk.soft,
+            one_paragraph: one_paragraph.holds(),
         }
     }
 
     /// A map over `text` read as inline content *inside* a paragraph: a line's text past its
     /// content column, which on its own could parse as block syntax it wasn't in the document
     /// (`2. a` as a list item, `# b` as a heading, an indent as code).  A leading word pins it to
-    /// paragraph text, and its entries are dropped again.  References resolve against the
-    /// document's `labels`.
+    /// paragraph text, and its entries are dropped again.  Several lines joined, a continuation
+    /// can still read as block syntax (issue #96: `---` ending the paragraph as a setext
+    /// underline, though in the document it was the paragraph's text behind a lazy line); only
+    /// then is each such line pinned too, past its indent, which a continuation drops either
+    /// way.  Only those lines, since a pin inside an inline spanning the break changes it: a
+    /// reference label no longer matches its definition, a code span keeps its padding.
+    /// References resolve against the document's `labels`.
     pub fn build_inline(text: &str, labels: &RefLabels) -> Self {
-        const PIN: &str = "a ";
-        let pinned = Self::walk(&format!("{PIN}{text}"), Some(labels));
-        let pin = PIN.len();
-        let unpin = |raws: Vec<usize>| raws.into_iter().map(|raw| raw - pin).collect();
-        let walked = Walked {
-            entries: pinned
+        let raw_len = text.chars().count();
+        let walked = Self::walk_pinned(text, labels, |_| false);
+        let walked = if walked.one_paragraph {
+            walked
+        } else {
+            let lines: Vec<&str> = text.split('\n').collect();
+            Self::walk_pinned(text, labels, |i| ends_paragraph(lines[i - 1], lines[i]))
+        };
+        Self::from_walk(walked, raw_len)
+    }
+
+    /// A walk over `text` with a pin in front of its first line, and of each later line `i`
+    /// past its indent where `pin_line(i)`, the pins' entries dropped and the rest mapped back to
+    /// `text`'s raw chars.
+    fn walk_pinned(text: &str, labels: &RefLabels, pin_line: impl Fn(usize) -> bool) -> Walked {
+        let mut pinned = String::with_capacity(text.len() + PIN.len());
+        // Each char of `pinned`, then its end: the raw char of `text` it is, `None` in a pin.
+        let mut raws = Vec::with_capacity(text.len() + PIN.len() + 1);
+        let mut at = 0usize;
+        for (i, line) in text.split('\n').enumerate() {
+            if i > 0 {
+                pinned.push('\n');
+                raws.push(Some(at));
+                at += 1;
+            }
+            let pin = i == 0 || pin_line(i);
+            let indent = if i > 0 && pin {
+                line.len() - line.trim_start_matches([' ', '\t']).len()
+            } else {
+                0
+            };
+            let (lead, rest) = line.split_at(indent);
+            pinned.push_str(lead);
+            raws.extend((at..at + indent).map(Some));
+            at += indent;
+            if pin {
+                pinned.push_str(PIN);
+                raws.extend(PIN.chars().map(|_| None));
+            }
+            pinned.push_str(rest);
+            let len = rest.chars().count();
+            raws.extend((at..at + len).map(Some));
+            at += len;
+        }
+        raws.push(Some(at));
+        let walked = Self::walk(&pinned, Some(labels));
+        let unpin = |raws_in: Vec<usize>| raws_in.into_iter().filter_map(|r| raws[r]).collect();
+        Walked {
+            entries: walked
                 .entries
                 .into_iter()
-                .filter(|&(raw, _)| raw >= pin)
-                .map(|(raw, ch)| (raw - pin, ch))
+                .filter_map(|(raw, ch)| raws[raw].map(|raw| (raw, ch)))
                 .collect(),
-            breaks: unpin(pinned.breaks),
-            soft: unpin(pinned.soft),
-        };
-        Self::from_walk(walked, text.chars().count())
+            breaks: unpin(walked.breaks),
+            soft: unpin(walked.soft),
+            one_paragraph: walked.one_paragraph,
+        }
     }
 
     /// The map from a walk over `raw_len` raw chars, less the breaks that render as nothing: those
@@ -212,6 +257,7 @@ impl InlineColMap {
             entries,
             mut breaks,
             soft,
+            ..
         } = walked;
         let chars: Vec<char> = entries.iter().filter_map(|&(_, c)| c).collect();
         let mut rendered_to_raw = Vec::with_capacity(entries.len() + 1);
@@ -449,16 +495,18 @@ impl CharMapWalk {
         // `range` spans the backtick delimiters too, which are skipped like other markers.
         // pulldown also strips one space from each end when both ends are spaces
         // (`` ` x ` `` → "x") — detect that to keep each content char on its true raw position.
+        // A line break counts as a space, as pulldown turns it into one before stripping.
         let slice_end = range.end.min(raw_line.len());
         let slice = &raw_line[range.start..slice_end];
         let delim = slice.bytes().take_while(|&b| b == b'`').count();
         let body_end = slice.len().saturating_sub(delim).max(delim);
         let body = &slice[delim..body_end];
+        let ends = [' ', '\n'];
         let stripped = body != inner
             && body
-                .strip_prefix(' ')
-                .and_then(|b| b.strip_suffix(' '))
-                .is_some_and(|b| b == inner);
+                .strip_prefix(ends)
+                .and_then(|b| b.strip_suffix(ends))
+                .is_some_and(|b| b.replace('\n', " ") == inner);
         let content_start = range.start + delim + usize::from(stripped);
         self.push_chars(inner, content_start);
     }
@@ -480,6 +528,53 @@ impl CharMapWalk {
             self.soft.push(raw);
         }
     }
+}
+
+/// The pin [`InlineColMap::build_inline`] puts in front of a line to keep it paragraph text.
+const PIN: &str = "a ";
+
+/// The extensions the document is parsed with, as far as they change what a line renders.
+fn parse_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION
+        | Options::ENABLE_MATH
+}
+
+/// Whether a parse, fed its events in order, is a single paragraph and nothing else.
+#[derive(Default)]
+struct OneParagraph {
+    paragraphs: usize,
+    in_paragraph: bool,
+    outside: bool,
+}
+
+impl OneParagraph {
+    fn see(&mut self, event: &Event<'_>) {
+        match event {
+            Event::Start(Tag::Paragraph) => {
+                self.paragraphs += 1;
+                self.in_paragraph = true;
+            }
+            Event::End(TagEnd::Paragraph) => self.in_paragraph = false,
+            _ => self.outside |= !self.in_paragraph,
+        }
+    }
+
+    fn holds(&self) -> bool {
+        self.paragraphs <= 1 && !self.outside
+    }
+}
+
+/// Whether `line`, following `prev` in a paragraph, reads as block syntax that ends it: a setext
+/// underline, a list item, a fence, a table's delimiter row under `prev`.  Block structure is
+/// read line by line, before any inline, so the two lines alone decide it.
+fn ends_paragraph(prev: &str, line: &str) -> bool {
+    let mut check = OneParagraph::default();
+    Parser::new_ext(&format!("{PIN}{prev}\n{line}"), parse_options()).for_each(|e| check.see(&e));
+    !check.holds()
 }
 
 /// Byte offsets in `raw` of each `==` that opens or closes a highlight: pairs, each opener
@@ -583,6 +678,57 @@ mod tests {
         let map = InlineColMap::build_inline("# b *c*", &RefLabels::default());
         assert_eq!(map.rendered_to_raw(4), 5, "the `c` past its `*`");
         assert_eq!(map.raw_to_rendered(0), 0);
+    }
+
+    /// Joined, a continuation line reading as block syntax (`---`, `- a`) stays paragraph text,
+    /// as it was in the document (issue #96), and an inline spanning the break still pairs.
+    #[test]
+    fn build_inline_pins_a_continuation_reading_as_block_syntax() {
+        let labels = RefLabels::default();
+        let text = "a *x\ny* a\n  ---\n- b";
+        let map = InlineColMap::build_inline(text, &labels);
+        // a ␠ x ␠ y ␠ a ␠ — ␠ - ␠ b
+        assert_eq!(map.rendered_len(), 13);
+        assert_eq!(map.raw_len(), text.chars().count());
+        assert_eq!(map.rendered_to_raw(2), 3, "the `x` past its `*`");
+        assert_eq!(
+            map.rendered_to_raw(8),
+            12,
+            "the `—` on its run, past the indent"
+        );
+        assert_eq!(map.rendered_to_raw(12), 18, "the `b` after `- `");
+        assert!(map.is_break(7) && map.is_break(9));
+    }
+
+    /// Only the line that would end the paragraph takes a pin: a code span closing on the line
+    /// before it keeps the padding its break gave it.
+    #[test]
+    fn build_inline_pins_only_the_lines_that_end_the_paragraph() {
+        let labels = RefLabels::default();
+        let map = InlineColMap::build_inline("x ` foo\n` y\n---", &labels);
+        // x ␠ f o o ␠ y ␠ —
+        assert_eq!(map.rendered_len(), 9);
+        assert_eq!(map.rendered_to_raw(2), 4, "the `f` past the padding");
+        assert_eq!(map.rendered_to_raw(6), 10, "the `y`");
+        assert_eq!(map.rendered_to_raw(8), 12, "the `—` on its run");
+        assert!(map.is_break(7));
+    }
+
+    /// A continuation that stays paragraph text joined takes no pin, so an inline spanning into
+    /// it is the document's own: a reference label still matches its definition, and a code
+    /// span still strips its padding.
+    #[test]
+    fn build_inline_leaves_an_inline_spanning_a_break_intact() {
+        let labels = RefLabels::new(["foo *bar*"], []);
+        let map = InlineColMap::build_inline("x [foo\n*bar*] y", &labels);
+        // x ␠ f o o ␠ b a r ␠ y
+        assert_eq!(map.rendered_len(), 11);
+        assert_eq!(map.rendered_to_raw(6), 8, "the `b` past its `*`");
+
+        let map = InlineColMap::build_inline("x ` foo\n` y", &labels);
+        // x ␠ f o o ␠ y
+        assert_eq!(map.rendered_len(), 7);
+        assert_eq!(map.rendered_to_raw(2), 4, "the `f` past the padding");
     }
 
     /// A reference the document defines renders as its text, as in the document; an undefined

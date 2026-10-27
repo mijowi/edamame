@@ -465,14 +465,15 @@ impl<'a> Row<'a> {
             .as_deref()
     }
 
-    /// An inline row's (or flow's) lines, each sliced past its content column and mapped by
-    /// its own [`InlineColMap`], one space for each break that didn't vanish; failing that, a joined map's part on
-    /// the row ([`JoinedMap::part`]), for an inline spanning a break
-    /// (`*a⏎b*`).  Line by line first, since joined, a continuation reading `===` or `- a` turns
-    /// into block syntax it wasn't in the document.  Accepted only when the map renders as many
-    /// chars as the row shows (a footnote definition's trailing ` ↩` back-link aside).
-    /// References resolve against the document's definitions, and an ATX heading's closing
-    /// sequence is left out, as the renderer leaves them.
+    /// An inline row's (or flow's) lines, each sliced past its content column and mapped by its
+    /// own [`InlineColMap`], one space for each break that didn't vanish; failing that, a joined
+    /// map's part on the row ([`JoinedMap::part`]), for an inline spanning a break (`*a⏎b*`).
+    /// Line by line first, the common case: joined, a continuation reading as block syntax takes
+    /// a pin of its own ([`InlineColMap::build_inline`]), which can disturb an inline spanning
+    /// into it.  Accepted only when the map renders as many chars as the row shows (a footnote
+    /// definition's trailing ` ↩` back-link aside).  References resolve against the document's
+    /// definitions, and an ATX heading's closing sequence is left out, as the renderer leaves
+    /// them.
     fn build_positions(&self) -> Option<Vec<RawPos>> {
         let ColOrigin::Content {
             raw_col,

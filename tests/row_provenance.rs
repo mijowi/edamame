@@ -697,6 +697,9 @@ const CORPUS: &[&str] = &[
     "> $$\nx^2\n> $$\n",
     "> $$\n>x^2\n> $$\n",
     "- a\n\n  $$\n x^2\n  $$\n",
+    // Emphasis over a soft break in a quoted list item reflows with its columns, though a later
+    // continuation reads `---` (issue #96).
+    ">1.     a\n>\n>   a *x\n>   y* a\n>2. - a\n>     ---\n\n[r]: /u\n",
 ];
 
 #[test]
