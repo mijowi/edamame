@@ -27,15 +27,21 @@ PREV=0.0.9       # the previous release: the benchmark baseline to compare again
    cargo nextest run               # or: cargo test --no-fail-fast
    ```
 
-4. Check for performance regressions against the previous release: one bench run, saved as this release's baseline for the next one, then compared against `v$PREV` without re-running. Use the same machine as last time, plugged in; full procedure and caveats in [performance.md](performance.md#checking-a-release-for-regressions):
+4. Check for performance regressions against the previous release: bench the `v$PREV` tag from a worktree and the current tree back to back, plugged in, both pinned to the same performance core on a hybrid CPU (`taskset -c 3` on Linux); full procedure and caveats in [performance.md](performance.md#checking-a-release-for-regressions):
 
    ```bash
    F='^(full_pipeline|visual_cache)'
-   cargo bench --bench pipeline -- --noplot "$F" --save-baseline "v$VERSION"
-   cargo bench --bench pipeline -- --noplot "$F" --load-baseline "v$VERSION" --baseline "v$PREV"
+   git diff --quiet "v$PREV" -- benches/ || echo "WARNING: bench harness changed since v$PREV"
+   T="$PWD/target"
+   git worktree add --detach ../edamame-prev "v$PREV"
+   (cd ../edamame-prev && CARGO_TARGET_DIR="$T" cargo bench --bench pipeline --no-run)
+   cargo bench --bench pipeline --no-run
+   (cd ../edamame-prev && CARGO_TARGET_DIR="$T" taskset -c 3 cargo bench --bench pipeline -- --noplot "$F" --save-baseline "v$PREV")
+   taskset -c 3 cargo bench --bench pipeline -- --noplot "$F" --baseline "v$PREV"
+   git worktree remove ../edamame-prev
    ```
 
-   Treat a "regressed" line as something to confirm, not a release blocker by itself. With no `v$PREV` baseline on this machine (a new machine, or after `cargo clean`), rebuild it from the `v$PREV` tag first ([Rebuilding a missing baseline](performance.md#rebuilding-a-missing-baseline)).
+   Treat a "regressed" line as something to confirm, not a release blocker by itself. If the harness-changed line prints, skip the comparison.
 
 5. `dist plan` — confirm it announces `v$VERSION` and the six targets.
 6. Commit all three files together:
