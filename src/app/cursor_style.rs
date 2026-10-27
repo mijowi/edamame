@@ -1,4 +1,4 @@
-//! The single place the (view mode, vim sub-mode) → block-cursor style decision is made.
+//! The single place the (view mode, modal sub-mode) → block-cursor style decision is made.
 //!
 //! The cursor always mirrors the status chip: every branch reads a `status_mode_*` field
 //! (minus `BOLD`), so chip and cursor can never drift.  RAW is signalled only in INSERT;
@@ -8,33 +8,19 @@ use ratatui::style::{Modifier, Style};
 
 use crate::config::Theme;
 use crate::editor::Mode;
-use crate::input::VimSubMode;
+use crate::input::ModeFace;
+use crate::ui::status_bar::mode_face_style;
 
 /// The block-cursor style for the editor, given the current view `mode` and
-/// the active vim sub-mode (`None` for the default handler).
-pub fn editor_cursor_style(theme: &Theme, mode: Mode, vim: Option<VimSubMode>) -> Style {
+/// the active modal session's face (`None` for the default handler).
+pub fn editor_cursor_style(theme: &Theme, mode: Mode, face: Option<ModeFace>) -> Style {
     if mode == Mode::Preview {
         return unbold(theme.status_mode_preview);
     }
-    match vim {
-        None => {
-            if mode == Mode::Raw {
-                unbold(theme.status_mode_raw)
-            } else {
-                unbold(theme.status_mode_rendered)
-            }
-        }
-        Some(VimSubMode::Normal | VimSubMode::OperatorPending) => {
-            unbold(theme.status_mode_vim_normal)
-        }
-        Some(VimSubMode::Insert) => {
-            if mode == Mode::Raw {
-                unbold(theme.status_mode_raw)
-            } else {
-                unbold(theme.status_mode_vim_insert)
-            }
-        }
-        Some(VimSubMode::Visual | VimSubMode::VisualLine) => unbold(theme.status_mode_vim_visual),
+    match face {
+        None | Some(ModeFace::Insert) if mode == Mode::Raw => unbold(theme.status_mode_raw),
+        None => unbold(theme.status_mode_rendered),
+        Some(face) => unbold(mode_face_style(theme, face)),
     }
 }
 
@@ -68,32 +54,19 @@ mod tests {
     }
 
     #[test]
-    fn vim_modes_mirror_their_chip_color() {
+    fn modal_faces_mirror_their_chip_color() {
         let t = theme();
         assert_eq!(
-            editor_cursor_style(&t, Mode::Rendered, Some(VimSubMode::Normal)).bg,
+            editor_cursor_style(&t, Mode::Rendered, Some(ModeFace::Normal)).bg,
             t.status_mode_vim_normal.bg
         );
         assert_eq!(
-            editor_cursor_style(&t, Mode::Rendered, Some(VimSubMode::Insert)).bg,
+            editor_cursor_style(&t, Mode::Rendered, Some(ModeFace::Insert)).bg,
             t.status_mode_vim_insert.bg
         );
         assert_eq!(
-            editor_cursor_style(&t, Mode::Rendered, Some(VimSubMode::Visual)).bg,
+            editor_cursor_style(&t, Mode::Rendered, Some(ModeFace::Select)).bg,
             t.status_mode_vim_visual.bg
-        );
-        assert_eq!(
-            editor_cursor_style(&t, Mode::Rendered, Some(VimSubMode::VisualLine)).bg,
-            t.status_mode_vim_visual.bg
-        );
-    }
-
-    #[test]
-    fn operator_pending_reads_as_normal() {
-        let t = theme();
-        assert_eq!(
-            editor_cursor_style(&t, Mode::Rendered, Some(VimSubMode::OperatorPending)).bg,
-            t.status_mode_vim_normal.bg
         );
     }
 
@@ -101,15 +74,15 @@ mod tests {
     fn raw_view_only_overrides_insert() {
         let t = theme();
         assert_eq!(
-            editor_cursor_style(&t, Mode::Raw, Some(VimSubMode::Insert)).bg,
+            editor_cursor_style(&t, Mode::Raw, Some(ModeFace::Insert)).bg,
             t.status_mode_raw.bg
         );
         assert_eq!(
-            editor_cursor_style(&t, Mode::Raw, Some(VimSubMode::Normal)).bg,
+            editor_cursor_style(&t, Mode::Raw, Some(ModeFace::Normal)).bg,
             t.status_mode_vim_normal.bg
         );
         assert_eq!(
-            editor_cursor_style(&t, Mode::Raw, Some(VimSubMode::Visual)).bg,
+            editor_cursor_style(&t, Mode::Raw, Some(ModeFace::Select)).bg,
             t.status_mode_vim_visual.bg
         );
     }
@@ -117,7 +90,7 @@ mod tests {
     #[test]
     fn cursor_drops_the_chip_bold() {
         let t = theme();
-        let style = editor_cursor_style(&t, Mode::Rendered, Some(VimSubMode::Insert));
+        let style = editor_cursor_style(&t, Mode::Rendered, Some(ModeFace::Insert));
         assert!(!style.add_modifier.contains(Modifier::BOLD));
     }
 }

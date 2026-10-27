@@ -85,7 +85,7 @@ impl App {
                 chords: prompt.chords.clone(),
             };
         }
-        if let Some(cl) = self.vim.as_ref().and_then(|v| v.cmdline.as_ref()) {
+        if let Some(cl) = self.modal.as_ref().and_then(|m| m.cmdline()) {
             return HintContent::CommandLine {
                 prefix: cl.kind.prefix(),
                 text: cl.input.clone(),
@@ -123,12 +123,12 @@ impl App {
             }
         };
         // `visual_line`: a single-line V-LINE selection is charwise-empty, so the hint line
-        // can't infer it from the selection alone.  `vim_enabled` drops the `Esc Preview`
-        // chord, unreachable under vim.
+        // can't infer it from the selection alone.  `modal_enabled` drops the `Esc Preview`
+        // chord, unreachable under a modal handler.
         let ctx = HintCtx {
             nav_available: !self.nav_back.is_empty() || !self.nav_forward.is_empty(),
-            visual_line: self.vim.as_ref().is_some_and(|v| v.is_visual_line()),
-            vim_enabled: self.vim.is_some(),
+            visual_line: self.modal.as_ref().is_some_and(|m| m.is_visual_line()),
+            modal_enabled: self.modal.is_some(),
         };
         HintContent::Chords(hint_line_for(&self.editor, keymap, ctx))
     }
@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     use crate::app::test_utils::make_app;
     use crate::config::Action;
+    use crate::input::ModalInput;
     use crate::ui::HintContent;
 
     #[test]
@@ -312,11 +313,11 @@ mod tests {
             anchor: 0,
             active: 0,
         });
-        app.vim = Some(VimState {
+        app.modal = Some(ModalInput::Vim(VimState {
             sub_mode: VimSubMode::VisualLine,
             visual_anchor: Some(0),
             ..Default::default()
-        });
+        }));
         match app.hint_content() {
             HintContent::Chords(set) => {
                 let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
@@ -328,7 +329,7 @@ mod tests {
             }
             other => panic!("expected Chords, got {other:?}"),
         }
-        app.vim = Some(VimState::default());
+        app.modal = Some(ModalInput::Vim(VimState::default()));
         app.editor.selection = None;
         match app.hint_content() {
             HintContent::Chords(set) => {

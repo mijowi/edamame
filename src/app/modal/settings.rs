@@ -12,7 +12,6 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
     LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_MATH_PREVIEW, LABEL_REFLOW, LABEL_SCROLL_SPEED,
@@ -82,8 +81,10 @@ pub(crate) fn apply_live_update(label: &str, app: &mut App) {
             app.editor.visual_line_nav = app.config.editor.visual_line_nav;
         }
         LABEL_VIM_MODE => {
-            // Rebuild the live VimState so vim editing turns on/off without a restart.
-            app.set_vim_enabled(app.config.modal.handler == VIM_HANDLER);
+            // Rebuild the live session so modal editing turns on/off without a restart.  The
+            // clone only frees the borrow on `app.config`; `set_modal_handler` writes it back.
+            let handler = app.config.modal.handler.clone();
+            app.set_modal_handler(&handler);
         }
         // These rows emit `FieldChanged` only on a real transition, never for a no-op cycle.
         LABEL_SHOW_IMAGES => app.apply_images_setting_change(),
@@ -260,15 +261,15 @@ mod tests {
     fn live_update_toggles_vim_state_on_and_off() {
         let mut app = make_app();
         // make_app starts with the default handler → no vim state.
-        assert!(app.vim.is_none());
+        assert!(app.vim().is_none());
 
         app.config.modal.handler = "vim".into();
         apply_live_update(LABEL_VIM_MODE, &mut app);
-        assert!(app.vim.is_some(), "vim mode on builds VimState");
+        assert!(app.vim().is_some(), "vim mode on builds VimState");
 
         app.config.modal.handler = "default".into();
         apply_live_update(LABEL_VIM_MODE, &mut app);
-        assert!(app.vim.is_none(), "vim mode off clears VimState");
+        assert!(app.vim().is_none(), "vim mode off clears VimState");
     }
 
     #[test]

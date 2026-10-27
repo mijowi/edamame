@@ -9,6 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::Theme;
 use crate::editor::Mode;
+use crate::input::{ModeBadge, ModeFace};
 
 /// Data the status bar needs for rendering.
 pub struct StatusBarState<'a> {
@@ -42,9 +43,9 @@ pub struct StatusBarState<'a> {
     pub section_path: Vec<String>,
     /// `(resolved, total)` hunk counts in diff mode, rendered beside the mode badge.
     pub diff_progress: Option<(usize, usize)>,
-    /// Vim sub-mode badge (`NORMAL` / `INSERT` / …); outranks the rendering-mode badge except
+    /// Modal sub-mode badge (`NORMAL` / `INSERT` / …); outranks the rendering-mode badge except
     /// in [`Mode::Diff`] — see `render`.
-    pub vim_mode_label: Option<&'a str>,
+    pub mode_badge: Option<ModeBadge>,
 }
 
 /// A single-row status bar widget.
@@ -87,13 +88,13 @@ impl<'a> Widget for StatusBar<'a> {
             None => st,
         };
 
-        // The vim sub-mode badge wins over the mode badge, except in `Mode::Diff`: the
-        // diff-review keymap owns every key (`vim_deferred` in `App::dispatch_single_key`),
+        // The modal sub-mode badge wins over the mode badge, except in `Mode::Diff`: the
+        // diff-review keymap owns every key (`modal_deferred` in `App::dispatch_single_key`),
         // so a `NORMAL` badge would advertise a handler that isn't live. Resolved here so a
         // `StatusBarState` built elsewhere can't bypass it.
-        let vim_label = s.vim_mode_label.filter(|_| !matches!(s.mode, Mode::Diff));
-        let (mode_text, mode_style) = match vim_label {
-            Some(label) => (format!(" {} ", label), vim_badge_style(theme, label)),
+        let badge = s.mode_badge.filter(|_| !matches!(s.mode, Mode::Diff));
+        let (mode_text, mode_style) = match badge {
+            Some(b) => (format!(" {} ", b.label), mode_face_style(theme, b.face)),
             None => (format!(" {} ", s.mode), theme.status_mode_style(s.mode)),
         };
         let mode_width = UnicodeWidthStr::width(mode_text.as_str());
@@ -192,13 +193,12 @@ impl<'a> Widget for StatusBar<'a> {
     }
 }
 
-/// Vim sub-mode badge style; the editor cursor mirrors the same fields so chip and cursor
-/// agree.
-fn vim_badge_style(theme: &Theme, label: &str) -> Style {
-    match label {
-        "INSERT" => theme.status_mode_vim_insert,
-        "VISUAL" | "V-LINE" => theme.status_mode_vim_visual,
-        _ => theme.status_mode_vim_normal,
+/// Modal badge style; the editor cursor mirrors the same fields so chip and cursor agree.
+pub(crate) fn mode_face_style(theme: &Theme, face: ModeFace) -> Style {
+    match face {
+        ModeFace::Normal => theme.status_mode_vim_normal,
+        ModeFace::Insert => theme.status_mode_vim_insert,
+        ModeFace::Select => theme.status_mode_vim_visual,
     }
 }
 
@@ -271,7 +271,7 @@ mod tests {
             cursor_col: None,
             section_path: Vec::new(),
             diff_progress: None,
-            vim_mode_label: None,
+            mode_badge: None,
         }
     }
 
@@ -330,7 +330,10 @@ mod tests {
         let output = render_bar(
             StatusBarState {
                 diff_progress: Some((3, 7)),
-                vim_mode_label: Some("NORMAL"),
+                mode_badge: Some(ModeBadge {
+                    label: "NORMAL",
+                    face: ModeFace::Normal,
+                }),
                 ..base_state(Mode::Diff, "f.md")
             },
             60,
@@ -353,7 +356,10 @@ mod tests {
     fn vim_badge_still_wins_outside_diff_mode() {
         let output = render_bar(
             StatusBarState {
-                vim_mode_label: Some("NORMAL"),
+                mode_badge: Some(ModeBadge {
+                    label: "NORMAL",
+                    face: ModeFace::Normal,
+                }),
                 ..base_state(Mode::Rendered, "f.md")
             },
             60,
@@ -369,24 +375,15 @@ mod tests {
     }
 
     #[test]
-    fn vim_badge_uses_per_sub_mode_colors() {
+    fn modal_badge_uses_per_face_colors() {
         let t = Theme::default();
-        assert_eq!(
-            super::vim_badge_style(&t, "NORMAL"),
-            t.status_mode_vim_normal
-        );
-        assert_eq!(
-            super::vim_badge_style(&t, "INSERT"),
-            t.status_mode_vim_insert
-        );
-        assert_eq!(
-            super::vim_badge_style(&t, "VISUAL"),
-            t.status_mode_vim_visual
-        );
-        assert_eq!(
-            super::vim_badge_style(&t, "V-LINE"),
-            t.status_mode_vim_visual
-        );
+        for (face, style) in [
+            (ModeFace::Normal, t.status_mode_vim_normal),
+            (ModeFace::Insert, t.status_mode_vim_insert),
+            (ModeFace::Select, t.status_mode_vim_visual),
+        ] {
+            assert_eq!(super::mode_face_style(&t, face), style, "{face:?}");
+        }
     }
 
     #[test]

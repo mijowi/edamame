@@ -15,7 +15,7 @@ use crate::config::sections::{DEFAULT_HANDLER, VIM_HANDLER};
 use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme};
 use crate::editor::{edit_ops, EditorState};
 use crate::input::mode_handler::default::DefaultHandler;
-use crate::input::ModeHandler;
+use crate::input::{ModalInput, ModeHandler};
 use crate::terminal::ColorDepth;
 use crate::ui::{settings_overlay, ModalKind};
 
@@ -805,11 +805,11 @@ impl App {
     /// Open the fuzzy-searchable command palette.
     pub fn open_command_palette(&mut self) {
         let keymap = self.ensure_keymap_clone();
-        let vim_enabled = self.vim.is_some();
+        let modal_enabled = self.modal.is_some();
         self.modal_stack
             .push(Box::new(modal::CommandPaletteModal::new(
                 &keymap,
-                vim_enabled,
+                modal_enabled,
             )));
     }
 
@@ -884,7 +884,7 @@ impl App {
         // operator paths also use.  `selection` itself is never snapped: Copy restores the stored
         // span so a continued Visual session keeps its anchor.
         if matches!(action, Action::Copy | Action::Cut | Action::Paste) {
-            if let Some(kind) = self.vim.as_ref().and_then(|v| v.visual_kind()) {
+            if let Some(kind) = self.modal.as_ref().and_then(ModalInput::visual_kind) {
                 self.dispatch_visual_clipboard(action, kind, doc_height, doc_width);
                 return;
             }
@@ -975,9 +975,8 @@ impl App {
         }
         if matches!(action, Action::Cut | Action::Paste) {
             // The span is gone, so drop back to Normal.
-            if let Some(vim) = self.vim.as_mut() {
-                vim.sub_mode = crate::input::VimSubMode::Normal;
-                vim.visual_anchor = None;
+            if let Some(modal) = self.modal.as_mut() {
+                modal.leave_select();
             }
             self.editor.selection = None;
         } else {
@@ -1268,15 +1267,13 @@ impl App {
     /// Enter diff-review mode against the on-disk contents the `DirtyConflictModal` was carrying,
     /// pushing the intro modal first unless the user opted out.
     pub(crate) fn enter_diff_mode(&mut self, on_disk: String) {
-        // A half-typed vim command line can't survive into diff review: the prompt could never
+        // A half-typed modal command line can't survive into diff review: the prompt could never
         // be completed there, and a stale `cmdline` masks the diff hint row.  End its live
         // sessions first, as Esc would — a dangling incsearch session would be reused by the next
         // `/`, and a live `:s` preview must revert its transient edit before the `old` snapshot
         // below, or the diff is taken against preview text and its gates hold forever.
-        if let Some(vim) = self.vim.as_mut() {
-            crate::editor::vim_ops::end_incsearch(&mut self.editor, &mut vim.incsearch);
-            vim.cmdline = None;
-            vim.reset_pending();
+        if let Some(modal) = self.modal.as_mut() {
+            modal.reset_for_diff_entry(&mut self.editor);
         }
         crate::editor::vim_ops::clear_substitute_preview(
             &mut self.editor,
@@ -1497,12 +1494,12 @@ impl App {
     pub fn open_keybinds_overlay(&mut self) {
         let keymap = self.ensure_keymap_clone();
         let overrides = self.keybindings.clone();
-        let vim_enabled = self.vim.is_some();
+        let modal_enabled = self.modal.is_some();
         self.modal_stack
             .push(Box::new(modal::KeybindsOverlayModal::new(
                 &keymap,
                 &overrides,
-                vim_enabled,
+                modal_enabled,
             )));
     }
 
@@ -1723,6 +1720,7 @@ mod tests {
         use crate::config::Action;
         use crate::document::Selection;
         use crate::input::vim::state::{VimState, VimSubMode};
+        use crate::input::ModalInput;
         let mut app = make_app();
         app.editor.buffer.insert(0, "alpha\nbeta\n");
         app.editor.mode = crate::editor::Mode::Rendered;
@@ -1732,11 +1730,11 @@ mod tests {
             anchor: 0,
             active: 0,
         });
-        app.vim = Some(VimState {
+        app.modal = Some(ModalInput::Vim(VimState {
             sub_mode: VimSubMode::VisualLine,
             visual_anchor: Some(0),
             ..Default::default()
-        });
+        }));
         app.dispatch_action(Action::Copy, 24, 80);
         let text = app.transient.as_ref().map(|t| t.text.clone());
         assert_eq!(
@@ -1814,16 +1812,17 @@ mod tests {
     #[test]
     fn entering_diff_mode_clears_an_open_vim_command_line() {
         use crate::input::vim::state::{CmdLineKind, CmdLineState, VimState};
+        use crate::input::ModalInput;
         use crate::ui::HintContent;
         let mut app = make_app();
         app.editor.buffer.insert(0, "alpha\nbeta\n");
-        app.vim = Some(VimState {
+        app.modal = Some(ModalInput::Vim(VimState {
             cmdline: Some(CmdLineState::new(CmdLineKind::Ex)),
             count: Some(3),
             ..Default::default()
-        });
+        }));
         app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
-        let vim = app.vim.as_ref().unwrap();
+        let vim = app.vim().unwrap();
         assert!(vim.cmdline.is_none(), "command line must be cleared");
         assert_eq!(vim.count, None, "pending parse must be reset");
         assert!(matches!(app.hint_content(), HintContent::Chords(_)));
@@ -1833,6 +1832,7 @@ mod tests {
     fn entering_diff_mode_ends_a_live_incsearch_session() {
         use crate::editor::vim_ops::update_incsearch;
         use crate::input::vim::state::{CmdLineKind, CmdLineState, VimState};
+        use crate::input::ModalInput;
         let mut app = make_app();
         app.editor.buffer.insert(0, "foo bar\nfoo\n");
         app.editor.refresh_parsed();
@@ -1843,9 +1843,9 @@ mod tests {
         update_incsearch(&mut app.editor, &mut vim.incsearch, "foo", true, 24, 80);
         assert!(vim.incsearch.is_some(), "live session while typing");
         assert_eq!(app.editor.cursor.offset, 8, "parked on the live focus");
-        app.vim = Some(vim);
+        app.modal = Some(ModalInput::Vim(vim));
         app.enter_diff_mode("foo bar\nGAMMA\n".to_owned());
-        let vim = app.vim.as_ref().unwrap();
+        let vim = app.vim().unwrap();
         assert!(
             vim.incsearch.is_none(),
             "session must not dangle on VimState — the next `/` would reuse its stale saved view",
@@ -1859,13 +1859,14 @@ mod tests {
     fn entering_diff_mode_reverts_a_live_substitute_preview() {
         use crate::editor::vim_ops::update_substitute_preview;
         use crate::input::vim::state::{CmdLineKind, CmdLineState, VimState};
+        use crate::input::ModalInput;
         let mut app = make_app();
         app.editor.buffer.insert(0, "alpha\nbeta\n");
         app.editor.refresh_parsed();
-        app.vim = Some(VimState {
+        app.modal = Some(ModalInput::Vim(VimState {
             cmdline: Some(CmdLineState::new(CmdLineKind::Ex)),
             ..Default::default()
-        });
+        }));
         update_substitute_preview(&mut app.editor, "%s/alpha/OMEGA/", None, 24, 80);
         assert!(app.editor.substitute_preview.is_some(), "preview active");
         assert!(app.editor.buffer.contents().contains("OMEGA"));

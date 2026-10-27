@@ -4,6 +4,7 @@ use ratatui::{backend::TestBackend, Terminal};
 use edamame::config::Theme;
 use edamame::editor::vim_ops::VisualKind;
 use edamame::editor::Mode;
+use edamame::input::{ModeBadge, ModeFace};
 use edamame::ui::status_bar::{StatusBar, StatusBarState};
 
 fn render_status_bar(
@@ -32,7 +33,7 @@ fn render_status_bar(
                     cursor_col: None,
                     section_path: Vec::new(),
                     diff_progress: None,
-                    vim_mode_label: None,
+                    mode_badge: None,
                 },
                 theme,
             };
@@ -107,7 +108,7 @@ fn snapshot_status_bar_modified() {
 /// Render the status bar with a vim sub-mode badge (`NORMAL` / `INSERT` /
 /// `VISUAL` / `V-LINE`), which takes precedence over the rendering-mode
 /// badge.  The view mode stays `Rendered` (vim never rests in Preview).
-fn render_status_bar_vim(label: &str, width: u16) -> String {
+fn render_status_bar_vim(label: &'static str, face: ModeFace, width: u16) -> String {
     let theme = Box::leak(Box::new(Theme::default()));
     let backend = TestBackend::new(width, 1);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -126,7 +127,7 @@ fn render_status_bar_vim(label: &str, width: u16) -> String {
                     cursor_col: Some(1),
                     section_path: Vec::new(),
                     diff_progress: None,
-                    vim_mode_label: Some(label),
+                    mode_badge: Some(ModeBadge { label, face }),
                 },
                 theme,
             };
@@ -144,7 +145,7 @@ fn render_status_bar_vim(label: &str, width: u16) -> String {
 
 #[test]
 fn status_bar_vim_normal_badge_wins_over_view_mode() {
-    let out = render_status_bar_vim("NORMAL", 60);
+    let out = render_status_bar_vim("NORMAL", ModeFace::Normal, 60);
     assert!(out.contains("NORMAL"), "got: {out:?}");
     // The vim badge replaces the rendering-mode `EDIT` badge.
     assert!(!out.contains("EDIT"), "got: {out:?}");
@@ -152,19 +153,19 @@ fn status_bar_vim_normal_badge_wins_over_view_mode() {
 
 #[test]
 fn snapshot_status_bar_vim_normal() {
-    let out = render_status_bar_vim("NORMAL", 80);
+    let out = render_status_bar_vim("NORMAL", ModeFace::Normal, 80);
     insta::assert_snapshot!(out);
 }
 
 #[test]
 fn snapshot_status_bar_vim_insert() {
-    let out = render_status_bar_vim("INSERT", 80);
+    let out = render_status_bar_vim("INSERT", ModeFace::Insert, 80);
     insta::assert_snapshot!(out);
 }
 
 #[test]
 fn snapshot_status_bar_vim_visual() {
-    let out = render_status_bar_vim("VISUAL", 80);
+    let out = render_status_bar_vim("VISUAL", ModeFace::Select, 80);
     insta::assert_snapshot!(out);
 }
 
@@ -198,7 +199,7 @@ fn yank_flash_paints_the_yanked_span() {
                 show_line_numbers: false,
                 is_scrolling: false,
                 hint: HintContent::Chords(HintSet::default()),
-                vim_mode_label: None,
+                mode_badge: None,
                 visual_kind: None,
                 editor_cursor_style: theme.status_mode_rendered,
                 max_width_enabled: false,
@@ -2132,7 +2133,7 @@ fn status_bar_shows_cursor_position() {
                     cursor_col: Some(12),
                     section_path: Vec::new(),
                     diff_progress: None,
-                    vim_mode_label: None,
+                    mode_badge: None,
                 },
                 theme,
             };
@@ -3300,7 +3301,7 @@ fn yank_flash_paints_a_revealed_diagrams_source_line() {
                     show_line_numbers: false,
                     is_scrolling: false,
                     hint: HintContent::Chords(HintSet::default()),
-                    vim_mode_label: None,
+                    mode_badge: None,
                     visual_kind: None,
                     editor_cursor_style: theme.status_mode_rendered,
                     max_width_enabled: false,
@@ -3441,7 +3442,7 @@ fn yank_flash_paints_revealed_rows_at_their_raw_columns() {
                     show_line_numbers: false,
                     is_scrolling: false,
                     hint: HintContent::Chords(HintSet::default()),
-                    vim_mode_label: None,
+                    mode_badge: None,
                     visual_kind: None,
                     editor_cursor_style: theme.status_mode_rendered,
                     max_width_enabled: false,
@@ -3806,7 +3807,7 @@ fn gutter_numbers_source_lines_in_rendered_mode() {
                 show_line_numbers: true,
                 is_scrolling: false,
                 hint: HintContent::Chords(HintSet::default()),
-                vim_mode_label: None,
+                mode_badge: None,
                 visual_kind: None,
                 editor_cursor_style: theme.status_mode_rendered,
                 max_width_enabled: false,

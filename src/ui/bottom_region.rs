@@ -78,9 +78,9 @@ pub struct HintCtx {
     /// True in vim's VisualLine sub-mode.  A single-line V-LINE selection is charwise-empty
     /// (`anchor == active`) yet paints the whole line, so `selection_size()` can't detect it.
     pub visual_line: bool,
-    /// True while the vim handler is active.  Vim consumes `Esc` in every sub-mode and never rests
+    /// True while a modal handler is active.  It consumes `Esc` in every sub-mode and never rests
     /// in Preview, so the `ExitToPreview` chord is dropped from the baseline row.
-    pub vim_enabled: bool,
+    pub modal_enabled: bool,
 }
 
 /// Pick the default hint set for `state`, adapting to the cursor's Markdown context.  Pure, so it
@@ -197,7 +197,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 _ => "Raw",
             };
             let redo_entry = state.history.can_redo().then_some((Action::Redo, "Redo"));
-            let preview_entry = (!ctx.vim_enabled).then_some((Action::ExitToPreview, "Preview"));
+            let preview_entry = (!ctx.modal_enabled).then_some((Action::ExitToPreview, "Preview"));
             let baseline = [
                 Some((Action::ShowCommandPalette, "Menu")),
                 Some((Action::GoToSection, "Go to")),
@@ -1265,7 +1265,7 @@ mod tests {
                 &st,
                 &keymap(),
                 HintCtx {
-                    vim_enabled: true,
+                    modal_enabled: true,
                     ..Default::default()
                 },
             );
@@ -1428,7 +1428,7 @@ mod tests {
                         cursor_col: Some(1),
                         section_path: Vec::new(),
                         diff_progress: None,
-                        vim_mode_label: None,
+                        mode_badge: None,
                     },
                     hint,
                     theme: t,

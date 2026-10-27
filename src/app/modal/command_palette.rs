@@ -23,10 +23,10 @@ pub struct CommandPaletteModal {
 }
 
 impl CommandPaletteModal {
-    /// `vim_enabled` hides `Exit to preview`; see [`build_palette_list`].
-    pub fn new(keymap: &KeyMap, vim_enabled: bool) -> Self {
+    /// `modal_enabled` hides `Exit to preview`; see [`build_palette_list`].
+    pub fn new(keymap: &KeyMap, modal_enabled: bool) -> Self {
         Self {
-            list: build_palette_list(keymap, vim_enabled),
+            list: build_palette_list(keymap, modal_enabled),
             esc_button_rect: None,
         }
     }

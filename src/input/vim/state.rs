@@ -1,4 +1,4 @@
-//! Vim modal state. `VimState` lives on `App` as `Option<VimState>` (`Some` iff
+//! Vim modal state. `VimState` lives on `App` inside its `Option<ModalInput>` session (`Some` iff
 //! `config.modal.handler == "vim"`) and holds the active sub-mode plus the accumulating
 //! multi-key parse. The sub-mode is the *interaction* axis, orthogonal to
 //! `EditorState::mode` (the *rendering* axis).

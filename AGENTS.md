@@ -222,6 +222,8 @@ src/
                     #   encode_png / default_destination / resolve_destination / write)
 
   input.rs / input/
+    modal_core/session.rs  # ModalInput (the live modal session, one variant per handler),
+                    #   ModeFace / ModeBadge; the App reads a session only through it
     mode_handler/default.rs  # DefaultHandler; preview_safe_action() allowlist
     mode_handler/diff_keys.rs # hard-bound diff key table — mirrors search_keys.rs
     mouse.rs        # MouseDispatcher: click-count + drag state machine

@@ -98,8 +98,8 @@ pub struct KeybindsState {
 
 impl KeybindsState {
     /// Open with a draft cloned from the live keymap and overrides.
-    pub fn open(keymap: &KeyMap, overrides: &KeyBindingOverrides, vim_enabled: bool) -> Self {
-        let rows = build_rows(vim_enabled);
+    pub fn open(keymap: &KeyMap, overrides: &KeyBindingOverrides, modal_enabled: bool) -> Self {
+        let rows = build_rows(modal_enabled);
         let focus_offsets = compute_focus_offsets(&rows);
         let mut state = Self {
             focused: 0,
@@ -623,14 +623,14 @@ fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
     }
 }
 
-/// Build the row list from `CATEGORIES`.  With vim enabled the `ExitToPreview` row is dropped:
-/// NORMAL replaces Preview as the resting mode, so the action is a no-op.
-fn build_rows(vim_enabled: bool) -> Vec<Row> {
+/// Build the row list from `CATEGORIES`.  With a modal handler enabled the `ExitToPreview` row is
+/// dropped: NORMAL replaces Preview as the resting mode, so the action is a no-op.
+fn build_rows(modal_enabled: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     for (title, bindings) in CATEGORIES {
         rows.push(Row::Header(title));
         for (action, label) in *bindings {
-            if vim_enabled && *action == Action::ExitToPreview {
+            if modal_enabled && *action == Action::ExitToPreview {
                 continue;
             }
             rows.push(Row::Binding {

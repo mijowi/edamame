@@ -35,11 +35,11 @@ const NO_MATCHES_WIDTH: u16 = 12;
 /// Build the palette's list component from `keymap`.
 ///
 /// A single `Export…` entry covers every target; the format is chosen inside the export modal.
-/// `vim_enabled` drops `Exit to preview`: vim never rests in Preview, so the action would flip
-/// the editor there only for the next keystroke to leave again.  The keybinds overlay and the
-/// hint line hide it for the same reason.
-pub fn build_palette_list(keymap: &KeyMap, vim_enabled: bool) -> SearchableList<PaletteEntry> {
-    SearchableList::new(build_entries(keymap, vim_enabled), |e: &PaletteEntry| {
+/// `modal_enabled` drops `Exit to preview`: a modal handler never rests in Preview, so the action
+/// would flip the editor there only for the next keystroke to leave again.  The keybinds overlay
+/// and the hint line hide it for the same reason.
+pub fn build_palette_list(keymap: &KeyMap, modal_enabled: bool) -> SearchableList<PaletteEntry> {
+    SearchableList::new(build_entries(keymap, modal_enabled), |e: &PaletteEntry| {
         e.label.as_str()
     })
     .with_sections(palette_sections)
@@ -236,11 +236,11 @@ fn section_of(action: &Action) -> &'static str {
     }
 }
 
-/// The full entry list, sorted by label.  See [`build_palette_list`] for the `vim_enabled` gate.
-fn build_entries(keymap: &KeyMap, vim_enabled: bool) -> Vec<PaletteEntry> {
+/// The full entry list, sorted by label.  See [`build_palette_list`] for the `modal_enabled` gate.
+fn build_entries(keymap: &KeyMap, modal_enabled: bool) -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = ALL_ACTIONS
         .iter()
-        .filter(|a| !(vim_enabled && **a == Action::ExitToPreview))
+        .filter(|a| !(modal_enabled && **a == Action::ExitToPreview))
         .filter_map(|a| {
             let label = label_for(a)?;
             let chord = keymap.first_key_for(a);

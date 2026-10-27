@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn hash_from_mid_word_jumps_to_the_previous_occurrence() {
-        use crate::input::{vim_feed, VimOutcome};
+        use crate::input::VimOutcome;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         // Regression: cursor mid-word in the third "foo" (0, 8, 16) used to jump to 16, not 8.
         let mut app = app_with_buffer("foo bar foo baz foo\n", 0);
@@ -693,15 +693,12 @@ mod tests {
         app.editor.cursor.offset = 17;
         app.editor.update_cursor_block();
 
-        let mut vim = app.vim.take().unwrap();
-        let out = vim_feed(
-            &mut vim,
+        let out = app.modal.as_mut().expect("vim active").feed(
             &mut app.editor,
             KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE),
             24,
             80,
         );
-        app.vim = Some(vim);
         let VimOutcome::EnterSearch { forward, query } = out else {
             panic!("# should emit EnterSearch, got {out:?}");
         };
