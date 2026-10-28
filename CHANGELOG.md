@@ -22,6 +22,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Vim: a counted paste too large to build (over 64 MiB) is refused instead of exhausting memory.
 - Vim: a paste that spans lines renumbers the ordered list it lands in.
 - One undo now reverts an edit together with the list renumbering it caused.
+- Links open on more Linux desktops when `xdg-open` fails.
 
 ### Security
 
@@ -30,14 +31,7 @@ Updated dependencies to include these fixes:
 - Fixed security flaws in the math renderer that a crafted formula in a document could trigger (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
 - Fixed a flaw in HTML export's sanitizer that could let crafted raw HTML in a document through into the exported file.
 - Fixed a TLS flaw in the connection used for remote images and the update check.
-
-### Security
-
-Updated dependencies to include these fixes:
-
-- Fixed security flaws in the math renderer that a crafted formula in a document could trigger (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
-- Fixed a flaw in HTML export's sanitizer that could let crafted raw HTML in a document through into the exported file.
-- Fixed a TLS flaw in the connection used for remote images and the update check.
+- Fixed flaws in the Markdown parser that let a crafted document make parsing very slow, freezing the editor.
 
 ## [0.1.6] - 2026-10-14
 
