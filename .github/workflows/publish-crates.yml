@@ -1,0 +1,43 @@
+# Publishes the crate to crates.io.  A `dist` custom publish job: listed in
+# `publish-jobs` in dist-workspace.toml, called from the generated
+# release.yml once the GitHub Release exists — never triggered on its own.
+#
+# Authenticates through crates.io Trusted Publishing (GitHub OIDC), so no
+# registry token is stored anywhere.  crates.io matches the OIDC token's
+# `workflow_ref` claim, which names the *calling* workflow, so the trusted
+# publisher registered on crates.io is `release.yml`, not this file.  The
+# `id-token: write` this job needs is granted through
+# `github-custom-job-permissions` in dist-workspace.toml.
+#
+# The `crates-io` environment is the second half of that match: crates.io
+# also requires the token to come from a job in this environment, and the
+# repository restricts the environment to `v*` tags, so no branch or other
+# workflow can mint a publish token.  See docs/dev/releasing.md.
+
+name: Publish to crates.io
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Ignored by Dependabot (see .github/dependabot.yml): bump by hand,
+      # together with ci.yml and audit.yml.
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

@@ -303,6 +303,9 @@ tests/              # diagrams, search, editing, footnotes, list_edit, mouse, pa
                     #   snapshots/ and fixtures/; support/markdown_gen.rs (shared
                     #   proptest document generator)
 
+scripts/release.sh  # the release procedure as resumable stages (prepare / bench / push /
+                    #   release / verify); see docs/dev/releasing.md
+
 config/             # config.toml (annotated reference, written on first run),
                     #   keybindings.toml, export/default.css
 

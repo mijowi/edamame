@@ -23,7 +23,7 @@ categories = ["command-line-utilities", "text-editors"]
 # excluding them makes `cargo publish` warn once per ignored target.
 # `CLAUDE.md` is a symlink to `AGENTS.md`, and cargo dereferences symlinks
 # when packaging, so leaving it in would publish the same file twice.
-exclude = ["docs/dev/plans/", ".github/", "CLAUDE.md"]
+exclude = ["docs/dev/plans/", ".github/", "scripts/", "CLAUDE.md"]
 
 [[bin]]
 name = "edamame"

@@ -66,9 +66,10 @@ updates:
       # docs/dev/releasing.md.
       - dependency-name: actions/upload-artifact
       - dependency-name: actions/download-artifact
-      # Also used by ci.yml and audit.yml, so this one costs something: it
-      # has to be bumped BY HAND in those two files.  Worth it — checkout is
-      # among the most stable actions in existence, and the alternative is
+      # Also used by ci.yml, audit.yml and publish-crates.yml, so this one
+      # costs something: it has to be bumped BY HAND in those three files.
+      # Worth it — checkout is among the most stable actions in existence,
+      # and the alternative is
       # hand-reverting one hunk of every actions PR forever.  Note that an
       # ignore entry suppresses Dependabot's security PRs too, so if
       # actions/checkout ever carries an advisory it will not be raised here.
