@@ -8,6 +8,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-28
+
 ### Added
 
 - Releases now include a prebuilt Windows binary (`x86_64`), as a `.zip` archive. Windows is still a best-effort platform.
@@ -174,7 +176,8 @@ Updated dependencies to include these fixes:
 
 First public release.
 
-[Unreleased]: https://github.com/mijowi/edamame/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/mijowi/edamame/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/mijowi/edamame/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/mijowi/edamame/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/mijowi/edamame/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/mijowi/edamame/compare/v0.1.3...v0.1.4
