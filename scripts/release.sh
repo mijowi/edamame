@@ -312,7 +312,7 @@ cmd_bench() {
     # under `set -u`, and `pin` is empty exactly where taskset is missing.
     (cd "$worktree" && CARGO_TARGET_DIR="$target_dir" ${pin[@]+"${pin[@]}"} \
         cargo bench --bench pipeline -- --noplot "$BENCH_FILTER" --save-baseline "v$prev")
-    step "Benching $version against v$prev on core $core"
+    step "Benching v$version against v$prev on core $core"
     ${pin[@]+"${pin[@]}"} cargo bench --bench pipeline -- --noplot "$BENCH_FILTER" --baseline "v$prev"
 
     echo
