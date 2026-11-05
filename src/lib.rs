@@ -1,3 +1,10 @@
+//! Internal library target of the `edamame` Markdown editor.
+//!
+//! This library exists only so the `edamame` binary and the project's tests and benches can
+//! share one module tree.  It is not a supported API and is not intended for external use: any
+//! item may change or disappear in any release.  edamame's version numbers describe the
+//! application, not this library.
+
 // Library entry point.  `main.rs` consumes this crate rather than re-declaring the module
 // tree: a second `mod app;` there would compile a private duplicate of every module, hiding
 // its unit tests from `cargo test --lib`.  Every module the binary needs is declared here.

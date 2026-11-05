@@ -4,7 +4,7 @@ Guidance for human and agentic contributors working in this repository. `CLAUDE.
 
 ## Project Overview
 
-`edamame` is a Rust TUI application for viewing and editing Markdown files in the terminal: `ratatui` for rendering, `pulldown-cmark` for parsing, `ropey` for rope-based text editing. The crate ships as both a binary (`edamame`) and a library (so integration tests can import it).
+`edamame` is a Rust TUI application for viewing and editing Markdown files in the terminal: `ratatui` for rendering, `pulldown-cmark` for parsing, `ropey` for rope-based text editing. The crate ships as both a binary (`edamame`) and a library. The library exists only for the binary, tests and internal development: it is not a supported API, has no stability guarantee, and `pub` in it does not mean public to anyone outside this repository. Version numbers describe the application, so a change to the library alone is never a breaking change.
 
 > **Security:** edamame opens untrusted documents, so any change to a content-handling path (image/SVG decode, remote fetch, Mermaid, link opening, HTML export, subprocess spawning) must preserve the hardening in [`docs/dev/security-invariants.md`](docs/dev/security-invariants.md). Read it before touching those areas; [`docs/security.md`](docs/security.md) is the user-facing summary.
 
@@ -313,7 +313,7 @@ docs/               # USER-facing — shipped, kept accurate: getting-started, k
                     #   terminal-compatibility, configuration, editing, themes,
                     #   vim-mode, security
   dev/              # CONTRIBUTOR-facing: performance.md, security-invariants.md,
-                    #   theming.md, why.md, windows.md, plans/ (historical), and one per-subsystem
+                    #   theming.md, versioning.md, why.md, windows.md, plans/ (historical), and one per-subsystem
                     #   deep-dive per subject (see "Architecture deep-dives" below)
 ```
 
@@ -380,6 +380,7 @@ Longer-standing contributor docs live alongside them:
 - [Performance](docs/dev/performance.md) — the frame budget, per-stage costs, and remaining ceilings
 - [Security invariants](docs/dev/security-invariants.md) — the checklist for content-handling paths
 - [Theming](docs/dev/theming.md) — the visual language: two-tier palette model, cursor color, focus vs. selection, control states
+- [Versioning](docs/dev/versioning.md) — choosing a version number, what to keep working, renames, experimental features, and MSRV raises
 - [Why](docs/dev/why.md) — design rationale
 - [Windows](docs/dev/windows.md) — the best-effort stance: what CI verifies, what nobody has run, and the path-literal rules for tests
 

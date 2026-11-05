@@ -165,6 +165,8 @@ Questions, ideas and anything you're not sure is a bug belong in [Discussions](h
 
 [AGENTS.md](https://github.com/mijowi/edamame/blob/main/AGENTS.md) is the architecture guide — the module layout, the invariants that are easy to break, and the code style. `docs/dev/` holds the design specs.
 
+The `edamame` crate also contains a library target, but it exists only for the binary, tests and internal development. It is not a supported API and can change in any release.
+
 Please run the following *before* opening a PR:
 
 ```bash
