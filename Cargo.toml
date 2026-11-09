@@ -98,7 +98,7 @@ unicode-properties = { version = "0.1", default-features = false, features = ["g
 # `regex` so the vim→regex translator can reach backreferences and
 # lookaround, which the linear-time engine cannot express; it delegates to
 # `regex` for the simple fast path and backtracks only for a fancy feature.
-fancy-regex = "0.19"
+fancy-regex = "0.20"
 
 # Syntax highlighting for fenced code blocks — parsing only.  The feature
 # list is load-bearing, like `image`'s below:
