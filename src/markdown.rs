@@ -2,6 +2,7 @@ pub mod ast;
 pub mod cell_overlay;
 pub mod destination;
 pub mod highlight;
+pub mod html_comment;
 pub mod inline_col_map;
 pub mod parse_offsets;
 pub mod parser;

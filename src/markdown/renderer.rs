@@ -17,6 +17,7 @@ use crate::config::Theme;
 use self::util::{link_fallback, link_style_for, nbsps, spaces};
 use super::ast::{inlines_to_plain, to_u32, Block, Inline, LineSpan, MetadataKind, SrcLines};
 use super::highlight::{self, Token};
+use super::html_comment;
 use super::render_cache::{is_cache_worthy, BlockMap, CachedRows, RenderCache, RenderSettings};
 use super::row_origin::{ContentKind, RowOrigin, RowSink};
 use super::segment_break;
@@ -372,15 +373,7 @@ impl<'t> Renderer<'t> {
             } => {
                 self.render_table(*col_count, headers, rows, user_widths.as_deref(), src, out);
             }
-            Block::Html(html, src) => {
-                let prefix_cells = str_cells(indent_prefix);
-                for (k, line) in html.lines().enumerate() {
-                    let row =
-                        Line::styled(format!("{indent_prefix}{line}"), self.theme.code_block_text);
-                    let origin = verbatim_origin(src, k, prefix_cells).hung_under_indent(&row);
-                    out.push(row, origin);
-                }
-            }
+            Block::Html(html, src) => self.render_html_block(html, src, indent_prefix, out),
             Block::HtmlComment(..) => {
                 // Annotation, not content: zero rendered lines (raw mode reads
                 // the rope directly, so the source stays visible there).
@@ -832,6 +825,73 @@ impl<'t> Renderer<'t> {
             spans.push(Span::styled(spaces(fill), base));
         }
         Line::from(spans).style(base)
+    }
+
+    /// A raw HTML block, one verbatim row per source line in the code style, with any comment
+    /// in it ([`html_comment`]) dimmed with `syntax_comment`.
+    ///
+    /// A block made only of comments never gets here (`Block::HtmlComment` renders nothing);
+    /// this handles comments that share a CommonMark HTML block with other HTML, such as one
+    /// directly under `</details>` with no blank line between them (#107).  Those are dimmed
+    /// rather than hidden: a verbatim row never de-renders (`row_map::reveals`), so the cursor
+    /// sits on the row itself, and a source line with no row would leave it nowhere to stand.
+    /// Restyling keeps every char in place, so the row's 1:1 column mapping is untouched.
+    fn render_html_block(
+        &self,
+        html: &str,
+        src: &SrcLines,
+        indent_prefix: &str,
+        out: &mut RowSink,
+    ) {
+        let comments = html_comment::comments(html);
+        let prefix_cells = str_cells(indent_prefix);
+        let mut line_start = 0usize;
+        // The first comment not yet wholly behind the current line; comments are sorted and
+        // disjoint, so each line scans only the ones it can touch.
+        let mut first = 0usize;
+        // `split_inclusive` rather than `lines`, so each line's byte offset into `html` (where
+        // the comment ranges live) is known; the endings are stripped as `lines` strips them.
+        for (k, raw) in html.split_inclusive('\n').enumerate() {
+            let line = match raw.strip_suffix('\n') {
+                Some(l) => l.strip_suffix('\r').unwrap_or(l),
+                None => raw,
+            };
+            let line_end = line_start + line.len();
+            // Plain text is unstyled, under the row's code style; comment text patches over it.
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut plain = indent_prefix.to_string();
+            let mut at = line_start;
+            while comments
+                .get(first)
+                .is_some_and(|c| c.range.end <= line_start)
+            {
+                first += 1;
+            }
+            for c in comments[first..]
+                .iter()
+                .take_while(|c| c.range.start < line_end)
+                .map(|c| c.range.start.max(line_start)..c.range.end.min(line_end))
+                .filter(|r| !r.is_empty())
+            {
+                plain.push_str(&html[at..c.start]);
+                if !plain.is_empty() {
+                    spans.push(Span::raw(std::mem::take(&mut plain)));
+                }
+                spans.push(Span::styled(
+                    html[c.clone()].to_string(),
+                    self.theme.syntax_comment,
+                ));
+                at = c.end;
+            }
+            plain.push_str(&html[at..line_end]);
+            if !plain.is_empty() || spans.is_empty() {
+                spans.push(Span::raw(plain));
+            }
+            let row = Line::from(spans).style(self.theme.code_block_text);
+            let origin = verbatim_origin(src, k, prefix_cells).hung_under_indent(&row);
+            out.push(row, origin);
+            line_start += raw.len();
+        }
     }
 
     fn render_code_block(
@@ -3114,6 +3174,133 @@ mod tests {
     fn paragraph_containing_only_inline_comments_renders_zero_lines() {
         let lines = render("<!-- only --><!-- comments -->\n");
         assert_eq!(lines.len(), 0, "got {lines:?}");
+    }
+
+    /// The style each char of `line` is drawn with: its span's style over the line's.
+    fn char_styles(line: &Line<'_>) -> Vec<(char, Style)> {
+        line.spans
+            .iter()
+            .flat_map(|s| {
+                s.content
+                    .chars()
+                    .map(move |c| (c, line.style.patch(s.style)))
+            })
+            .collect()
+    }
+
+    fn comment_style() -> Style {
+        let theme = Theme::default();
+        theme.code_block_text.patch(theme.syntax_comment)
+    }
+
+    /// #107: with no blank line after `</details>`, CommonMark makes the comment part of the
+    /// same HTML block, so it is dimmed in place rather than shown as plain HTML.
+    #[test]
+    fn comment_inside_an_html_block_is_dimmed_on_its_own_row() {
+        let lines =
+            render("<details>\n<summary>t</summary>\n\nbody\n\n</details>\n<!-- /formats -->\n");
+        let row = lines
+            .iter()
+            .find(|l| line_text(l).contains("<!--"))
+            .expect("the comment keeps its row");
+        assert_eq!(line_text(row), "<!-- /formats -->");
+        assert!(
+            char_styles(row)
+                .iter()
+                .all(|&(_, st)| st == comment_style()),
+            "{row:?}"
+        );
+        let closing = lines
+            .iter()
+            .find(|l| line_text(l) == "</details>")
+            .expect("closing tag");
+        assert!(char_styles(closing)
+            .iter()
+            .all(|&(_, st)| st == Theme::default().code_block_text));
+    }
+
+    #[test]
+    fn comment_sharing_a_line_with_html_dims_only_the_comment() {
+        let lines = render("<div><!-- c --></div>\n");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "<div><!-- c --></div>");
+        let code = Theme::default().code_block_text;
+        let styles = char_styles(&lines[0]);
+        for (i, &(ch, st)) in styles.iter().enumerate() {
+            let expected = if (5..15).contains(&i) {
+                comment_style()
+            } else {
+                code
+            };
+            assert_eq!(st, expected, "char {i} {ch:?}");
+        }
+    }
+
+    #[test]
+    fn multi_line_comment_in_an_html_block_keeps_one_row_per_line() {
+        let lines = render("<div>\n<!-- a\nb -->\n</div>\n");
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(texts, ["<div>", "<!-- a", "b -->", "</div>"]);
+        for row in &lines[1..3] {
+            assert!(
+                char_styles(row)
+                    .iter()
+                    .all(|&(_, st)| st == comment_style()),
+                "{row:?}"
+            );
+        }
+    }
+
+    /// Inside a list item the row carries the item's indent prefix, which stays in the code
+    /// style while the comment after it is dimmed.
+    #[test]
+    fn comment_in_an_indented_html_block_dims_after_the_prefix() {
+        let lines = render("- item\n\n  <div>\n  <!-- c -->\n  </div>\n");
+        let row = lines
+            .iter()
+            .find(|l| line_text(l).contains("<!--"))
+            .expect("the comment keeps its row");
+        let text = line_text(row);
+        let open = text.find("<!--").expect("comment");
+        assert!(open > 0, "expected an indent prefix: {text:?}");
+        assert_eq!(&text[open..], "<!-- c -->");
+        for (i, (ch, st)) in char_styles(row).into_iter().enumerate() {
+            let expected = if i < open {
+                Theme::default().code_block_text
+            } else {
+                comment_style()
+            };
+            assert_eq!(st, expected, "char {i} {ch:?}");
+        }
+    }
+
+    /// CRLF endings: the `\r` is stripped from every row, and a comment's style stops at the
+    /// end of its line rather than spilling onto the line ending.
+    #[test]
+    fn comment_in_a_crlf_html_block_is_dimmed_without_the_line_ending() {
+        let lines = render("<div>\r\n<!-- a\r\nb -->\r\n</div>\r\n");
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(texts, ["<div>", "<!-- a", "b -->", "</div>"]);
+        for (k, row) in lines.iter().enumerate() {
+            let expected = if (1..3).contains(&k) {
+                comment_style()
+            } else {
+                Theme::default().code_block_text
+            };
+            assert!(
+                char_styles(row).iter().all(|&(_, st)| st == expected),
+                "row {k}: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_block_without_comments_is_one_code_styled_span() {
+        let lines = render("<div>\nx\n</div>\n");
+        for line in &lines {
+            assert_eq!(line.spans.len(), 1, "{line:?}");
+            assert_eq!(line.style, Theme::default().code_block_text);
+        }
     }
 
     /// A setext H2's heading row is an ATX H2's; its underline, a source line of its own,

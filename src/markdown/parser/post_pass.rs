@@ -10,6 +10,7 @@ use std::ops::Range;
 
 use crate::diagram::DiagramSource;
 use crate::markdown::ast::{to_u32, Block, Inline, SrcLines};
+use crate::markdown::html_comment;
 
 /// Collapse a `Block::Paragraph` whose only substantive inline is an `Inline::Image` into
 /// a `Block::ImageBlock`.  `real_ranges` is untouched — the promotion removes no blocks;
@@ -452,34 +453,13 @@ fn extract_lone_image(inlines: &[Inline]) -> Option<(String, String)> {
     image
 }
 
-/// Whether `body` is entirely well-formed `<!-- ... -->` comments plus whitespace.
-/// Anything else is `false`, so the renderer still shows the raw source for it.
-pub(crate) fn is_html_comment_only(body: &str) -> bool {
-    let mut rest = body.trim();
-    if rest.is_empty() {
-        return false;
-    }
-    while !rest.is_empty() {
-        if !rest.starts_with("<!--") {
-            return false;
-        }
-        // The closing `-->` must start at index 4 or later, so the delimiters can't
-        // overlap on strings like `<!-->`.
-        let Some(close) = rest[4..].find("-->") else {
-            return false;
-        };
-        rest = rest[4 + close + 3..].trim_start();
-    }
-    true
-}
-
 /// Promote comment-only `Block::Html` into `Block::HtmlComment`, at any depth: a comment in a
 /// list item, quote or footnote renders nothing, as a top-level one does.  The stored string
 /// keeps its delimiters so downstream helpers need no variant-specific path.
 pub fn promote_html_comments(blocks: &mut [Block]) {
     for block in blocks.iter_mut() {
         match block {
-            Block::Html(body, src) if is_html_comment_only(body) => {
+            Block::Html(body, src) if html_comment::is_comment_only(body) => {
                 let body = std::mem::take(body);
                 let src = std::mem::take(src);
                 *block = Block::HtmlComment(body, src);

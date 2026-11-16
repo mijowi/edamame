@@ -33,6 +33,8 @@ edamame parses CommonMark plus [GitHub Flavored Markdown](https://github.github.
 
 **Other HTML is shown, not rendered.** A `<details>` block or a `<sub>` tag appears as literal text in a muted code style. edamame does not interpret HTML.
 
+A comment inside a block of HTML, or on the line right after one with no blank line between (such as after `</details>`), is part of that HTML, so it is shown with it, dimmed in your theme's code-comment color. Add a blank line before the comment to hide it.
+
 **Smart punctuation is on**, and currently not configurable. Straight quotes render as curly ones, `--` becomes an en dash, `...` becomes an ellipsis. Your source file is untouched — this is display only.
 
 **Paragraphs reflow to the width of your terminal.** If you hard-wrap prose in the source — a line break every 80 columns, say — those single line breaks are treated as spaces (except between two Chinese or Japanese characters). edamame joins them back into one paragraph and wraps it to fit the view, instead of showing a stack of ragged short lines. A deliberate line break — two trailing spaces or a backslash at the end of a line — is kept. Turn reflow off with **Reflow paragraphs** in the settings overlay, or `reflow = false` in `config.toml`.

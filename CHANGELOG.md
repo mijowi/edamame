@@ -22,6 +22,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
 - Vim: a few rare `:s` patterns that combine back-references or lookaround with repetition no longer match the wrong text or crash the editor.
 - Windows: edamame no longer occasionally hangs when it stops watching a file for outside changes, such as when opening another file or quitting.
+- An HTML comment inside a block of HTML, or on the line right after one such as after `</details>`, is now dimmed instead of looking like the HTML around it.
 
 ### Security
 

@@ -235,6 +235,8 @@ src/
                     #   maps through them
     highlight.rs    # syntect tokenizer: scope → TokenClass, char-indexed ranges,
                     #   size caps, incremental per-line ParseState reuse
+    html_comment.rs # HTML comments by the HTML standard's rules: comments (ranges, for the
+                    #   renderer's dimming) and is_comment_only (what the parser hides)
     destination.rs  # link destinations: local_image_urls (the document's own images),
                     #   escape_destination (angle-bracket form for spaces / parens)
     inline_col_map.rs  # raw ↔ rendered column map of inline Markdown (build_inline for a

@@ -569,8 +569,11 @@ fn check(src: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The sources of the behavioral tests the row-provenance work was written against, plus the
-/// two sample fixtures and the smoke-test one.
+/// The files under `tests/fixtures/` both corpus checks also run on: the two sample documents
+/// and the smoke tests.
+const FIXTURES: [&str; 3] = ["general.md", "syntax.md", "row_provenance.md"];
+
+/// The sources of the behavioral tests the row-provenance work was written against.
 const CORPUS: &[&str] = &[
     "a | b\n--|--\n1 | 2\n",
     "| a | b | c |\n|---|---|---|\n1 | 2 |\n| 1 | 2 | 3 | 4 |\n",
@@ -707,7 +710,7 @@ fn origins_agree_with_the_rendered_rows_on_the_corpus() {
     for src in CORPUS {
         check(src).unwrap();
     }
-    for fixture in ["general.md", "syntax.md", "row_provenance.md"] {
+    for fixture in FIXTURES {
         let src = std::fs::read_to_string(format!(
             "{}/tests/fixtures/{fixture}",
             env!("CARGO_MANIFEST_DIR")
@@ -896,7 +899,7 @@ fn columns_round_trip_on_the_corpus() {
     for src in CORPUS {
         round_trip(src).unwrap();
     }
-    for fixture in ["general.md", "syntax.md", "row_provenance.md"] {
+    for fixture in FIXTURES {
         let src = std::fs::read_to_string(format!(
             "{}/tests/fixtures/{fixture}",
             env!("CARGO_MANIFEST_DIR")

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use pulldown_cmark::{BrokenLink, CowStr, Event, Options, Parser, Tag, TagEnd};
 
+use super::html_comment;
 use super::parser::TextRun;
 use super::renderer::util::link_fallback;
 use super::segment_break;
@@ -151,9 +152,7 @@ impl InlineColMap {
                 Event::SoftBreak => walk.push_break(range.start, true),
                 Event::HardBreak => walk.push_break(range.start, false),
                 // The renderer shows inline HTML as its text, except a lone comment.
-                Event::InlineHtml(s)
-                    if !crate::markdown::parser::post_pass::is_html_comment_only(&s) =>
-                {
+                Event::InlineHtml(s) if !html_comment::is_comment_only(&s) => {
                     let raw = raw_line.get(range.clone()).unwrap_or("");
                     walk.push_text(raw_line, range, raw)
                 }

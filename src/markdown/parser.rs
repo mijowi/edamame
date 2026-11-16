@@ -13,6 +13,7 @@ use std::ops::Range;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, MetadataBlockKind, Tag, TagEnd};
 
 use super::ast::{inlines_to_plain, Block, Inline, LineSpan, ListItem, MetadataKind, SrcLines};
+use super::html_comment;
 use super::parse_offsets;
 use stream::{EventStream, LeafMode};
 
@@ -742,7 +743,7 @@ where
                 let s = html.into_string();
                 // A balanced comment renders as zero spans; anything else renders as
                 // text so the source is still visible.
-                if post_pass::is_html_comment_only(&s) {
+                if html_comment::is_comment_only(&s) {
                     inlines.push(Inline::HtmlComment(s));
                 } else {
                     inlines.push(Inline::Html(s));
@@ -1866,19 +1867,6 @@ mod tests {
             }
             other => panic!("expected Paragraph, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn is_html_comment_only_detects_comment_and_rejects_other_html() {
-        assert!(post_pass::is_html_comment_only("<!-- hi -->"));
-        assert!(post_pass::is_html_comment_only("   <!-- hi -->   "));
-        assert!(post_pass::is_html_comment_only("<!---->"));
-        assert!(post_pass::is_html_comment_only("<!-- a --> <!-- b -->"));
-        assert!(post_pass::is_html_comment_only("<!-- a --><!-- b -->"));
-        assert!(!post_pass::is_html_comment_only("<div>foo</div>"));
-        assert!(!post_pass::is_html_comment_only("<!-- a --> tail"));
-        assert!(!post_pass::is_html_comment_only("<!-- a"));
-        assert!(!post_pass::is_html_comment_only("<!-->"));
     }
 
     #[test]
