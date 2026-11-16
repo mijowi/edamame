@@ -38,17 +38,19 @@ pub enum WelcomeFocus {
     RemoteImages,
     Diagrams,
     VimMotions,
+    Autosave,
     CheckUpdates,
     ShowAgain,
     Save,
 }
 
-const FOCUS_ORDER: [WelcomeFocus; 8] = [
+const FOCUS_ORDER: [WelcomeFocus; 9] = [
     WelcomeFocus::Theme,
     WelcomeFocus::Diagrams,
     WelcomeFocus::Images,
     WelcomeFocus::RemoteImages,
     WelcomeFocus::VimMotions,
+    WelcomeFocus::Autosave,
     WelcomeFocus::CheckUpdates,
     WelcomeFocus::ShowAgain,
     WelcomeFocus::Save,
@@ -88,6 +90,10 @@ pub struct WelcomeState {
     /// "Use Vim motions" toggle; Save flips `config.modal.handler` to `"vim"` and activates
     /// modal editing for the running session.
     pub use_vim: bool,
+    /// "Autosave" toggle, mirroring `config.editor.autosave_enabled`.  Seeded from the config so
+    /// an on-demand reopening shows the current value; `App::tick_autosave` reads the setting
+    /// live, so Save takes effect without further wiring.
+    pub autosave: bool,
     /// "Check for updates" toggle, mirroring `config.editor.check_for_updates`.  The startup
     /// check parks while this modal is on the stack and re-reads the setting after it closes, so
     /// a decline here prevents the request rather than following one already sent.
@@ -129,6 +135,7 @@ pub struct WelcomeState {
     pub remote_rect: Option<Rect>,
     pub diagrams_rect: Option<Rect>,
     pub vim_rect: Option<Rect>,
+    pub autosave_rect: Option<Rect>,
     pub check_updates_rect: Option<Rect>,
     pub show_again_rect: Option<Rect>,
     pub save_button_rect: Option<Rect>,
@@ -149,6 +156,7 @@ impl WelcomeState {
         remote: RemoteImagePolicy,
         diagrams: FiguresEnabled,
         use_vim: bool,
+        autosave: bool,
         check_for_updates: bool,
     ) -> Self {
         let full_color = caps.full_color();
@@ -167,6 +175,7 @@ impl WelcomeState {
             remote,
             diagrams,
             use_vim,
+            autosave,
             check_for_updates,
             dont_show_again: true,
             dismissable: false,
@@ -180,6 +189,7 @@ impl WelcomeState {
             remote_rect: None,
             diagrams_rect: None,
             vim_rect: None,
+            autosave_rect: None,
             check_updates_rect: None,
             show_again_rect: None,
             save_button_rect: None,
@@ -193,8 +203,8 @@ impl WelcomeState {
         state
     }
 
-    /// Allow `Esc` to close without saving (see [`Self::dismissable`]).  A builder rather than a
-    /// sixth `new` parameter, so adjacent `bool`s can't be transposed silently.
+    /// Allow `Esc` to close without saving (see [`Self::dismissable`]).  A builder rather than yet
+    /// another `new` parameter, so adjacent `bool`s can't be transposed silently.
     pub fn with_dismissable(mut self, dismissable: bool) -> Self {
         self.dismissable = dismissable;
         self
@@ -266,6 +276,13 @@ impl WelcomeState {
                     Control::Toggle.apply(ControlValue::Toggle(self.use_vim), input)
                 {
                     self.use_vim = v;
+                }
+            }
+            WelcomeFocus::Autosave => {
+                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
+                    Control::Toggle.apply(ControlValue::Toggle(self.autosave), input)
+                {
+                    self.autosave = v;
                 }
             }
             WelcomeFocus::CheckUpdates => {
@@ -366,6 +383,11 @@ impl WelcomeState {
             self.apply_input(ControlInput::Activate);
             return WelcomeResponse::Continue;
         }
+        if rect_contains(self.autosave_rect, col, row) {
+            self.focused = WelcomeFocus::Autosave;
+            self.apply_input(ControlInput::Activate);
+            return WelcomeResponse::Continue;
+        }
         if rect_contains(self.check_updates_rect, col, row) {
             self.focused = WelcomeFocus::CheckUpdates;
             self.apply_input(ControlInput::Activate);
@@ -418,7 +440,7 @@ the line the cursor is on; RAW is unformatted \n\
 • GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
 • Diff mode — review external file changes hunk by hunk\n\
 • Command palette for access to commands and settings (Ctrl-P)\n\
-• Vim mode — optional Vim-style editing (see docs for what's supported)";
+• Vim mode — optional Vim-style editing";
 /// Hint shown below the capability summary when any capability is degraded.
 const DEGRADED_HINT: &str = "✗ — Consider upgrading to a modern terminal, \
 such as foot, Ghostty, kitty, or WezTerm, for a better experience.";
@@ -478,6 +500,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  2                 theme label+button row + spacer below
         //  3 * 3             three tri-state sections (row + explanation + spacer)
         //  3                 vim-motions toggle (row + explanation + spacer)
+        //  3                 autosave toggle (row + explanation + spacer)
         //  3                 check-for-updates toggle (row + explanation + spacer)
         //  1                 "Don't show this again" toggle row
         //  1                 spacer
@@ -501,6 +524,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             + 1
             + 2
             + 9
+            + 3
             + 3
             + 3
             + 1
@@ -863,6 +887,36 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
+        // ── Autosave toggle ─────────────────────────────────────────
+        state.focus_offsets[WelcomeFocus::Autosave.order_index()] = y;
+        state.autosave_rect = render_control_row(
+            &mut scratch,
+            scratch_rect,
+            y,
+            "Autosave",
+            controls::toggle_spans(
+                state.autosave,
+                state.focused == WelcomeFocus::Autosave,
+                false,
+                self.theme,
+            ),
+            toggle_w,
+            state.focused == WelcomeFocus::Autosave,
+            false,
+            self.theme,
+        );
+        y += 1;
+        render_explanation(
+            &mut scratch,
+            body_x,
+            y,
+            body_w,
+            "Save automatically after you stop typing",
+            muted_style,
+            self.theme,
+        );
+        y += 2;
+
         // ── Check-for-updates toggle ────────────────────────────────
         state.focus_offsets[WelcomeFocus::CheckUpdates.order_index()] = y;
         state.check_updates_rect = render_control_row(
@@ -953,6 +1007,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.save_button_rect = translate_rect(state.save_button_rect, body, scroll);
         state.show_again_rect = translate_rect(state.show_again_rect, body, scroll);
         state.vim_rect = translate_rect(state.vim_rect, body, scroll);
+        state.autosave_rect = translate_rect(state.autosave_rect, body, scroll);
         state.check_updates_rect = translate_rect(state.check_updates_rect, body, scroll);
         state.images_rect = translate_rect(state.images_rect, body, scroll);
         state.remote_rect = translate_rect(state.remote_rect, body, scroll);
@@ -1175,6 +1230,7 @@ mod tests {
             ImagesEnabled::Ask,
             RemoteImagePolicy::Ask,
             FiguresEnabled::Ask,
+            false,
             false,
             true,
         )

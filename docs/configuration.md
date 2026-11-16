@@ -109,7 +109,7 @@ Change both from the theme picker: `Ctrl-P` → "Switch theme". There is no defa
 
 | Key | Type | Default | Where |
 |---|---|---|---|
-| `autosave_enabled` | bool | `false` | overlay, palette |
+| `autosave_enabled` | bool | `false` | overlay, palette, welcome |
 | `autosave_idle_ms` | integer | `5000` | file only |
 
 Autosave is a debounce, not a timer: every keystroke resets the clock, so a burst of typing produces one save at the end. A successful save flashes "Autosaved". **Buffers with no filename never autosave** — there is nowhere to write. Autosave is also suspended during diff review.
