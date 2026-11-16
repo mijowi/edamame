@@ -15,6 +15,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 ### Fixed
 
 - Vim: case-insensitive `:s` patterns with a non-ASCII character range (such as `[à-ÿ]`) no longer miss some matches.
+- Diff review opens faster on large files.
+- Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
 
 ## [0.1.7] - 2026-10-28
 
