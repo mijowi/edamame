@@ -178,7 +178,7 @@ impl Modal for PasteImageModal {
         };
         // Checked when the paste began; re-checked because the buffer can change underneath an
         // open modal (an external reload), and writing first would orphan the file.
-        if !edit_ops::can_insert_image_reference(&mut app.editor, doc_height) {
+        if !edit_ops::can_insert_image_reference(&mut app.editor, doc_height, doc_width) {
             return ModalOutcome::CloseAnd(Box::new(|app| {
                 app.notify("Cannot insert image inside this block", ModalKind::Warning);
             }));

@@ -61,7 +61,7 @@ pub fn apply(
         Action::EnterEditMode => {
             // A read-only document rests in Preview; leaving it is what read-only refuses.
             if state.mode == Mode::Preview && !state.readonly {
-                sync_cursor_to_scroll(state, viewport_height);
+                sync_cursor_to_scroll(state, viewport_height, viewport_width);
                 state.mode = Mode::Rendered;
                 state.visual_selection = None;
             }
@@ -78,7 +78,7 @@ pub fn apply(
                 return false;
             }
             if state.mode == Mode::Preview {
-                sync_cursor_to_scroll(state, viewport_height);
+                sync_cursor_to_scroll(state, viewport_height, viewport_width);
             }
             state.visual_selection = None;
             // Rendered and Raw scroll in different units (rendered lines vs. buffer lines), so the
@@ -112,7 +112,7 @@ pub fn apply(
 
         // ── Cursor movement ───────────────────────────────────────
         Action::MoveLeft => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             // In Raw every character is a valid cursor position, table chrome included.
             if state.mode == Mode::Raw
@@ -126,7 +126,7 @@ pub fn apply(
             state.ensure_cursor_visible(viewport_height, viewport_width);
         }
         Action::MoveRight => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             if state.mode == Mode::Raw
                 || (!table_move_horizontal(state, /*forward=*/ true)
@@ -186,7 +186,7 @@ pub fn apply(
             state.ensure_cursor_visible(viewport_height, viewport_width);
         }
         Action::MoveWordLeft => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             state.cursor.move_word_left(&state.buffer);
             sync_preferred_visual(state, viewport_width);
@@ -194,7 +194,7 @@ pub fn apply(
             state.ensure_cursor_visible(viewport_height, viewport_width);
         }
         Action::MoveWordRight => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             state.cursor.move_word_right(&state.buffer);
             sync_preferred_visual(state, viewport_width);
@@ -202,7 +202,7 @@ pub fn apply(
             state.ensure_cursor_visible(viewport_height, viewport_width);
         }
         Action::MoveLineStart => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             state.cursor.move_line_start(&state.buffer);
             sync_preferred_visual(state, viewport_width);
@@ -210,7 +210,7 @@ pub fn apply(
             state.ensure_cursor_visible(viewport_height, viewport_width);
         }
         Action::MoveLineEnd => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             state.cursor.move_line_end(&state.buffer);
             sync_preferred_visual(state, viewport_width);
@@ -233,7 +233,7 @@ pub fn apply(
 
         // ── Selection ─────────────────────────────────────────────
         Action::SelectLeft => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             let anchor = state
                 .selection
                 .map(|s| s.anchor)
@@ -247,7 +247,7 @@ pub fn apply(
             });
         }
         Action::SelectRight => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             let anchor = state
                 .selection
                 .map(|s| s.anchor)
@@ -261,7 +261,7 @@ pub fn apply(
             });
         }
         Action::SelectUp => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             let anchor = state
                 .selection
                 .map(|s| s.anchor)
@@ -275,7 +275,7 @@ pub fn apply(
             });
         }
         Action::SelectDown => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             let anchor = state
                 .selection
                 .map(|s| s.anchor)
@@ -333,7 +333,7 @@ pub fn apply(
         Action::InsertChar(ch) => {
             if state.mode == Mode::Preview {
                 // First keypress from Preview enters edit mode but does not insert.
-                sync_cursor_to_scroll(state, viewport_height);
+                sync_cursor_to_scroll(state, viewport_height, viewport_width);
                 state.mode = Mode::Rendered;
                 return false;
             }
@@ -346,7 +346,7 @@ pub fn apply(
         }
         Action::InsertTab => {
             if state.mode == Mode::Preview {
-                sync_cursor_to_scroll(state, viewport_height);
+                sync_cursor_to_scroll(state, viewport_height, viewport_width);
                 state.mode = Mode::Rendered;
                 return false;
             }
@@ -360,7 +360,7 @@ pub fn apply(
         }
         Action::Newline => {
             if state.mode == Mode::Preview {
-                sync_cursor_to_scroll(state, viewport_height);
+                sync_cursor_to_scroll(state, viewport_height, viewport_width);
                 state.mode = Mode::Rendered;
                 return false;
             }
@@ -372,7 +372,7 @@ pub fn apply(
             }
         }
         Action::DeleteCharBack => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if let Some(sel) = state.selection.take() {
                 delete_selection(state, sel);
             } else if state.mode == Mode::Rendered && list_backspace_consumes_marker(state) {
@@ -390,7 +390,7 @@ pub fn apply(
             }
         }
         Action::DeleteCharForward => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if let Some(sel) = state.selection.take() {
                 delete_selection(state, sel);
             } else if state.cursor.offset < state.buffer.len_chars() {
@@ -405,7 +405,7 @@ pub fn apply(
             }
         }
         Action::DeleteWordBack => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             let end = state.cursor.offset;
             let mut temp = state.cursor;
@@ -423,7 +423,7 @@ pub fn apply(
             }
         }
         Action::DeleteWordForward => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             let start = state.cursor.offset;
             let mut temp = state.cursor;
@@ -439,7 +439,7 @@ pub fn apply(
             }
         }
         Action::DeleteLine => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             state.selection = None;
             let (line, _) = state.cursor.line_col(&state.buffer);
             let start = state.buffer.line_to_char(line);
@@ -552,19 +552,19 @@ pub fn apply(
         // for the single call site of `Buffer::save_file`.
         // ── List editing ─────────────────────────────────────────
         Action::ToggleCheckbox => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             list_toggle_checkbox(state);
         }
 
         // ── Table editing ────────────────────────────────────────
         Action::TableNextCell => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if cursor_in_table(state) {
                 table_next_cell(state, viewport_height, viewport_width);
             }
         }
         Action::TablePrevCell => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if cursor_in_table(state) {
                 table_prev_cell(state, viewport_height, viewport_width);
             } else {
@@ -575,13 +575,13 @@ pub fn apply(
             }
         }
         Action::TableNextRow => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if cursor_in_table(state) {
                 table_next_row(state, viewport_height, viewport_width);
             }
         }
         Action::TablePrevRow => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if cursor_in_table(state) {
                 table_prev_row(state, viewport_height, viewport_width);
             }
@@ -632,7 +632,7 @@ pub fn apply(
             table_delete_column(state, viewport_height, viewport_width);
         }
         Action::TableInsertBreak => {
-            enter_edit_if_preview(state, viewport_height);
+            enter_edit_if_preview(state, viewport_height, viewport_width);
             if cursor_in_table(state) {
                 // A GFM `<br>` breaks the line without terminating the row.
                 insert_text(state, "<br>");
@@ -679,12 +679,12 @@ pub fn apply(
 /// The `readonly` guard here is the mode-level backstop, twin of [`EditorState::apply_delta`]'s
 /// text-level one: refusing the transition makes every call site a no-op at once, so read-only is
 /// *made* rather than maintained by auditing each mutating path.
-fn enter_edit_if_preview(state: &mut EditorState, viewport_height: usize) {
+fn enter_edit_if_preview(state: &mut EditorState, viewport_height: usize, viewport_width: usize) {
     if state.readonly {
         return;
     }
     if state.mode == Mode::Preview {
-        sync_cursor_to_scroll(state, viewport_height);
+        sync_cursor_to_scroll(state, viewport_height, viewport_width);
         state.mode = Mode::Rendered;
         state.visual_selection = None;
     }
@@ -698,35 +698,30 @@ fn sync_preferred_visual(state: &mut EditorState, viewport_width: usize) {
     }
 }
 
-/// Move the cursor to the first visible block, unless it is already on screen.  Called on the
-/// Preview → editing transition so the cursor appears near what the user is looking at.
-fn sync_cursor_to_scroll(state: &mut EditorState, viewport_height: usize) {
-    state.cursor.offset = synced_cursor_offset(state, viewport_height);
+/// Move the cursor to the start of the block at the top of the viewport, unless its own block
+/// already starts on screen.  Called on the Preview → editing transition so the cursor appears
+/// near what the user is looking at.
+fn sync_cursor_to_scroll(state: &mut EditorState, viewport_height: usize, viewport_width: usize) {
+    state.cursor.offset = synced_cursor_offset(state, viewport_height, viewport_width);
 }
 
-/// Where [`sync_cursor_to_scroll`] would put the cursor, without moving it.
-fn synced_cursor_offset(state: &EditorState, viewport_height: usize) -> usize {
-    let scroll = state.scroll;
+/// Where [`sync_cursor_to_scroll`] would put the cursor, without moving it.  Both the on-screen
+/// test and the fallback are in `scroll`'s units — wrapped visual rows at `viewport_width`.
+fn synced_cursor_offset(
+    state: &EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> usize {
+    let width = viewport_width.max(1);
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
     let cursor_lines = state.parsed.source_map.rendered_lines_for_byte(cursor_byte);
     if !cursor_lines.is_empty() {
-        let visible_end = scroll + viewport_height;
-        if cursor_lines.start >= scroll && cursor_lines.start < visible_end {
+        let cursor_row = state.parsed.visual_rows_before(cursor_lines.start, width);
+        if (state.scroll..state.scroll + viewport_height).contains(&cursor_row) {
             return state.cursor.offset;
         }
     }
-    match state
-        .parsed
-        .source_map
-        .original_byte_for_rendered_line(scroll)
-    {
-        Some(byte) => state
-            .buffer
-            .rope()
-            .byte_to_char(byte)
-            .min(state.buffer.len_chars()),
-        None => state.cursor.offset,
-    }
+    state.scroll_anchor_offset(width)
 }
 
 /// Coalesced version of a run of `Action::InsertChar` events: a held-key autorepeat burst becomes
@@ -994,7 +989,7 @@ pub fn paste_text(
     let buffer_len_before = state.buffer.len_chars();
     let history_depth_before = state.history.undo_depth();
 
-    enter_edit_if_preview(state, viewport_height);
+    enter_edit_if_preview(state, viewport_height, viewport_width);
     if let Some(sel) = state.selection.take() {
         let (start, end) = sel.range();
         let removed = state
@@ -1031,7 +1026,7 @@ pub fn insert_table_at_cursor(
     viewport_height: usize,
     viewport_width: usize,
 ) {
-    enter_edit_if_preview(state, viewport_height);
+    enter_edit_if_preview(state, viewport_height, viewport_width);
     let source = state.buffer.contents();
     let cursor_byte = cursor_byte(state);
     // A typing burst defers the re-parse; the item columns come from a fresh one.
@@ -1139,13 +1134,14 @@ pub fn insert_image_reference_at_cursor(
     viewport_width: usize,
 ) -> bool {
     use crate::markdown::Block;
-    if !can_insert_image_reference(state, viewport_height) {
+    if !can_insert_image_reference(state, viewport_height, viewport_width) {
         return false;
     }
-    let byte = state
-        .buffer
-        .rope()
-        .char_to_byte(snippet_anchor(state, viewport_height));
+    let byte =
+        state
+            .buffer
+            .rope()
+            .char_to_byte(snippet_anchor(state, viewport_height, viewport_width));
     let url = match state.parsed.real_block_for_byte(byte) {
         // `real_block_for_byte` names the outermost block, so a list, quote or footnote may hold
         // a table it doesn't show: escape `|` in all of them.  `\|` is a valid escape anywhere.
@@ -1168,8 +1164,12 @@ pub fn insert_image_reference_at_cursor(
 ///
 /// Moves nothing: in Preview it judges the offset the insert would sync the cursor to.  (`&mut`
 /// only to flush a deferred re-parse.)
-pub fn can_insert_image_reference(state: &mut EditorState, viewport_height: usize) -> bool {
-    let at = snippet_anchor(state, viewport_height);
+pub fn can_insert_image_reference(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    let at = snippet_anchor(state, viewport_height, viewport_width);
     if !block_allows_inline_markdown_at(state, at) {
         return false;
     }
@@ -1182,11 +1182,11 @@ pub fn can_insert_image_reference(state: &mut EditorState, viewport_height: usiz
 
 /// Where a snippet lands: the start of the selection it wraps, else the cursor — in Preview, where
 /// [`sync_cursor_to_scroll`] would move it.
-fn snippet_anchor(state: &EditorState, viewport_height: usize) -> usize {
+fn snippet_anchor(state: &EditorState, viewport_height: usize, viewport_width: usize) -> usize {
     snippet_wrap(state).map_or_else(
         || {
             if state.mode == Mode::Preview {
-                synced_cursor_offset(state, viewport_height)
+                synced_cursor_offset(state, viewport_height, viewport_width)
             } else {
                 state.cursor.offset
             }
@@ -1273,15 +1273,18 @@ fn insert_inline_snippet(
 ) -> bool {
     // The pre-flight judges where the snippet will land without moving the cursor, so a denied
     // insert leaves the cursor, the mode and the selection alone.
-    if !block_allows_inline_markdown_at(state, snippet_anchor(state, viewport_height)) {
+    if !block_allows_inline_markdown_at(
+        state,
+        snippet_anchor(state, viewport_height, viewport_width),
+    ) {
         return false;
     }
     if state.mode == Mode::Preview {
-        sync_cursor_to_scroll(state, viewport_height);
+        sync_cursor_to_scroll(state, viewport_height, viewport_width);
     }
     let wrap = snippet_wrap(state);
     state.selection = None;
-    enter_edit_if_preview(state, viewport_height);
+    enter_edit_if_preview(state, viewport_height, viewport_width);
     // `prefix`, the brackets and the placeholders are ASCII, so byte lengths double as char
     // counts; only the wrapped selection text needs `chars().count()`.
     let (offset, removed, visible_text, select_placeholder_url) = match wrap {
@@ -1346,7 +1349,7 @@ pub fn insert_footnote_at_cursor(
     viewport_height: usize,
     viewport_width: usize,
 ) {
-    enter_edit_if_preview(state, viewport_height);
+    enter_edit_if_preview(state, viewport_height, viewport_width);
     let source = state.buffer.contents();
     let cursor_byte = cursor_byte(state);
     let (delta, cursor_target) = footnote_edit::insert_footnote(&source, cursor_byte);

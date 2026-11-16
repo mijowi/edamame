@@ -18,14 +18,15 @@ use super::App;
 pub(super) const SECTION_JUMP_DELAY: Duration = Duration::from_millis(150);
 
 impl App {
-    /// Open the "Go to section" modal, preselecting the nearest heading at or before the cursor.
+    /// Open the "Go to section" modal, preselecting the nearest heading at or before
+    /// [`EditorState::section_anchor_line`](crate::editor::EditorState::section_anchor_line) —
+    /// the anchor the status-bar breadcrumb uses.
     ///
     /// `doc_width` must be the live document area width, so the modal's previewed `target_scroll`
     /// lands at the same row the editor will paint.
     pub fn open_section_picker(&mut self, doc_width: usize) {
         let entries = collect_heading_entries(&self.editor, doc_width);
-        let cursor_line = self.editor.buffer.char_to_line(self.editor.cursor.offset);
-        let focused = preselected_index(&entries, cursor_line);
+        let focused = preselected_index(&entries, self.editor.section_anchor_line(doc_width));
         let original_scroll = self.editor.scroll;
         self.modal_stack
             .push(Box::new(super::modal::SectionPickerModal::new(
@@ -135,12 +136,12 @@ fn collect_heading_entries(
     entries
 }
 
-/// Index of the heading with the largest `buffer_line <= cursor_line`; `0` when there is none.
+/// Index of the heading with the largest `buffer_line <= anchor_line`; `0` when there is none.
 /// The `take_while` is sound only because `entries` is in document order.
-fn preselected_index(entries: &[HeadingEntry], cursor_line: usize) -> usize {
+fn preselected_index(entries: &[HeadingEntry], anchor_line: usize) -> usize {
     entries
         .iter()
-        .take_while(|e| e.buffer_line <= cursor_line)
+        .take_while(|e| e.buffer_line <= anchor_line)
         .count()
         .saturating_sub(1)
 }
@@ -240,6 +241,35 @@ mod tests {
             target_scroll: 0,
         }];
         assert_eq!(preselected_index(&entries, 0), 0);
+    }
+
+    #[test]
+    fn preview_anchors_on_viewport_top_not_cursor() {
+        // Regression (#105): in Preview the cursor stays put while the user scrolls, so the
+        // picker preselected a heading the reader had long since scrolled past.
+        let mut app = make_app();
+        let src = "# A\n\nintro\n\n## B\n\nbody\n";
+        load(&mut app, src);
+        app.editor.mode = Mode::Preview;
+        app.editor.cursor.offset = 0;
+        let entries = collect_heading_entries(&app.editor, 80);
+        app.editor.scroll = entries[1].target_scroll;
+        assert_eq!(app.editor.section_anchor_line(80), entries[1].buffer_line);
+        assert_eq!(
+            preselected_index(&entries, app.editor.section_anchor_line(80)),
+            1
+        );
+    }
+
+    #[test]
+    fn non_preview_modes_anchor_on_cursor() {
+        let mut app = make_app();
+        let src = "# A\n\nintro\n\n## B\n\nbody\n";
+        load(&mut app, src);
+        app.editor.mode = Mode::Rendered;
+        app.editor.cursor.offset = 0;
+        app.editor.scroll = collect_heading_entries(&app.editor, 80)[1].target_scroll;
+        assert_eq!(app.editor.section_anchor_line(80), 0);
     }
 
     #[test]

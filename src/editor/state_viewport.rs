@@ -204,6 +204,20 @@ impl EditorState {
         }
     }
 
+    /// Char offset at the top of the viewport: where the reader is in Preview, whose hidden
+    /// cursor stays put while the view scrolls.  The one definition shared by the breadcrumb,
+    /// the Go to section preselection, and the cursor sync on leaving Preview, so all three
+    /// agree.  `width` is the document area width `scroll` was measured at — `scroll` counts
+    /// wrapped visual rows, not rendered lines.
+    pub fn scroll_anchor_offset(&self, width: usize) -> usize {
+        self.char_offset_at_visual_row(self.scroll, width)
+    }
+
+    /// Buffer line of [`Self::scroll_anchor_offset`].
+    pub fn scroll_anchor_line(&self, width: usize) -> usize {
+        self.buffer.char_to_line(self.scroll_anchor_offset(width))
+    }
+
     pub(crate) fn char_offset_at_visual_row(&self, visual_row: usize, width: usize) -> usize {
         match self.mode {
             Mode::Raw => {

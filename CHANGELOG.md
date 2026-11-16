@@ -16,6 +16,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - Vim: case-insensitive `:s` patterns with a non-ASCII character range (such as `[à-ÿ]`) no longer miss some matches.
 - Diff review opens faster on large files.
+- Preview: **Go to section** (`Ctrl-G`) now opens on the section at the top of the screen rather than wherever the cursor was.
+- Preview: in a document with wrapped lines, the status-bar breadcrumb no longer shows a later heading than the one on screen, and entering edit no longer puts the cursor below the top of the screen.
 - Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
 
 ### Security

@@ -98,7 +98,11 @@ impl App {
     /// store it — after a Save As when the buffer has no path yet, since the image is stored
     /// relative to the document.
     pub(super) fn begin_image_paste(&mut self, png: Vec<u8>) {
-        if !edit_ops::can_insert_image_reference(&mut self.editor, self.last_doc_height) {
+        if !edit_ops::can_insert_image_reference(
+            &mut self.editor,
+            self.last_doc_height,
+            self.last_doc_width,
+        ) {
             self.notify("Cannot insert image inside this block", ModalKind::Warning);
             return;
         }

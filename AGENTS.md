@@ -205,7 +205,7 @@ src/
     state.rs        # owns Buffer, Cursor, History, Mode, ParsedDoc
     state_cursor_block.rs   # cursor-block lookup + reveal jitter suppression
     state_cursor_visual.rs  # move_up_visual / move_down_visual
-    state_section_path.rs   # cursor_section_chain — heading breadcrumb
+    state_section_path.rs   # section_chain / section_anchor_line — heading breadcrumb
     state_source_lines.rs   # rendered-row → source-line map for the gutter
     state_viewport.rs       # scroll + viewport clamping
     vim_ops/        # table scoping, :s preview, incsearch (see the vim sections)

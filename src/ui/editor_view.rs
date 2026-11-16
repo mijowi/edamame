@@ -431,12 +431,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // `EditorState::scroll` is canonical in every mode.
         let scroll = self.state.scroll;
 
-        // Preview's cursor is hidden and frozen, so the breadcrumb anchors on the viewport
-        // top; every other mode follows the cursor.
-        let section_path = match mode {
-            Mode::Preview => self.state.scroll_section_chain(),
-            _ => self.state.cursor_section_chain(),
-        };
+        let section_path = self.state.section_chain(doc_area.width as usize);
         // The counter tracks merge decisions, so a read-only `git difftool` session — which
         // makes none — keeps the bare `DIFF` badge.
         let diff_progress = self

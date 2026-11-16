@@ -431,6 +431,51 @@ fn enter_edit_mode_from_preview() {
     assert_eq!(st.mode, Mode::Rendered);
 }
 
+#[test]
+fn enter_edit_mode_from_preview_lands_at_viewport_top_past_wrapped_rows() {
+    // Regression: the sync read `scroll` (wrapped visual rows) as a rendered-line index, so a
+    // viewport partway down a wrapped paragraph put the cursor several blocks further on.
+    let para = "word ".repeat(200);
+    let src = format!("# A\n\n{para}\n\n## B\n\nbody\n");
+    let mut st = state(&src);
+    let para_byte = src.find("word").unwrap();
+    let para_line = st
+        .parsed
+        .source_map
+        .rendered_lines_for_byte(para_byte)
+        .start;
+    assert!(st.parsed.visual_rows_for_line_at(para_line, VW) > 6);
+    st.scroll = st.parsed.visual_rows_before(para_line, VW) + 5;
+    // Viewport of 1 row: the cursor at offset 0 is off screen, so it must move.
+    edit_ops::apply(&mut st, Action::EnterEditMode, 1, VW);
+    assert_eq!(st.mode, Mode::Rendered);
+    assert_eq!(st.cursor.offset, para_byte);
+}
+
+#[test]
+fn enter_edit_mode_from_preview_keeps_cursor_on_screen_past_wrapped_rows() {
+    // The other half of the units fix: the cursor's block starts on screen by wrapped visual
+    // row, but its rendered-line index lies above `scroll`, so reading one as the other judged it
+    // off screen and moved it.
+    let para = "word ".repeat(200);
+    let src = format!("# A\n\n{para}\n\nshort\n\n## B\n\nbody\n");
+    let mut st = state(&src);
+    let short_byte = src.find("short").unwrap();
+    st.cursor.offset = short_byte;
+    let short_line = st
+        .parsed
+        .source_map
+        .rendered_lines_for_byte(short_byte)
+        .start;
+    let short_row = st.parsed.visual_rows_before(short_line, VW);
+    assert!(short_row > short_line + 3);
+    // The paragraph's last row at the top, `short` one row further down.
+    st.scroll = short_row - 1;
+    edit_ops::apply(&mut st, Action::EnterEditMode, 3, VW);
+    assert_eq!(st.mode, Mode::Rendered);
+    assert_eq!(st.cursor.offset, short_byte);
+}
+
 // ── Delete word / line ────────────────────────────────────────────────────────
 
 #[test]
@@ -1646,7 +1691,7 @@ fn can_insert_image_reference_in_preview_judges_the_synced_spot_without_moving()
     st.scroll = 0;
     let offset = src.find("prose").unwrap();
     st.cursor.offset = offset;
-    assert!(!edit_ops::can_insert_image_reference(&mut st, 1));
+    assert!(!edit_ops::can_insert_image_reference(&mut st, 1, 80));
     assert_eq!(st.cursor.offset, offset);
     assert_eq!(st.mode, Mode::Preview);
 }
@@ -1664,12 +1709,12 @@ fn can_insert_image_reference_on_the_blank_line_after_a_block_that_absorbs_it() 
         st.mode = Mode::Rendered;
         st.cursor.offset = src.find("\n\n").unwrap() + 1;
         assert!(
-            edit_ops::can_insert_image_reference(&mut st, 24),
+            edit_ops::can_insert_image_reference(&mut st, 24, 80),
             "on the blank line in {src:?}"
         );
         st.cursor.offset = src.find(inside).unwrap();
         assert!(
-            !edit_ops::can_insert_image_reference(&mut st, 24),
+            !edit_ops::can_insert_image_reference(&mut st, 24, 80),
             "inside the block in {src:?}"
         );
     }
