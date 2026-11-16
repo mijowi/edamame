@@ -14,6 +14,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Fixed
 
+- Saving backs up the file first, so a save that fails partway, such as on a full disk, no longer loses the file's contents.
 - Vim: case-insensitive `:s` patterns with a non-ASCII character range (such as `[à-ÿ]`) no longer miss some matches.
 - Diff review opens faster on large files.
 - Preview: **Go to section** (`Ctrl-G`) now opens on the section at the top of the screen rather than wherever the cursor was.

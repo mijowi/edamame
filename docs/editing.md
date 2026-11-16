@@ -425,6 +425,8 @@ For these formats **Inline images** is always on, and **Don't embed** leaves an 
 
 **Autosave** is off by default. Turned on, it writes after you stop typing for a few seconds. Files with no name are never autosaved, since there's nowhere to put them.
 
+**Saving is crash-safe.** Before overwriting a file, edamame copies it to a backup in the same folder (following symlinks). The backup is removed following a successful save, so you normally never see it. If a crash or power loss happens during a save, the backup stays behind for manual recovery. The file itself is rewritten in place, so links, permissions and ownership are kept.
+
 **Selection with a mouse**: drag to select, double-click for a word, triple-click for a line. Inside a table, dragging stays within the cell. Scrolling never moves the cursor.
 
 **Line numbers**, a **width cap** for wide terminals, and **big block-letter H1s** are all available and all off by default — see [configuration.md](configuration.md). Line numbers count *source* lines in every mode, so a given line carries the same number in Raw as in Rendered, and the same one your other editor shows.

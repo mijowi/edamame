@@ -1,8 +1,10 @@
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ropey::Rope;
+use tempfile::NamedTempFile;
 
 /// The newline convention a document uses on disk. The rope always holds pure `\n` (see
 /// [`normalize_newlines`]); this records what to write back. The default is the host platform's.
@@ -70,6 +72,138 @@ fn write_lines<W: Write>(rope: &Rope, ending: LineEnding, w: &mut W) -> std::io:
         w.write_all(rest.as_bytes())?;
     }
     Ok(())
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────
+
+/// The suffix of the backup a save makes beside an existing document before overwriting it, e.g.
+/// `notes.md.a1B2c3.edamame-backup`. One is left behind only when a save is interrupted (the
+/// process dies mid-write) or fails and cannot restore the original.
+pub(crate) const BACKUP_SUFFIX: &str = ".edamame-backup";
+
+/// Write `path` in place, guarded by a backup of its previous contents (Vim's `backupcopy=yes`).
+///
+/// The file is truncated and rewritten, never replaced, so symlinks, hard links, ownership,
+/// permissions and the watcher's view of the file are untouched. Steps:
+///
+/// 1. An existing target is copied to a [`backup_existing`] beside it. A full disk or quota
+///    aborts the save before the original is touched; any other backup failure (say, a read-only
+///    directory) falls back to writing without one. A target that does not exist skips this.
+/// 2. `write` fills the buffered file, which is then flushed and [`sync`]ed.
+/// 3. On success the backup is deleted (dropped). On failure the original is [`restore`]d from
+///    it; if that fails too, the backup is kept and its path leads the error, because callers
+///    show only the outermost context.
+///
+/// Generic over `write` so tests can inject a mid-write failure.
+fn write_with_backup<F>(path: &Path, write: F) -> Result<()>
+where
+    F: FnOnce(&mut BufWriter<File>) -> io::Result<()>,
+{
+    let ctx = || format!("Failed to write file: {}", path.display());
+    let backup = backup_existing(path).with_context(ctx)?;
+    // A failed open has truncated nothing, so it needs no restore.
+    let file = File::create(path).with_context(ctx)?;
+    let mut w = BufWriter::new(file);
+    let written = write(&mut w)
+        .and_then(|()| w.flush())
+        .and_then(|()| sync(w.get_ref()));
+    // Close the file before any restore reopens it.
+    drop(w);
+    let Err(err) = written else {
+        return Ok(());
+    };
+    let err = anyhow::Error::new(err).context(ctx());
+    let Some(backup) = backup else {
+        return Err(err);
+    };
+    match restore(path, backup) {
+        Ok(()) => Err(err),
+        Err(RestoreFailed { error, kept }) => {
+            let err = err.context(format!("could not restore the original: {error}"));
+            Err(match kept {
+                Some(kept) => err.context(format!(
+                    "Failed to write file: {}; its previous contents are in {}",
+                    path.display(),
+                    kept.display()
+                )),
+                None => err,
+            })
+        }
+    }
+}
+
+/// Copy an existing `path` to a fresh backup file beside it (beside the link target, for a
+/// symlink, so the backup shares the document's filesystem and quota). `Ok(None)` when there is
+/// nothing to back up, or the backup failed for a reason that does not stop the save. Only a
+/// regular file is backed up: opening a FIFO to read it would block until a writer appeared.
+fn backup_existing(path: &Path) -> io::Result<Option<NamedTempFile>> {
+    let Ok(real) = std::fs::canonicalize(path) else {
+        return Ok(None);
+    };
+    if !std::fs::metadata(&real).is_ok_and(|m| m.is_file()) {
+        return Ok(None);
+    }
+    match copy_to_backup(&real) {
+        Ok(backup) => Ok(Some(backup)),
+        Err(e) if backup_failure_aborts_save(e.kind()) => Err(e),
+        Err(e) => {
+            tracing::debug!(target: "app", error = %e, path = %real.display(),
+                "no backup before save; writing in place without one");
+            Ok(None)
+        }
+    }
+}
+
+/// Out of space is the one backup failure that aborts the save: the in-place write would most
+/// likely run out too, after the original was already truncated.
+fn backup_failure_aborts_save(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+    )
+}
+
+/// The backup is created `O_EXCL` under a random name, with owner-only permissions, and synced so
+/// it is on disk before the original is truncated. A partial copy is deleted on drop.
+fn copy_to_backup(real: &Path) -> io::Result<NamedTempFile> {
+    let dir = real.parent().unwrap_or(Path::new("."));
+    let mut prefix = real.file_name().unwrap_or_default().to_os_string();
+    prefix.push(".");
+    let mut backup = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(BACKUP_SUFFIX)
+        .tempfile_in(dir)?;
+    io::copy(&mut File::open(real)?, backup.as_file_mut())?;
+    sync(backup.as_file())?;
+    Ok(backup)
+}
+
+/// Why [`restore`] failed, and where the backup was kept (`None` only if keeping it failed too).
+struct RestoreFailed {
+    error: io::Error,
+    kept: Option<PathBuf>,
+}
+
+/// Copy `backup` back over `path` in place, then delete it. On failure, keep it on disk.
+fn restore(path: &Path, mut backup: NamedTempFile) -> std::result::Result<(), RestoreFailed> {
+    let copied = backup.seek(SeekFrom::Start(0)).and_then(|_| {
+        let mut file = OpenOptions::new().write(true).truncate(true).open(path)?;
+        io::copy(backup.as_file_mut(), &mut file)?;
+        sync(&file)
+    });
+    let Err(error) = copied else {
+        return Ok(());
+    };
+    let kept = backup.into_temp_path().keep().ok();
+    Err(RestoreFailed { error, kept })
+}
+
+/// `sync_all`, tolerating a filesystem that does not support it.
+fn sync(file: &File) -> io::Result<()> {
+    match file.sync_all() {
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => Ok(()),
+        result => result,
+    }
 }
 
 /// A `ropey::Rope` with file I/O and edit primitives. Positions are in chars (ropey's native
@@ -168,16 +302,9 @@ impl Buffer {
         self.write_to_disk(path)
     }
 
-    /// The write primitive behind every save path. Buffered so the per-line `\r\n` translation
-    /// is not a syscall per line.
+    /// The write primitive behind every save path; see [`write_with_backup`].
     fn write_to_disk(&self, path: &Path) -> Result<()> {
-        let ctx = || format!("Failed to write file: {}", path.display());
-        let file = std::fs::File::create(path).with_context(ctx)?;
-        let mut w = std::io::BufWriter::new(file);
-        write_lines(&self.rope, self.line_ending, &mut w)
-            .and_then(|()| w.flush())
-            .with_context(ctx)?;
-        Ok(())
+        write_with_backup(path, |w| write_lines(&self.rope, self.line_ending, w))
     }
 
     /// Save to `path` and adopt it as the associated path. Overwrites **unconditionally**;
@@ -597,5 +724,178 @@ mod tests {
         assert_eq!(reloaded.contents(), "p\nq\n");
         assert_eq!(reloaded.line_ending(), LineEnding::Crlf);
         assert_eq!(reloaded.version(), 8);
+    }
+
+    // ── Save backup ───────────────────────────────────────────────
+
+    /// The names in `dir`, sorted.
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read_dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn injected() -> io::Error {
+        io::Error::other("injected write failure")
+    }
+
+    #[test]
+    fn saving_over_a_file_leaves_no_backup_behind() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("doc.md");
+        std::fs::write(&path, "old")?;
+        let mut buf = Buffer::load_file(&path)?;
+        buf.insert(0, "new ");
+        buf.save_file()?;
+        assert_eq!(std::fs::read_to_string(&path)?, "new old");
+        assert_eq!(entries(dir.path()), ["doc.md"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_write_failing_midway_restores_the_original_byte_for_byte() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("doc.md");
+        let original = b"# Title\r\n\r\nbody \xc3\xa9\r\n";
+        std::fs::write(&path, original)?;
+
+        let err = write_with_backup(&path, |w| {
+            w.write_all(b"partial")?;
+            w.flush()?;
+            Err(injected())
+        })
+        .expect_err("injected failure");
+
+        assert!(format!("{err:#}").contains("injected write failure"));
+        assert_eq!(std::fs::read(&path)?, original);
+        assert_eq!(entries(dir.path()), ["doc.md"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_write_to_a_new_file_has_nothing_to_restore() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("new.md");
+        write_with_backup(&path, |_| Err(injected())).expect_err("injected failure");
+        assert_eq!(entries(dir.path()), ["new.md"]);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_restore_keeps_the_backup_and_names_it_in_the_error() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("doc.md");
+        std::fs::write(&path, "precious")?;
+
+        // Replace the target with a directory mid-write, so reopening it to restore fails.
+        let err = write_with_backup(&path, |_| {
+            std::fs::remove_file(&path)?;
+            std::fs::create_dir(&path)?;
+            Err(injected())
+        })
+        .expect_err("injected failure");
+
+        let backups: Vec<String> = entries(dir.path())
+            .into_iter()
+            .filter(|n| n.starts_with("doc.md.") && n.ends_with(BACKUP_SUFFIX))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        let backup = dir.path().join(&backups[0]);
+        assert_eq!(std::fs::read_to_string(&backup)?, "precious");
+        // Callers show only the outermost message, so the path must be in it.
+        assert!(
+            err.to_string().contains(&backup.display().to_string()),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn only_running_out_of_space_aborts_a_save_at_the_backup_step() {
+        assert!(backup_failure_aborts_save(io::ErrorKind::StorageFull));
+        assert!(backup_failure_aborts_save(io::ErrorKind::QuotaExceeded));
+        assert!(!backup_failure_aborts_save(io::ErrorKind::PermissionDenied));
+        assert!(!backup_failure_aborts_save(
+            io::ErrorKind::ReadOnlyFilesystem
+        ));
+    }
+
+    #[test]
+    fn hard_links_stay_shared_after_a_save() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("doc.md");
+        let other = dir.path().join("link.md");
+        std::fs::write(&path, "old")?;
+        std::fs::hard_link(&path, &other)?;
+
+        let mut buf = Buffer::load_file(&path)?;
+        buf.insert(0, "new ");
+        buf.save_file()?;
+        assert_eq!(std::fs::read_to_string(&other)?, "new old");
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn saving_through_a_symlink_keeps_the_link() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("real.md");
+        let link = dir.path().join("link.md");
+        std::fs::write(&target, "old")?;
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        let mut buf = Buffer::load_file(&link)?;
+        buf.insert(0, "new ");
+        buf.save_file()?;
+        assert!(std::fs::symlink_metadata(&link)?.file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target)?, "new old");
+        assert_eq!(entries(dir.path()), ["link.md", "real.md"]);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_save_keeps_the_files_permissions_and_a_new_file_gets_the_default() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let mode = |p: &Path| std::fs::metadata(p).map(|m| m.permissions().mode() & 0o777);
+
+        let existing = dir.path().join("doc.md");
+        std::fs::write(&existing, "old")?;
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o640))?;
+        Buffer::load_file(&existing)?.save_file()?;
+        assert_eq!(mode(&existing)?, 0o640);
+
+        let reference = dir.path().join("reference");
+        File::create(&reference)?;
+        let fresh = dir.path().join("new.md");
+        Buffer::from_str("x").save_copy(&fresh)?;
+        assert_eq!(mode(&fresh)?, mode(&reference)?);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_read_only_directory_still_saves_without_a_backup() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("doc.md");
+        std::fs::write(&path, "old")?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))?;
+
+        let mut buf = Buffer::load_file(&path)?;
+        buf.insert(0, "new ");
+        let saved = buf.save_file();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))?;
+        saved?;
+        assert_eq!(std::fs::read_to_string(&path)?, "new old");
+        assert_eq!(entries(dir.path()), ["doc.md"]);
+        Ok(())
     }
 }
