@@ -8,6 +8,14 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Changed
+
+- Vim: `:s` patterns using `\<` / `\>` word boundaries run faster.
+
+### Fixed
+
+- Vim: case-insensitive `:s` patterns with a non-ASCII character range (such as `[à-ÿ]`) no longer miss some matches.
+
 ## [0.1.7] - 2026-10-28
 
 ### Added
