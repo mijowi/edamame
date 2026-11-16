@@ -191,7 +191,7 @@ tempfile = "3"
 # crates.io and docs.rs use): raw HTML in a document survives export minus
 # scripts, event handlers, and code-running link schemes.  See
 # `export::html::sanitize_body` and docs/dev/security-invariants.md.
-ammonia = "4.2"
+ammonia = "4.2.5"
 # Decodes an exported image reference (`img/a%20b.png`) to the file a browser would load.
 # Already in the graph through `url` (via ammonia).
 percent-encoding = "2"

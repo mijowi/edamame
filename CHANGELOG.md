@@ -18,6 +18,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Diff review opens faster on large files.
 - Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
 
+### Security
+
+- HTML export's sanitizer no longer lets crafted SVG or MathML in a document's raw HTML through into the exported file, where it could run script when the file is opened in a browser (RUSTSEC-2026-0533).
+
 ## [0.1.7] - 2026-10-28
 
 ### Added
