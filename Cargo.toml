@@ -98,7 +98,7 @@ unicode-properties = { version = "0.1", default-features = false, features = ["g
 # `regex` so the vim→regex translator can reach backreferences and
 # lookaround, which the linear-time engine cannot express; it delegates to
 # `regex` for the simple fast path and backtracks only for a fancy feature.
-fancy-regex = "0.19"
+fancy-regex = "0.20"
 
 # Syntax highlighting for fenced code blocks — parsing only.  The feature
 # list is load-bearing, like `image`'s below:
@@ -116,9 +116,9 @@ fancy-regex = "0.19"
 #     nothing reads.  Its one live contribution is a transitive `dump-load`,
 #     which `parsing` already implies.
 #
-# Note syntect 5.3 pins fancy-regex 0.16 against the 0.18 above, so cargo
-# compiles two copies — the same cost the `resvg`/`usvg` pins avoid.
-# Re-check on a syntect bump.
+# Note syntect 5.3 pins fancy-regex 0.16 against the 0.20 above (and
+# `ratex-parser` pins 0.14), so cargo compiles three copies — the same cost
+# the `resvg`/`usvg` pins avoid.  Re-check on a syntect or ratex bump.
 syntect = { version = "5.3", default-features = false, features = [
   "parsing",
   "regex-fancy",
