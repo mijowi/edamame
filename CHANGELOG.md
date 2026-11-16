@@ -20,6 +20,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Preview: **Go to section** (`Ctrl-G`) now opens on the section at the top of the screen rather than wherever the cursor was.
 - Preview: in a document with wrapped lines, the status-bar breadcrumb no longer shows a later heading than the one on screen, and entering edit no longer puts the cursor below the top of the screen.
 - Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
+- Vim: a few rare `:s` patterns that combine back-references or lookaround with repetition no longer match the wrong text or crash the editor.
+- Windows: edamame no longer occasionally hangs when it stops watching a file for outside changes, such as when opening another file or quitting.
 
 ### Security
 
