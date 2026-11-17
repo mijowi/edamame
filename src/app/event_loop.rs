@@ -516,6 +516,7 @@ impl App {
         self.editor.images.begin_frame();
         let editor_ref = &mut self.editor;
         let view_state_ref = &mut self.view_state;
+        let modal_guarded = self.modal_stack.top_blocks_input(Instant::now());
         let modal_stack_top = self.modal_stack.top_mut().filter(|m| m.is_shown());
         terminal.draw(|frame| {
             let view = EditorView {
@@ -547,10 +548,15 @@ impl App {
                     config: config_ref,
                     cursor_visible: modal_cursor_visible,
                 };
-                top.render(frame, frame.area(), &render_ctx);
+                // A guarded modal's controls show disabled while they ignore input.
+                crate::ui::controls::with_controls_disabled(modal_guarded, || {
+                    top.render(frame, frame.area(), &render_ctx);
+                });
             }
         })?;
-        self.last_draw_at = Some(Instant::now());
+        let drawn_at = Instant::now();
+        self.start_input_guards(drawn_at);
+        self.last_draw_at = Some(drawn_at);
         self.needs_draw = false;
         if !is_scrolling {
             self.settle_frame_pending = false;
@@ -570,7 +576,14 @@ impl App {
     ///
     /// `Term` events are caller-specific (passthrough vs. stash vs. key-press
     /// batching), so they stay at each call site.
+    ///
+    /// Runs [`unprompted`](Self::unprompted) wherever it is called from: an async event is never
+    /// the user's input, even when met mid-burst inside a key dispatch.
     pub(super) fn handle_async_event(&mut self, ev: AppEvent) {
+        self.unprompted(|app| app.apply_async_event(ev));
+    }
+
+    fn apply_async_event(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::Term(_) => {
                 // Caller bug; logged rather than panicked so release builds
@@ -950,8 +963,11 @@ impl App {
         // only viewport movement is allowed: a click or drag would relocate the
         // cursor under the flow's own focus management, or mutate text that is
         // about to revert.  Mirrors the keyboard gate in `search_safe_action`.
-        // A navigate-only search does not capture, so clicks stay live there.
-        if (self.search_flow_captures() || self.editor.substitute_preview.is_some())
+        // A navigate-only search does not capture, so clicks stay live there.  A guarded base
+        // layer (see `input_guard`) gates the same way while its window runs.
+        if (self.search_flow_captures()
+            || self.editor.substitute_preview.is_some()
+            || self.base_input_blocked(Instant::now()))
             && !matches!(
                 mouse_event.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::Moved
@@ -1053,6 +1069,9 @@ impl App {
     /// `/` `?` `:` prompt takes the text instead, and any non-Insert sub-mode
     /// drops it ("Normal mode does not edit" — `p`/`P` paste the register).
     pub(super) fn dispatch_paste(&mut self, text: String, dims: &DocDims) {
+        if self.base_input_blocked(Instant::now()) {
+            return;
+        }
         if self.paste_into_cmdline(&text, dims) {
             return;
         }
@@ -1125,6 +1144,10 @@ impl App {
     /// terminal event ends the burst and is stashed (preserving channel order)
     /// for the next iteration's normal dispatch; non-`Term` events are handled
     /// inline so the image pipeline doesn't starve behind a typing burst.
+    ///
+    /// Empties `batch` while the base layer's input guard blocks (see `input_guard`).  Checked
+    /// after collecting, as an async event met here may itself have entered a guarded diff
+    /// review; nothing in the batch's dispatch can arm one, so one check covers every key.
     fn collect_key_burst(&mut self, rx: &mpsc::Receiver<AppEvent>, batch: &mut Vec<Event>) {
         while matches!(self.pending_events.front(), Some(e) if is_key_press(e)) {
             if let Some(e) = self.pending_events.pop_front() {
@@ -1144,6 +1167,9 @@ impl App {
                 Ok(ev) => self.handle_async_event(ev),
                 Err(_) => break,
             }
+        }
+        if self.base_input_blocked(Instant::now()) {
+            batch.clear();
         }
     }
 
@@ -2018,5 +2044,76 @@ mod tests {
             "the poll deadline elapsed"
         );
         assert!(!app.needs_draw);
+    }
+
+    // ── Base-layer input guard (#112) ─────────────────────────────────────
+
+    /// A guard window that started long enough ago to have run out.
+    fn expired_draw() -> Instant {
+        Instant::now()
+            .checked_sub(crate::app::input_guard::INPUT_GUARD_WINDOW + Duration::from_millis(1))
+            .expect("monotonic clock past the window")
+    }
+
+    #[test]
+    fn a_watcher_entered_review_drops_typed_keys_until_its_window_ends() {
+        let mut app = app_with_buffer("alpha\nbeta\n", 0);
+        crate::app::test_utils::close_startup_modals(&mut app);
+        app.config.editor.show_diff_intro = false;
+        app.unprompted(|app| app.enter_diff_mode("alpha\nGAMMA\n".to_owned()));
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        let (_tx, rx) = std::sync::mpsc::channel();
+
+        let mut batch = vec![key('y')];
+        app.collect_key_burst(&rx, &mut batch);
+        assert!(
+            batch.is_empty(),
+            "a `y` typed as the review appeared is dropped"
+        );
+
+        app.start_input_guards(expired_draw());
+        let mut batch = vec![key('y')];
+        app.collect_key_burst(&rx, &mut batch);
+        assert_eq!(
+            batch,
+            vec![key('y')],
+            "past the window, keys reach the review"
+        );
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        app.dispatch_single_key(batch.remove(0), &keymap, &dims());
+        let diff = app.editor.diff.as_ref().expect("still reviewing");
+        assert_eq!(diff.resolved_count(), 1, "the `y` decided the hunk");
+    }
+
+    #[test]
+    fn a_guarded_base_layer_drops_clicks() {
+        let mut app = app_with_buffer("alpha beta\n", 0);
+        crate::app::test_utils::close_startup_modals(&mut app);
+        app.capabilities.mouse = true;
+        // Raw maps a click straight to a source column, with no rendered layout to snapshot.
+        app.editor.mode = crate::editor::Mode::Raw;
+        let click = mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            6,
+            0,
+        );
+        let up = mouse(
+            MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            6,
+            0,
+        );
+        app.base_input_guard = Some(crate::app::input_guard::ModeGuard::armed(app.editor.mode));
+
+        app.dispatch_mouse_event(click, &dims());
+        app.dispatch_mouse_event(up, &dims());
+        assert_eq!(app.editor.cursor.offset, 0, "the click was dropped");
+
+        app.base_input_guard = None;
+        app.dispatch_mouse_event(click, &dims());
+        app.dispatch_mouse_event(up, &dims());
+        assert_ne!(
+            app.editor.cursor.offset, 0,
+            "unguarded, the click moves the cursor"
+        );
     }
 }

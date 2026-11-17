@@ -111,8 +111,9 @@ pub fn render_button_row(
 }
 
 /// Render [`Button`]s centered in `area`, wrapping per [`button_rows`], with `focused_idx`
-/// drawn focused (see `controls::button_style`).  Returns each button's absolute rect, in
-/// order, for hit-testing.
+/// drawn focused (see `controls::button_style`), or all drawn disabled inside
+/// `controls::with_controls_disabled`.  Returns each button's absolute rect, in order, for
+/// hit-testing.
 pub fn render_buttons(
     area: Rect,
     buf: &mut Buffer,
@@ -165,8 +166,9 @@ pub fn render_buttons(
 
 /// Render one [`Button`] left-aligned at the start of `area` (an inline affordance, e.g. the
 /// welcome modal's "Switch theme"), filling the row with the modal background.  Returns its
-/// absolute rect.  A `disabled` button uses the shared disabled control style; the caller is
-/// responsible for ignoring its rect.
+/// absolute rect.  A `disabled` button — or any, inside `controls::with_controls_disabled` — uses
+/// the shared disabled control style; the caller is responsible for ignoring a `disabled` one's
+/// rect.
 pub fn render_button_at(
     area: Rect,
     buf: &mut Buffer,
@@ -197,6 +199,28 @@ mod tests {
     use super::*;
     use crate::ui::scroll_container::compute_pad_h;
     use crate::ui::scroll_container::MAX_PAD_H;
+
+    #[test]
+    fn buttons_render_disabled_inside_the_scope_and_enabled_after() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 20, 1);
+        let disabled = crate::ui::controls::control_label_style(false, true, &theme);
+        let paint = || {
+            let mut buf = Buffer::empty(area);
+            render_button_row(area, &mut buf, &["OK"], 0, &theme);
+            let x = (0..area.width)
+                .find(|&x| buf[(x, 0)].symbol() == "[")
+                .unwrap();
+            buf[(x, 0)].style()
+        };
+        let inside = crate::ui::controls::with_controls_disabled(true, paint);
+        assert_eq!(inside.fg, disabled.fg);
+        let after = paint();
+        assert_ne!(
+            after.fg, disabled.fg,
+            "the scope restores enabled rendering"
+        );
+    }
 
     #[test]
     fn width_two_buttons_with_gap() {

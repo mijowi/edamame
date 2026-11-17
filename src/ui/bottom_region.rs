@@ -41,6 +41,9 @@ pub struct HintSet {
     pub prelude: Option<String>,
     pub chords: Vec<HintChord>,
     pub search_match: Option<(usize, usize)>,
+    /// Draw the chords disabled: the editor is ignoring input while its input guard runs (a
+    /// watcher-entered diff review — see `app::input_guard`).
+    pub disabled: bool,
 }
 
 /// What the hint line displays; the variants are mutually exclusive, each replacing the ones
@@ -118,6 +121,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
             // Absent when the result set is empty, e.g. after a replace-all consumed every match.
             search_match: (!search.matches.is_empty())
                 .then(|| (search.focused_idx + 1, search.matches.len())),
+            ..Default::default()
         };
     }
     match state.mode {
@@ -145,6 +149,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 prelude: (!state.readonly).then(|| "Press any key to edit".to_owned()),
                 chords,
                 search_match: None,
+                ..Default::default()
             }
         }
         // `selection_size` can't see a single-line V-LINE selection (see [`HintCtx::visual_line`]).
@@ -154,6 +159,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
             prelude: None,
             chords: visual_line_chords(keymap),
             search_match: None,
+            ..Default::default()
         },
         Mode::Rendered | Mode::Raw if state.selection_size().is_some() => HintSet {
             prelude: None,
@@ -169,11 +175,13 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 ],
             ),
             search_match: None,
+            ..Default::default()
         },
         Mode::Rendered if cursor_in_table(state) => HintSet {
             prelude: None,
             chords: table_chords(keymap),
             search_match: None,
+            ..Default::default()
         },
         Mode::Diff => {
             let read_only = state.diff.as_ref().is_some_and(|d| d.read_only);
@@ -186,6 +194,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 prelude: None,
                 chords: diff_review_chords(keymap, all_resolved, focused_resolved, read_only),
                 search_match: None,
+                ..Default::default()
             }
         }
         Mode::Rendered | Mode::Raw => {
@@ -234,6 +243,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 prelude: None,
                 chords,
                 search_match: None,
+                ..Default::default()
             }
         }
     }
@@ -432,16 +442,28 @@ fn arrow_bundle_chord(
 /// isn't useful — so a narrow row simply truncates in the non-wrapping `Paragraph`.
 ///
 /// `bar_style` is the active mode's hint-bar background, [`Theme::hint_bar_diff`] in diff mode.
-pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> Vec<Span<'static>> {
+/// `disabled` draws badge and label alike in the shared disabled control style.
+pub fn lay_out_chords(
+    chords: &[HintChord],
+    theme: &Theme,
+    bar_style: Style,
+    disabled: bool,
+) -> Vec<Span<'static>> {
+    let (chord_base, label_base) = if disabled {
+        let style = crate::ui::controls::disabled_style(theme);
+        (style, style)
+    } else {
+        (theme.hint_chord, theme.hint_label)
+    };
     // Wash the badge and label backgrounds with the bar's bg so the row reads as one bar.  A no-op
     // outside diff mode, where all three slots already share `surface_elevated`.
     let chord_style = match bar_style.bg {
-        Some(bg) => theme.hint_chord.bg(bg),
-        None => theme.hint_chord,
+        Some(bg) => chord_base.bg(bg),
+        None => chord_base,
     };
     let label_style = match bar_style.bg {
-        Some(bg) => theme.hint_label.bg(bg),
-        None => theme.hint_label,
+        Some(bg) => label_base.bg(bg),
+        None => label_base,
     };
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chords.len() * 3);
     for chord in chords {
@@ -532,7 +554,12 @@ impl<'a> StatefulWidget for HintLine<'a> {
                     };
                     v.push(Span::styled(text, prelude_style));
                 }
-                v.extend(lay_out_chords(&set.chords, self.theme, self.bar_style));
+                v.extend(lay_out_chords(
+                    &set.chords,
+                    self.theme,
+                    self.bar_style,
+                    set.disabled,
+                ));
                 v
             }
             HintContent::Transient { text, style } => {
@@ -541,7 +568,7 @@ impl<'a> StatefulWidget for HintLine<'a> {
             HintContent::Prompt { prompt, chords } => {
                 let prompt_text = format!(" {}  ", prompt);
                 let prompt_span = Span::styled(prompt_text, self.theme.transient_warning);
-                let chord_spans = lay_out_chords(chords, self.theme, self.bar_style);
+                let chord_spans = lay_out_chords(chords, self.theme, self.bar_style, false);
                 let mut v = vec![prompt_span];
                 v.extend(chord_spans);
                 v
@@ -1364,7 +1391,7 @@ mod tests {
             HintChord::new("^B", "Bravo"),
             HintChord::new("^C", "Charlie"),
         ];
-        let spans = lay_out_chords(&chords, theme(), theme().hint_bar);
+        let spans = lay_out_chords(&chords, theme(), theme().hint_bar, false);
         let concat: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(concat.contains("Alpha"));
         assert!(concat.contains("Bravo"));
@@ -1455,6 +1482,7 @@ mod tests {
             prelude: None,
             chords,
             search_match: None,
+            ..Default::default()
         }
     }
 
@@ -1499,6 +1527,7 @@ mod tests {
             prelude: None,
             chords: vec![HintChord::new("⏎", "Next")],
             search_match: Some((2, 3)),
+            ..Default::default()
         };
         let out = render_region(80, HintContent::Chords(set));
         let first_line = out.lines().next().unwrap();
@@ -1526,6 +1555,7 @@ mod tests {
             prelude: Some("Press any key to edit".to_owned()),
             chords: vec![HintChord::new("^P", "Menu")],
             search_match: None,
+            ..Default::default()
         };
         let out = render_region(80, HintContent::Chords(set));
         let first_line = out.lines().next().unwrap();

@@ -16,6 +16,8 @@
 //! The modifiers keep the states distinct on a monochrome terminal; the toggle also encodes its
 //! value by handle position and the literal `on`/`off` text.
 
+use std::cell::Cell;
+
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -136,6 +138,37 @@ pub fn input_delta(input: ControlInput) -> i32 {
 /// Canonical tri-state labels for the image, remote-image, and diagram policies.
 pub const ASK_ALWAYS_NEVER: &[&str] = &["Ask", "Always", "Never"];
 
+// ── Render-scoped disabling ───────────────────────────────────────────────
+
+thread_local! {
+    /// Set by [`with_controls_disabled`] for the length of one modal's render.
+    static CONTROLS_DISABLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `render` with every control it paints drawn disabled — the cue that a modal is ignoring
+/// input while its input guard runs (see `app::input_guard`).  Covers every control-family style:
+/// buttons, toggles, pills, text inputs (cursor hidden), row labels, and modal-body links.
+///
+/// Scoped render state rather than a parameter because the controls are built several widget
+/// layers below the one place (`App::draw_frame`) that knows the guard; threading a flag through
+/// each modal and widget would touch every one of them for a sub-second cue.  The previous value
+/// is restored even on unwind.
+pub fn with_controls_disabled<R>(disabled: bool, render: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CONTROLS_DISABLED.with(|d| d.set(self.0));
+        }
+    }
+    let _restore = Restore(CONTROLS_DISABLED.with(|d| d.replace(disabled)));
+    render()
+}
+
+/// Whether the current render is inside [`with_controls_disabled`]`(true, …)`.
+pub(crate) fn controls_disabled() -> bool {
+    CONTROLS_DISABLED.with(Cell::get)
+}
+
 // ── Shared control styles ─────────────────────────────────────────────────
 
 /// The one focus fill shared by every control and by a focused row's label column.
@@ -151,7 +184,9 @@ pub fn value_unfocused_style(theme: &Theme) -> Style {
 /// Style for an inline modal-body link (see [`crate::ui::modal_links`]).  Modal authors must
 /// use this rather than `theme.link_text` directly, or the focused half drifts per modal.
 pub(crate) fn link_style(focused: bool, theme: &Theme) -> Style {
-    if focused {
+    if controls_disabled() {
+        disabled_style(theme)
+    } else if focused {
         focused_style(theme)
     } else {
         theme.link_text
@@ -167,7 +202,9 @@ pub fn disabled_style(theme: &Theme) -> Style {
 
 /// Value style for a text input; the caller splices the cursor block into the value itself.
 pub fn text_value_style(focused: bool, theme: &Theme) -> Style {
-    if focused {
+    if controls_disabled() {
+        disabled_style(theme)
+    } else if focused {
         focused_style(theme)
     } else {
         value_unfocused_style(theme)
@@ -177,7 +214,7 @@ pub fn text_value_style(focused: bool, theme: &Theme) -> Style {
 /// Style for a control row's label column (marker + label + padding); shared by every modal
 /// that lays controls out in a column, so parents never craft the style themselves.
 pub fn control_label_style(focused: bool, disabled: bool, theme: &Theme) -> Style {
-    if disabled {
+    if disabled || controls_disabled() {
         theme.modal_close_hint
     } else if focused {
         theme.modal_item_selected
@@ -205,9 +242,12 @@ pub fn control_row_spans(
     spans
 }
 
-/// Chip style for a bracketed button; buttons are never disabled, so only focus varies.
+/// Chip style for a bracketed button: the disabled label style inside
+/// [`with_controls_disabled`], else focused or resting.
 pub fn button_style(focused: bool, theme: &Theme) -> Style {
-    if focused {
+    if controls_disabled() {
+        control_label_style(false, true, theme)
+    } else if focused {
         focused_style(theme)
     } else {
         Style::default()
@@ -353,7 +393,7 @@ pub fn pill_spans(
     let slot = max_label_cells(labels);
     let label = labels.get(current_index).copied().unwrap_or("");
     let text = format!("‹ {} ›", center(label, slot));
-    let style = if disabled {
+    let style = if disabled || controls_disabled() {
         disabled_style(theme)
     } else if focused {
         focused_style(theme)
@@ -381,6 +421,7 @@ pub fn toggle_width() -> usize {
 pub fn toggle_spans(on: bool, _focused: bool, disabled: bool, theme: &Theme) -> Vec<Span<'static>> {
     let p = &theme.palette;
     let label = if on { " on " } else { " off" };
+    let disabled = disabled || controls_disabled();
 
     let (fill_bg, handle_bg, grip_fg, label_fg) = if disabled {
         (p.bg_muted, p.text_muted, p.bg_muted, p.text_muted)
@@ -446,6 +487,55 @@ mod tests {
 
     fn spans_text(spans: &[Span<'static>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn every_control_style_draws_disabled_inside_the_scope() {
+        let t = theme();
+        let off = disabled_style(t);
+        let label_off = control_label_style(false, true, t);
+        let (button, label, value, link, pill, toggle) = with_controls_disabled(true, || {
+            (
+                button_style(true, t),
+                control_label_style(true, false, t),
+                text_value_style(true, t),
+                link_style(true, t),
+                pill_spans(ASK_ALWAYS_NEVER, 0, true, false, t),
+                toggle_spans(true, true, false, t),
+            )
+        });
+        assert_eq!(button, label_off);
+        assert_eq!(label, label_off);
+        assert_eq!(value, off);
+        assert_eq!(link, off);
+        assert_eq!(pill[0].style, off);
+        assert_eq!(toggle, toggle_spans(true, true, true, t));
+    }
+
+    #[test]
+    fn the_disabled_scope_restores_on_exit_and_nests() {
+        let t = theme();
+        with_controls_disabled(true, || {
+            with_controls_disabled(false, || assert!(!controls_disabled()));
+            assert!(
+                controls_disabled(),
+                "the inner scope restored the outer value"
+            );
+        });
+        assert!(!controls_disabled());
+        assert_eq!(button_style(true, t), focused_style(t));
+    }
+
+    #[test]
+    fn a_disabled_text_field_hides_its_cursor() {
+        let cursor = Style::default().add_modifier(Modifier::SLOW_BLINK);
+        let paint = || {
+            scrolled_field_spans("abc", 3, &mut 0, 10, true, Style::default(), cursor)
+                .iter()
+                .any(|s| s.style == cursor)
+        };
+        assert!(paint(), "enabled: the cursor is drawn");
+        assert!(!with_controls_disabled(true, paint));
     }
 
     #[test]

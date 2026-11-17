@@ -256,7 +256,10 @@ mod tests {
         finish_read(app, rx);
     }
 
+    /// A deliberate key, typed once the modal has been read: lifts the input guard an unprompted
+    /// modal opens with (see `app::input_guard`), as its window would have run out by then.
     fn key(app: &mut App, code: KeyCode) {
+        app.modal_stack.lift_guards();
         app.dispatch_modal_key(KeyEvent::new(code, KeyModifiers::NONE), H, W);
     }
 

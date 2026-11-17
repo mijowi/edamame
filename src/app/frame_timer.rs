@@ -113,6 +113,7 @@ impl App {
         push(self.diff_advance_deadline());
         push(self.search_advance_deadline());
         push(self.modal_stack.next_deadline());
+        push(self.base_input_guard_deadline());
         earliest
     }
 }

@@ -702,12 +702,19 @@ impl App {
 
     /// Pop the topmost modal, dispatch the key to it, and apply the [`ModalOutcome`].
     /// Pop-then-dispatch is what lets the handler take `&mut App` without a borrow conflict.
+    ///
+    /// Dropped while the modal's input guard runs (see [`super::input_guard`]) — dropped, not
+    /// passed to the editor: the key was typed before the modal was seen, but the document it
+    /// was meant for is no longer what the user is looking at.  Likewise for paste and click.
     pub(super) fn dispatch_modal_key(
         &mut self,
         key: crossterm::event::KeyEvent,
         doc_height: usize,
         doc_width: usize,
     ) {
+        if self.modal_stack.top_blocks_input(std::time::Instant::now()) {
+            return;
+        }
         let Some(mut top) = self.modal_stack.pop() else {
             return;
         };
@@ -726,6 +733,9 @@ impl App {
     /// Route a bracketed paste to the topmost modal, as [`Self::dispatch_modal_key`] does.  Only
     /// the text-input modals act on it.
     pub(super) fn dispatch_modal_paste(&mut self, text: &str) {
+        if self.modal_stack.top_blocks_input(std::time::Instant::now()) {
+            return;
+        }
         let Some(mut top) = self.modal_stack.pop() else {
             return;
         };
@@ -744,6 +754,9 @@ impl App {
     /// Route a left-button click at `(col, row)` to the topmost modal, as
     /// [`Self::dispatch_modal_key`] does.
     pub(super) fn dispatch_modal_click(&mut self, col: u16, row: u16) {
+        if self.modal_stack.top_blocks_input(std::time::Instant::now()) {
+            return;
+        }
         let Some(mut top) = self.modal_stack.pop() else {
             return;
         };
@@ -1293,6 +1306,17 @@ impl App {
         {
             self.modal_stack
                 .push(Box::new(crate::app::modal::DiffIntroModal::new()));
+        }
+        // Diff review binds bare `y` / `n` / `Y` / `N`, so prose typed as a watcher-entered review
+        // appears would decide hunks unseen (#112).  The intro modal, when shown, is guarded in
+        // its own right and stands in front of the review; dismissing it is the user's own act.
+        if self
+            .modal_stack
+            .contains::<crate::app::modal::DiffIntroModal>()
+        {
+            self.base_input_guard = None;
+        } else {
+            self.arm_base_input_guard(crate::editor::Mode::Diff);
         }
         if uneven_table_fallback {
             self.flash(

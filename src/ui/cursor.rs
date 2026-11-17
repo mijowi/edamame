@@ -112,7 +112,8 @@ pub fn scrolled_field_spans(
     let mut spans = Vec::from(text_field_spans(
         &shown,
         cursor - new_scroll,
-        visible,
+        // A disabled field shows no cursor (see `controls::with_controls_disabled`).
+        visible && !crate::ui::controls::controls_disabled(),
         value_style,
         cursor_style,
     ));

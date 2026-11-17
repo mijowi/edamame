@@ -109,6 +109,7 @@ impl App {
                 prelude: Some(url.clone()),
                 chords: Vec::new(),
                 search_match: None,
+                ..Default::default()
             });
         }
         // The live KeyMap so rebinds show on the next frame; the default keymap only
@@ -130,7 +131,9 @@ impl App {
             visual_line: self.vim.as_ref().is_some_and(|v| v.is_visual_line()),
             vim_enabled: self.vim.is_some(),
         };
-        HintContent::Chords(hint_line_for(&self.editor, keymap, ctx))
+        let mut set = hint_line_for(&self.editor, keymap, ctx);
+        set.disabled = self.base_input_blocked(std::time::Instant::now());
+        HintContent::Chords(set)
     }
 
     /// Emit the flash matching `action` after dispatch, keeping UI messaging out of

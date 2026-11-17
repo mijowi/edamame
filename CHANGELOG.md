@@ -15,6 +15,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 ### Changed
 
 - Vim: `:s` patterns using `\<` / `\>` word boundaries run faster.
+- Modals that appear at an unexpected time, such as an update notice or file-changed warning, now ignore input for a brief moment so you don't accidentally answer the prompt while typing. Also applies to diff review when opened by an outside change.
 
 ### Fixed
 

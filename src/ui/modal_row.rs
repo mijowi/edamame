@@ -30,12 +30,10 @@ pub fn format_modal_row(
     layout: RowLayout,
 ) -> Line<'static> {
     let marker = if focused { "› " } else { "  " };
-    let label_style = if focused {
-        theme.modal_item_selected
-    } else {
-        theme.modal_item
-    };
-    let value_style = if editing {
+    let label_style = crate::ui::controls::control_label_style(focused, false, theme);
+    let value_style = if crate::ui::controls::controls_disabled() {
+        label_style
+    } else if editing {
         theme.modal_input_focused
     } else if focused {
         theme.modal_item_selected_hint

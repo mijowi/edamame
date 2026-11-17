@@ -104,7 +104,10 @@ src/
                     #   event_loop.rs, file_changed.rs (watcher event → diff review /
                     #   dirty-conflict modal / reconcile), external_editor.rs,
                     #   flash.rs (TransientMessage), frame_timer.rs,
-                    #   image_dispatch.rs, nav.rs (back / forward history), pointer.rs
+                    #   image_dispatch.rs, input_guard.rs (InputGuard / ModeGuard and
+                    #   App::unprompted: input dropped briefly after a modal or diff
+                    #   review the user didn't ask for opens), nav.rs (back / forward
+                    #   history), pointer.rs
     update_check.rs / update_check/  # fetch.rs (the only network half: one worker,
                     #   one GET), parse.rs (tag_name + release body; bounds the
                     #   notes), policy.rs (pure: interval_elapsed — the daily gate
@@ -272,7 +275,8 @@ src/
     controls.rs         # Control enum (Toggle / Pill), toggle_spans / pill_spans,
                         #   control_label_style / button_style / focused_style,
                         #   cycle_index + apply_images_cascade,
-                        #   render_text_field_row / text_field_width (labeled inputs)
+                        #   render_text_field_row / text_field_width (labeled inputs),
+                        #   with_controls_disabled (a guarded modal's dimmed render)
     cursor.rs           # text_field_spans, scrolled_field_spans (windowed, padded
                         #   fields), insert_char_at / remove_char_at
     dim.rs              # ContentSize, FrameOpts, centered_rect_for_content,

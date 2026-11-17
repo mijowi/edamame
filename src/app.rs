@@ -15,6 +15,7 @@ mod file_changed;
 mod flash;
 mod frame_timer;
 mod image_dispatch;
+mod input_guard;
 mod nav;
 mod pointer;
 mod post_upgrade;
@@ -227,6 +228,13 @@ pub struct App {
     hint_prompt: Option<HintPrompt>,
     /// Active modal stack; render priority and input absorption are stack-order driven.
     modal_stack: ModalStack,
+    /// Set while [`App::unprompted`] runs: the code executing is not a response to the user's
+    /// input, so an input takeover it causes is guarded (#111, #112).
+    unprompted: bool,
+    /// The base-layer input guard: drops editor key / click / paste input for a moment after a
+    /// non-modal input takeover the user didn't ask for — a watcher-entered diff review (#112).
+    /// See [`input_guard`].
+    base_input_guard: Option<input_guard::ModeGuard>,
     /// The named file didn't exist; `App::run` flashes "[New File]" once at startup.
     started_with_new_file: bool,
     /// Autosave debounce anchor: reset on every dirtying edit, cleared when the buffer goes
@@ -663,6 +671,8 @@ impl App {
             autosave_last_seen_version: 0,
             diagram_render_hold_until: None,
             last_editor_key_at: None,
+            unprompted: false,
+            base_input_guard: None,
             images_prompt_due: None,
             diagram_render_watch_version: None,
             section_jump_pending_since: None,
@@ -770,14 +780,19 @@ impl App {
         if self.started_with_new_file {
             self.flash("[New File]", MessageKind::Info);
         }
+        // `App::new` opened these before any input could have asked for them.
+        self.modal_stack.guard_all();
 
         loop {
-            self.tick_timers();
+            // Everything but the terminal-event dispatch below runs unprompted, so a modal or diff
+            // review it opens is guarded against keys already in flight (see `input_guard`).
+            // `handle_async_event` brackets itself, as it is also reached from inside a dispatch.
+            self.unprompted(Self::tick_timers);
             self.coalesce_image_updates();
 
             let term_size = terminal.size()?;
             let dims = self.compute_doc_dims(term_size);
-            self.prepare_viewport(&dims);
+            self.unprompted(|app| app.prepare_viewport(&dims));
 
             let since_draw = self.last_draw_at.map(|t| t.elapsed());
             if self.should_draw(since_draw) && !self.defer_settle_frame(&rx) {
