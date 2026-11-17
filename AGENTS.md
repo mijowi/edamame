@@ -131,10 +131,10 @@ src/
                     #   daily_tip, diagrams_enabled, diff_bulk_confirm, diff_intro,
                     #   diff_quit_confirm, diff_resolve_confirm, dirty_guard,
                     #   export_success, export_theme, images_enabled, insert_table,
-                    #   keybinds, markdown_cheat_sheet, notice, overwrite_confirm,
-                    #   paste_image, post_upgrade, quit_confirm, remote_image, save_as,
-                    #   settings, terminal_capabilities, theme_picker, tips_index,
-                    #   update, welcome, width_injection
+                    #   keybinds, line_ending, markdown_cheat_sheet, notice,
+                    #   overwrite_confirm, paste_image, post_upgrade, quit_confirm,
+                    #   remote_image, save_as, settings, terminal_capabilities,
+                    #   theme_picker, tips_index, update, welcome, width_injection
 
   cli.rs / cli/
     args.rs         # Invocation / RunOpts / CliError; hand-rolled OsString flag parser

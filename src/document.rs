@@ -9,7 +9,7 @@ pub mod source_map;
 pub mod visual_cache;
 pub mod wrap;
 
-pub use buffer::{Buffer, LineEnding};
+pub use buffer::{Buffer, LineEnding, MixedEndings};
 pub use cursor::Cursor;
 pub(crate) use graphemes::{class_at, class_of, Class};
 pub use graphemes::{

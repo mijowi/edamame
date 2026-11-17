@@ -105,10 +105,13 @@ impl DirtyConflictModal {
                 // [Save a copy] — stay on the stack under the path-entry sibling so a cancel
                 // there returns the user here, intact.
                 let on_disk = self.on_disk_contents.clone();
+                // A mixed-endings prompt comes first, on top of this modal.
                 ModalOutcome::ContinueAnd(Box::new(move |app| {
-                    let default = local_copy_path(app.editor.buffer.path());
-                    app.modal_stack
-                        .push(Box::new(DirtyConflictSaveCopyModal::new(default, on_disk)));
+                    app.with_line_ending_choice(Box::new(move |app| {
+                        let default = local_copy_path(app.editor.buffer.path());
+                        app.modal_stack
+                            .push(Box::new(DirtyConflictSaveCopyModal::new(default, on_disk)));
+                    }));
                 }))
             }
             ModalResponse::ButtonPressed(2) => {

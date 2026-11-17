@@ -68,28 +68,11 @@ impl DirtyGuardModal {
                 };
                 let fragment = self.fragment.take();
                 match idx {
+                    // Behind the mixed-endings prompt, whose `Esc` abandons the navigation.
                     0 => ModalOutcome::CloseAnd(Box::new(move |app| {
-                        let (h, w) = (app.last_doc_height, app.last_doc_width);
-                        if app.editor.buffer.path().is_some() {
-                            match app.save_buffer() {
-                                Ok(()) => {
-                                    if app.navigate_to_pending(pending, fragment, h, w) {
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(target: "link", error = %e, "save-before-navigate failed");
-                                }
-                            }
-                        } else {
-                            // Pathless: prompt, then navigate once written.  This document
-                            // stays on screen meanwhile, so the correction below applies.
-                            app.open_save_as_modal(Some(Box::new(move |app| {
-                                let (h, w) = (app.last_doc_height, app.last_doc_width);
-                                let _ = app.navigate_to_pending(pending, fragment, h, w);
-                            })));
-                        }
-                        app.editor.ensure_cursor_visible(h, w);
+                        app.with_line_ending_choice(Box::new(move |app| {
+                            save_then_navigate(app, pending, fragment);
+                        }));
                     })),
                     _ => ModalOutcome::CloseAnd(Box::new(move |app| {
                         app.editor.dirty = false;
@@ -102,6 +85,31 @@ impl DirtyGuardModal {
             }
         }
     }
+}
+
+/// `[Save]`: write the buffer, then resume the navigation it was guarding.
+fn save_then_navigate(app: &mut App, pending: NavPending, fragment: Option<String>) {
+    let (h, w) = (app.last_doc_height, app.last_doc_width);
+    if app.editor.buffer.path().is_some() {
+        match app.save_buffer() {
+            Ok(()) => {
+                if app.navigate_to_pending(pending, fragment, h, w) {
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "link", error = %e, "save-before-navigate failed");
+            }
+        }
+    } else {
+        // Pathless: prompt, then navigate once written.  This document
+        // stays on screen meanwhile, so the correction below applies.
+        app.open_save_as_modal(Some(Box::new(move |app| {
+            let (h, w) = (app.last_doc_height, app.last_doc_width);
+            let _ = app.navigate_to_pending(pending, fragment, h, w);
+        })));
+    }
+    app.editor.ensure_cursor_visible(h, w);
 }
 
 impl Modal for DirtyGuardModal {

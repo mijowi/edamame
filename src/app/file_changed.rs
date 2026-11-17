@@ -94,6 +94,12 @@ impl App {
             return;
         }
 
+        // Whether the file on disk mixes line endings is only visible in the raw
+        // bytes, and it decides whether the next save has to ask first (#101).
+        // Recorded for every read, own-write echoes included: a save's own echo
+        // is uniform, so it clears nothing a choice had not already settled.
+        self.editor.buffer.observe_disk_endings(&change.contents);
+
         // Normalize before anything hashes, diffs or stores the bytes: the
         // buffer is `\n`-only, so a raw CRLF read would make every comparison
         // below see a spurious whole-file change, and the own-write filter — which
@@ -247,16 +253,13 @@ impl App {
     /// Cursor and scroll are preserved best-effort;
     /// [`crate::editor::EditorState::replace_buffer`] clamps them.
     pub(crate) fn reload_buffer_from_disk(&mut self, contents: String) {
-        let Some(path) = self.editor.buffer.path().map(|p| p.to_path_buf()) else {
+        if self.editor.buffer.path().is_none() {
             // Unreachable: the watcher only fires when a path was set.
             return;
-        };
-        let previous_version = self.editor.buffer.version();
-        // `contents` is already normalized to `\n`, so re-detecting the
-        // convention would report `Lf` and silently flip a CRLF document.
-        let line_ending = self.editor.buffer.line_ending();
-        let new_buffer =
-            crate::document::Buffer::reload(&path, &contents, previous_version, line_ending);
+        }
+        // `contents` is already normalized to `\n`, so `reload` carries the
+        // ending and the mixed-endings state forward rather than re-detecting.
+        let new_buffer = self.editor.buffer.reload(&contents);
         // At the App level, so the deferred-advance timer goes with the session;
         // `replace_buffer` drops the session but leaves the timer armed.
         self.exit_search_flow();
@@ -301,6 +304,28 @@ mod tests {
             path,
             contents: contents.to_owned(),
         }
+    }
+
+    #[test]
+    fn a_file_turning_mixed_on_disk_needs_a_choice_through_a_reload() {
+        let (mut app, tmp) = app_with_temp_file("alpha\n");
+        app.config.editor.diff_on_change = false;
+        assert!(app.editor.buffer.needs_line_ending_choice().is_none());
+        app.handle_file_changed(file_changed_event(
+            tmp.path().to_path_buf(),
+            "alpha\r\nbeta\n",
+        ));
+        assert_eq!(app.editor.buffer.contents(), "alpha\nbeta\n", "reloaded");
+        assert_eq!(
+            app.editor.buffer.needs_line_ending_choice(),
+            Some(crate::document::MixedEndings { crlf: 1, lf: 1 })
+        );
+        // Turning uniform again on disk clears it.
+        app.handle_file_changed(file_changed_event(
+            tmp.path().to_path_buf(),
+            "alpha\nbeta\ngamma\n",
+        ));
+        assert!(app.editor.buffer.needs_line_ending_choice().is_none());
     }
 
     #[test]
