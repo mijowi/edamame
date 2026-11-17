@@ -460,8 +460,14 @@ impl App {
                     self.notify("No file path for buffer", ModalKind::Error);
                 } else {
                     // The invocation itself needs the live `Terminal` handle, owned by the run
-                    // loop.
-                    self.pending_open_file_in_editor = true;
+                    // loop.  A dirty buffer is saved first, so it asks about mixed endings
+                    // here, before the flag is armed.
+                    let open = |app: &mut Self| app.pending_open_file_in_editor = true;
+                    if self.editor.dirty {
+                        self.with_line_ending_choice_or("Open in editor cancelled", Box::new(open));
+                    } else {
+                        open(self);
+                    }
                     self.needs_draw = true;
                 }
                 true
@@ -650,7 +656,7 @@ impl App {
                 true
             }
             Action::SaveAs => {
-                self.open_save_as_modal(None);
+                self.with_line_ending_choice(Box::new(|app| app.open_save_as_modal(None)));
                 self.needs_draw = true;
                 true
             }
@@ -658,22 +664,7 @@ impl App {
             // `App::save_buffer`, the single call site for `Buffer::save_file`.  The flash fires
             // here because `dispatch_action`'s only runs when this returns `false`.
             Action::Save => {
-                if self.editor.mode == crate::editor::Mode::Diff {
-                    self.flash("Resolve diff before saving", MessageKind::Info);
-                    return true;
-                }
-                // A never-saved buffer has no destination: prompt rather than let `save_file`
-                // fail into a generic "Save failed".
-                if self.editor.buffer.path().is_none() {
-                    self.open_save_as_modal(None);
-                    self.needs_draw = true;
-                    return true;
-                }
-                let dirty_before = self.editor.dirty;
-                if let Err(e) = self.save_buffer() {
-                    tracing::warn!(error = %e, "save failed");
-                }
-                self.flash_for_action(&Action::Save, dirty_before);
+                self.save_action();
                 true
             }
             _ => false,
@@ -1409,6 +1400,64 @@ impl App {
         self.modal_stack
             .remove_first::<crate::app::modal::DiffQuitConfirmModal>();
         self.needs_draw = true;
+    }
+
+    /// `Action::Save`: write the buffer in place, or prompt for a path when it has none.
+    fn save_action(&mut self) {
+        if self.editor.mode == crate::editor::Mode::Diff {
+            self.flash("Resolve diff before saving", MessageKind::Info);
+            return;
+        }
+        if self.editor.buffer.needs_line_ending_choice().is_some() {
+            // A clean buffer has nothing to save, and writing it anyway would only rewrite the
+            // mixed endings, so it neither asks nor writes.
+            if self.editor.dirty || self.editor.buffer.path().is_none() {
+                self.with_line_ending_choice(Box::new(|app| app.save_action()));
+                self.needs_draw = true;
+            }
+            return;
+        }
+        // A never-saved buffer has no destination: prompt rather than let `save_file`
+        // fail into a generic "Save failed".
+        if self.editor.buffer.path().is_none() {
+            self.open_save_as_modal(None);
+            self.needs_draw = true;
+            return;
+        }
+        let dirty_before = self.editor.dirty;
+        if let Err(e) = self.save_buffer() {
+            tracing::warn!(error = %e, "save failed");
+        }
+        self.flash_for_action(&Action::Save, dirty_before);
+    }
+
+    /// Run `then` — a write and whatever follows it — first asking which line ending to use
+    /// when the buffer's file mixes LF and CRLF and no choice has been made this session (see
+    /// [`crate::document::Buffer::needs_line_ending_choice`]).  Without a mix, `then` runs at
+    /// once.  `Esc` on the [`modal::LineEndingModal`] drops `then`, so a quit or navigation
+    /// waiting on the save is abandoned with it.
+    ///
+    /// Every interactive write goes through here.  `Buffer` refuses to write a mixed file
+    /// regardless, so a path that skips the gate fails loudly instead of unifying the endings.
+    pub(crate) fn with_line_ending_choice(&mut self, then: modal::save_as::AfterSave) {
+        self.with_line_ending_choice_or("Save cancelled", then);
+    }
+
+    /// [`Self::with_line_ending_choice`] for a caller whose `Esc` abandons more than the save,
+    /// flashing `cancelled` instead of "Save cancelled".
+    pub(crate) fn with_line_ending_choice_or(
+        &mut self,
+        cancelled: &'static str,
+        then: modal::save_as::AfterSave,
+    ) {
+        let Some(mixed) = self.editor.buffer.needs_line_ending_choice() else {
+            then(self);
+            return;
+        };
+        let current = self.editor.buffer.line_ending();
+        self.modal_stack.push(Box::new(modal::LineEndingModal::new(
+            mixed, current, cancelled, then,
+        )));
     }
 
     /// The single call site for [`crate::document::Buffer::save_file`].  Every save path funnels

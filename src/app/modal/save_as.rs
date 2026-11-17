@@ -20,7 +20,8 @@ use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, MessageKind};
 use crate::ui::{default_save_as_path, SaveCopyResponse, SaveCopyState, SaveCopyView};
 
-/// A side effect to run after a successful save (e.g. quit, navigate).
+/// A deferred continuation: what runs once a save succeeds (e.g. quit, navigate), or once
+/// [`App::with_line_ending_choice`] has its answer (the write itself, or the prompt leading to it).
 pub type AfterSave = Box<dyn FnOnce(&mut App)>;
 
 pub struct SaveAsModal {

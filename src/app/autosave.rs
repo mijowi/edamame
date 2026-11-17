@@ -1,7 +1,8 @@
 //! Idle-debounce autosave: every dirtying edit resets a window of
 //! `config.editor.autosave_idle_ms`; when it expires the buffer is written silently and
 //! an `Autosaved` flash is shown.  Pathless buffers are skipped without UI; save failures
-//! escalate to a sticky `NoticeModal` via [`App::notify`].
+//! escalate to a sticky `NoticeModal` via [`App::notify`].  A file mixing line endings opens
+//! the [`LineEndingModal`] first, as a manual save does.
 //!
 //! Driven from [`App::tick_timers`]; [`App::autosave_deadline`] feeds [`App::next_deadline`]
 //! so the loop wakes exactly when the window expires rather than polling.
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 use crate::ui::ModalKind;
 
 use super::flash::MessageKind;
+use super::modal::LineEndingModal;
 use super::App;
 
 impl App {
@@ -61,6 +63,22 @@ impl App {
             return;
         }
 
+        // A mixed file asks which ending to use, as a manual save does.  Disarmed either way:
+        // a choice saves through the continuation, and after `Esc` the next edit re-arms, so
+        // the prompt returns at the next idle.  Never stacked on a prompt already open.
+        if self.editor.buffer.needs_line_ending_choice().is_some() {
+            self.autosave_pending_since = None;
+            if !self.modal_stack.contains::<LineEndingModal>() {
+                self.with_line_ending_choice_or("Autosave cancelled", Box::new(Self::autosave_now));
+                self.needs_draw = true;
+            }
+            return;
+        }
+        self.autosave_now();
+    }
+
+    /// Write the buffer and report the outcome.
+    fn autosave_now(&mut self) {
         match self.save_buffer() {
             Ok(()) => {
                 self.autosave_pending_since = None;
@@ -93,6 +111,8 @@ impl App {
 mod tests {
     use std::time::Duration;
 
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use super::*;
     use crate::app::test_utils::make_app;
     use crate::config::Action;
@@ -110,6 +130,83 @@ mod tests {
         let len = app.editor.buffer.len_chars();
         app.editor.buffer.insert_char(len, 'x');
         app.editor.dirty = true;
+    }
+
+    /// Edit, arm, and expire the window as if the user had gone idle.
+    fn edit_then_idle(app: &mut App) {
+        dirty_edit(app);
+        app.tick_autosave(); // arm
+        app.autosave_pending_since = Some(Instant::now() - Duration::from_secs(1));
+        app.tick_autosave();
+    }
+
+    /// An app editing a freshly written mixed file (first break CRLF) with autosave on.
+    fn app_with_mixed_file(dir: &std::path::Path) -> (App, std::path::PathBuf) {
+        let path = dir.join("mixed.md");
+        std::fs::write(&path, "a\r\nb\n").unwrap();
+        let mut app = make_app();
+        crate::app::test_utils::close_startup_modals(&mut app);
+        app.editor.buffer = Buffer::load_file(&path).unwrap();
+        shrink_window(&mut app);
+        (app, path)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.dispatch_modal_key(KeyEvent::new(code, KeyModifiers::NONE), 40, 80);
+    }
+
+    #[test]
+    fn a_mixed_file_asks_once_per_idle_and_esc_waits_for_the_next_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut app, path) = app_with_mixed_file(dir.path());
+
+        edit_then_idle(&mut app);
+        assert!(app.modal_stack.contains::<LineEndingModal>());
+        assert!(
+            app.autosave_pending_since.is_none(),
+            "disarmed while asking"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\n");
+
+        // Another expired window while the prompt is open stacks no second one.
+        app.autosave_pending_since = Some(Instant::now() - Duration::from_secs(1));
+        app.tick_autosave();
+        assert_eq!(app.modal_stack.count::<LineEndingModal>(), 1);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal_stack.is_empty());
+        assert!(app.editor.dirty);
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\n");
+        let flash = app.transient.as_ref().map(|t| t.text.clone());
+        assert_eq!(flash.as_deref(), Some("Autosave cancelled"));
+
+        app.tick_autosave();
+        assert!(
+            app.modal_stack.is_empty(),
+            "no edit since, so no new prompt"
+        );
+
+        edit_then_idle(&mut app);
+        assert!(app.modal_stack.contains::<LineEndingModal>(), "asks again");
+    }
+
+    #[test]
+    fn choosing_from_the_autosave_prompt_saves_and_later_autosaves_do_not_ask() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut app, path) = app_with_mixed_file(dir.path());
+
+        edit_then_idle(&mut app);
+        press(&mut app, KeyCode::Left); // focus starts on `Use CRLF`
+        press(&mut app, KeyCode::Enter); // `Use LF`
+        assert!(app.modal_stack.is_empty());
+        assert!(!app.editor.dirty);
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\nb\nx");
+        let flash = app.transient.as_ref().map(|t| t.text.clone());
+        assert_eq!(flash.as_deref(), Some("Autosaved"));
+
+        edit_then_idle(&mut app);
+        assert!(app.modal_stack.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\nb\nxx");
     }
 
     #[test]

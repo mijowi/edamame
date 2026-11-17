@@ -34,6 +34,37 @@ impl LineEnding {
     }
 }
 
+/// How many line breaks of each kind a file that mixes them holds. Saving can write only one
+/// [`LineEnding`], so the first save of such a file asks which (issue #101).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixedEndings {
+    pub crlf: usize,
+    pub lf: usize,
+}
+
+impl MixedEndings {
+    /// `Some` when `text` holds both CRLF and bare-LF breaks. A lone `\r` is literal text, as in
+    /// [`normalize_newlines`], and counts as neither.
+    pub fn detect(text: &str) -> Option<Self> {
+        let bytes = text.as_bytes();
+        let (mut crlf, mut lf) = (0, 0);
+        for i in memchr::memchr_iter(b'\n', bytes) {
+            if i > 0 && bytes[i - 1] == b'\r' {
+                crlf += 1;
+            } else {
+                lf += 1;
+            }
+        }
+        (crlf > 0 && lf > 0).then_some(Self { crlf, lf })
+    }
+}
+
+impl std::fmt::Display for MixedEndings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} CRLF, {} LF", self.crlf, self.lf)
+    }
+}
+
 /// Collapse CRLF to the internal `\n`-only form. Every path that ingests document text (load,
 /// reload, watcher, `--diff`) funnels through here. No reallocation when there is no `\r`; a lone
 /// `\r` is left as-is.
@@ -208,12 +239,21 @@ fn sync(file: &File) -> io::Result<()> {
 
 /// A `ropey::Rope` with file I/O and edit primitives. Positions are in chars (ropey's native
 /// index). The rope always holds pure `\n`; `line_ending` records the on-disk convention.
+///
+/// A file mixing CRLF and LF loses its per-line endings on load, so writing it would silently
+/// unify them. Such a buffer refuses to write until [`Self::set_line_ending`] records the user's
+/// choice; see [`Self::needs_line_ending_choice`].
 #[derive(Debug, Clone)]
 pub struct Buffer {
     rope: Rope,
     /// The file this buffer was loaded from or last saved to.
     path: Option<PathBuf>,
     line_ending: LineEnding,
+    /// The counts when the file on disk mixes line endings, from the load or the watcher's latest
+    /// read (see [`Self::observe_disk_endings`]).
+    mixed_endings: Option<MixedEndings>,
+    /// Set once the user picks an ending; holds for the session, across reloads.
+    line_ending_chosen: bool,
     /// Bumped on every content mutation so consumers can invalidate cached derived data by a
     /// cheap comparison. Wrapping is fine: adjacent edits always differ.
     version: u64,
@@ -225,6 +265,8 @@ impl Buffer {
             rope: Rope::new(),
             path: None,
             line_ending: LineEnding::default(),
+            mixed_endings: None,
+            line_ending_chosen: false,
             version: 0,
         }
     }
@@ -238,6 +280,8 @@ impl Buffer {
             rope: Rope::from_str(&normalized),
             path: None,
             line_ending,
+            mixed_endings: MixedEndings::detect(text),
+            line_ending_chosen: false,
             version: 0,
         }
     }
@@ -248,19 +292,25 @@ impl Buffer {
             rope,
             path: None,
             line_ending: LineEnding::default(),
+            mixed_endings: None,
+            line_ending_chosen: false,
             version: 0,
         }
     }
 
-    /// Load from disk, detecting the line ending and normalizing the rope to `\n`.
+    /// Load from disk, detecting the line ending (and whether the file mixes them) before
+    /// normalizing the rope to `\n`.
     pub fn load_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read file: {}", path.display()))?;
         let line_ending = LineEnding::detect(&content);
+        let mixed_endings = MixedEndings::detect(&content);
         Ok(Self {
             rope: Rope::from_str(&normalize_newlines(content)),
             path: Some(path.to_owned()),
             line_ending,
+            mixed_endings,
+            line_ending_chosen: false,
             version: 0,
         })
     }
@@ -271,25 +321,26 @@ impl Buffer {
             rope: Rope::new(),
             path: Some(path.to_owned()),
             line_ending: LineEnding::default(),
+            mixed_endings: None,
+            line_ending_chosen: false,
             version: 0,
         }
     }
 
     /// Rebuild after an external edit, from bytes the watcher already read (no second disk hit).
-    /// `version` continues from `previous_version` so the monotonic invariant survives the swap;
-    /// `line_ending` is carried forward rather than re-detected, since the delivered bytes may
-    /// already be normalized and must not flip a `Crlf` document to `Lf`.
-    pub fn reload(
-        path: &Path,
-        contents: &str,
-        previous_version: u64,
-        line_ending: LineEnding,
-    ) -> Self {
+    /// The version continues from `self`'s so the monotonic invariant survives the swap. The
+    /// path, the line ending and the mixed-endings state are carried forward rather than
+    /// re-detected: the delivered bytes are already normalized, so re-detecting would flip a
+    /// `Crlf` document to `Lf` and miss a mix. The App records the mix from the raw bytes through
+    /// [`Self::observe_disk_endings`] before normalizing.
+    pub fn reload(&self, contents: &str) -> Self {
         Self {
             rope: Rope::from_str(&normalize_newlines(contents.to_owned())),
-            path: Some(path.to_owned()),
-            line_ending,
-            version: previous_version.wrapping_add(1),
+            path: self.path.clone(),
+            line_ending: self.line_ending,
+            mixed_endings: self.mixed_endings,
+            line_ending_chosen: self.line_ending_chosen,
+            version: self.version.wrapping_add(1),
         }
     }
 
@@ -302,8 +353,16 @@ impl Buffer {
         self.write_to_disk(path)
     }
 
-    /// The write primitive behind every save path; see [`write_with_backup`].
+    /// The write primitive behind every save path; see [`write_with_backup`]. Refuses while
+    /// [`Self::needs_line_ending_choice`], so no path can unify a mixed file's endings without the
+    /// user's say; the App asks before it gets here.
     fn write_to_disk(&self, path: &Path) -> Result<()> {
+        if let Some(mixed) = self.needs_line_ending_choice() {
+            anyhow::bail!(
+                "{} mixes line endings ({mixed}); choose LF or CRLF before saving",
+                self.path.as_deref().unwrap_or(path).display()
+            );
+        }
         write_with_backup(path, |w| write_lines(&self.rope, self.line_ending, w))
     }
 
@@ -337,8 +396,24 @@ impl Buffer {
         self.line_ending
     }
 
+    /// Write `line_ending` from now on, and record it as the user's choice: a mixed file is no
+    /// longer asked about for the rest of the session.
     pub fn set_line_ending(&mut self, line_ending: LineEnding) {
         self.line_ending = line_ending;
+        self.line_ending_chosen = true;
+    }
+
+    /// The counts when the file mixes line endings and the user has not yet chosen one, which
+    /// means a write would rewrite some lines' endings without their say.
+    pub fn needs_line_ending_choice(&self) -> Option<MixedEndings> {
+        self.mixed_endings.filter(|_| !self.line_ending_chosen)
+    }
+
+    /// Record whether the file on disk now mixes line endings, from the watcher's raw,
+    /// un-normalized read. Saving overwrites what is on disk, so this tracks the file, not the
+    /// buffer's text: a file that becomes mixed externally is asked about too.
+    pub fn observe_disk_endings(&mut self, raw: &str) {
+        self.mixed_endings = MixedEndings::detect(raw);
     }
 
     pub fn len_chars(&self) -> usize {
@@ -458,6 +533,8 @@ mod tests {
             rope: Rope::from_str(text),
             path: None,
             line_ending: LineEnding::Lf,
+            mixed_endings: None,
+            line_ending_chosen: false,
             version: 0,
         }
     }
@@ -720,10 +797,112 @@ mod tests {
     fn reload_carries_the_ending_forward_and_normalizes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("doc.md");
-        let reloaded = Buffer::reload(&path, "p\r\nq\r\n", 7, LineEnding::Crlf);
+        let mut before = Buffer::for_new_file(&path);
+        before.set_line_ending(LineEnding::Crlf);
+        before.version = 7;
+        let reloaded = before.reload("p\r\nq\r\n");
         assert_eq!(reloaded.contents(), "p\nq\n");
         assert_eq!(reloaded.line_ending(), LineEnding::Crlf);
+        assert_eq!(reloaded.path(), Some(path.as_path()));
         assert_eq!(reloaded.version(), 8);
+    }
+
+    // ── Mixed line endings ────────────────────────────────────────
+
+    #[test]
+    fn mixed_endings_counts_both_kinds_and_ignores_a_lone_cr() {
+        assert_eq!(
+            MixedEndings::detect("a\r\nb\nc\r\nd\n\n"),
+            Some(MixedEndings { crlf: 2, lf: 3 })
+        );
+        assert_eq!(MixedEndings::detect("a\r\nb\r\n"), None);
+        assert_eq!(MixedEndings::detect("a\nb\n"), None);
+        assert_eq!(MixedEndings::detect("a\rb\n"), None);
+        assert_eq!(MixedEndings::detect(""), None);
+        assert_eq!(
+            MixedEndings { crlf: 340, lf: 12 }.to_string(),
+            "340 CRLF, 12 LF"
+        );
+    }
+
+    #[test]
+    fn loading_a_mixed_file_needs_a_choice_and_a_uniform_one_does_not() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mixed = dir.path().join("mixed.md");
+        std::fs::write(&mixed, "a\r\nb\nc\r\n")?;
+        let b = Buffer::load_file(&mixed)?;
+        assert_eq!(
+            b.needs_line_ending_choice(),
+            Some(MixedEndings { crlf: 2, lf: 1 })
+        );
+        assert_eq!(b.line_ending(), LineEnding::Crlf);
+
+        let uniform = dir.path().join("uniform.md");
+        std::fs::write(&uniform, "a\r\nb\r\n")?;
+        assert_eq!(
+            Buffer::load_file(&uniform)?.needs_line_ending_choice(),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_mixed_buffer_refuses_every_write_and_leaves_the_file_byte_identical() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("mixed.md");
+        let original = b"a\r\nb\nc\r\n";
+        std::fs::write(&path, original)?;
+        let mut b = Buffer::load_file(&path)?;
+        b.insert(0, "X");
+
+        let err = b.save_file().expect_err("refused");
+        assert!(err.to_string().contains("2 CRLF, 1 LF"), "{err}");
+        let copy = dir.path().join("copy.md");
+        assert!(b.save_copy(&copy).is_err());
+        assert!(b.save_as(&copy).is_err());
+        assert_eq!(std::fs::read(&path)?, original);
+        assert!(!copy.exists());
+        assert_eq!(b.path(), Some(path.as_path()));
+        Ok(())
+    }
+
+    #[test]
+    fn each_choice_rewrites_the_file_with_that_ending() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("mixed.md");
+        for (choice, expected) in [
+            (LineEnding::Lf, &b"a\nb\nc\n"[..]),
+            (LineEnding::Crlf, &b"a\r\nb\r\nc\r\n"[..]),
+        ] {
+            std::fs::write(&path, "a\r\nb\nc\r\n")?;
+            let mut b = Buffer::load_file(&path)?;
+            b.set_line_ending(choice);
+            assert_eq!(b.needs_line_ending_choice(), None);
+            b.save_file()?;
+            assert_eq!(std::fs::read(&path)?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_choice_survives_a_reload_and_a_file_turning_mixed_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut b = Buffer::for_new_file(&dir.path().join("doc.md"));
+        let raw = "a\nb\r\n";
+        b.observe_disk_endings(raw);
+        assert!(b.needs_line_ending_choice().is_some());
+        // Carried across a reload, which sees only normalized bytes.
+        assert!(b.reload(raw).needs_line_ending_choice().is_some());
+
+        b.set_line_ending(LineEnding::Lf);
+        b.observe_disk_endings(raw);
+        assert_eq!(b.needs_line_ending_choice(), None);
+        assert_eq!(b.reload(raw).needs_line_ending_choice(), None);
+
+        let mut fresh = Buffer::for_new_file(&dir.path().join("other.md"));
+        fresh.observe_disk_endings(raw);
+        fresh.observe_disk_endings("a\nb\n");
+        assert_eq!(fresh.needs_line_ending_choice(), None);
     }
 
     // ── Save backup ───────────────────────────────────────────────

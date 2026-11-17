@@ -1334,11 +1334,22 @@ impl App {
                             self.needs_draw = true;
                             return;
                         }
+                        // A save that has to ask about mixed line endings
+                        // asks before either step, so a cancelled save
+                        // leaves the editor open.
                         VimOutcome::Quit { save_first } => {
-                            if save_first {
-                                self.dispatch_action(Action::Save, dims.doc_height, dims.doc_width);
+                            let (h, w) = (dims.doc_height, dims.doc_width);
+                            let save_then_quit = move |app: &mut Self| {
+                                app.dispatch_action(Action::Save, h, w);
+                                app.dispatch_action(Action::Quit, h, w);
+                            };
+                            if save_first && self.editor.dirty {
+                                self.with_line_ending_choice(Box::new(save_then_quit));
+                            } else if save_first {
+                                save_then_quit(self);
+                            } else {
+                                self.dispatch_action(Action::Quit, h, w);
                             }
-                            self.dispatch_action(Action::Quit, dims.doc_height, dims.doc_width);
                             self.needs_draw = true;
                             return;
                         }
@@ -1356,10 +1367,10 @@ impl App {
                             } else {
                                 None
                             };
-                            match path {
-                                Some(p) => self.save_buffer_as_confirmed(p, force, after),
-                                None => self.open_save_as_modal(after),
-                            }
+                            self.with_line_ending_choice(Box::new(move |app| match path {
+                                Some(p) => app.save_buffer_as_confirmed(p, force, after),
+                                None => app.open_save_as_modal(after),
+                            }));
                             self.needs_draw = true;
                             return;
                         }
@@ -1376,7 +1387,9 @@ impl App {
                             } else {
                                 None
                             };
-                            self.save_copy_confirmed(path, force, after);
+                            self.with_line_ending_choice(Box::new(move |app| {
+                                app.save_copy_confirmed(path, force, after);
+                            }));
                             self.needs_draw = true;
                             return;
                         }
@@ -1529,6 +1542,36 @@ mod tests {
 
         app.dispatch_mouse_event(mouse(MouseEventKind::Moved, 2, 10), &dims);
         assert!(app.hovered_link.is_none());
+    }
+
+    #[test]
+    fn vim_wq_with_a_cancelled_line_ending_choice_stays_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mixed.md");
+        std::fs::write(&path, "a\r\nb\n").unwrap();
+        let mut app = crate::app::test_utils::make_app();
+        app.load_file_into_editor(path.clone()).unwrap();
+        crate::app::test_utils::close_startup_modals(&mut app);
+        app.set_vim_enabled(true);
+        app.editor.buffer.insert(0, "X");
+        app.editor.dirty = true;
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let dims = dims();
+        for c in ":wq".chars() {
+            app.dispatch_single_key(key(c), &keymap, &dims);
+        }
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.dispatch_single_key(enter, &keymap, &dims);
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::LineEndingModal>());
+        assert!(!app.should_quit, "nothing happens before the answer");
+
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 10, 60);
+        assert!(!app.should_quit);
+        assert!(app.modal_stack.is_empty(), "no quit prompt either");
+        assert!(app.editor.dirty);
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\n");
     }
 
     #[test]

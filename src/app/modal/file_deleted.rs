@@ -51,17 +51,30 @@ impl FileDeletedModal {
         match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
-            ModalResponse::ButtonPressed(0) => {
-                ModalOutcome::CloseAnd(Box::new(|app| match app.save_buffer() {
-                    Ok(()) => app.flash("Saved", MessageKind::Success),
-                    Err(e) => app.notify(format!("Save failed: {e}"), ModalKind::Error),
-                }))
-            }
+            // Both saves ask about mixed endings first, with this modal still open beneath, so
+            // `Esc` there returns here and its idempotency guard keeps holding meanwhile.  The
+            // write proceeds only if this modal is still up when the answer comes: a recreate
+            // on disk in between tears it down, and the review it starts must not be saved over.
+            ModalResponse::ButtonPressed(0) => ModalOutcome::ContinueAnd(Box::new(|app| {
+                app.with_line_ending_choice(Box::new(|app| {
+                    if !app.modal_stack.remove_first::<FileDeletedModal>() {
+                        return;
+                    }
+                    match app.save_buffer() {
+                        Ok(()) => app.flash("Saved", MessageKind::Success),
+                        Err(e) => app.notify(format!("Save failed: {e}"), ModalKind::Error),
+                    }
+                }));
+            })),
             ModalResponse::ButtonPressed(1) => {
                 let default = self.path.display().to_string();
-                ModalOutcome::CloseAnd(Box::new(move |app| {
-                    app.modal_stack
-                        .push(Box::new(SaveAsModal::for_deleted_file(default)));
+                ModalOutcome::ContinueAnd(Box::new(move |app| {
+                    app.with_line_ending_choice(Box::new(move |app| {
+                        if app.modal_stack.remove_first::<FileDeletedModal>() {
+                            app.modal_stack
+                                .push(Box::new(SaveAsModal::for_deleted_file(default)));
+                        }
+                    }));
                 }))
             }
             ModalResponse::ButtonPressed(_) => ModalOutcome::Close,

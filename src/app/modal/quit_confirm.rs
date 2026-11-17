@@ -1,4 +1,5 @@
-//! Quit-confirm modal: Save / Discard.  A failed save aborts the quit; Escape dismisses it.
+//! Quit-confirm modal: Save / Discard.  A failed or cancelled save aborts the quit; Escape
+//! dismisses it.
 
 use std::any::Any;
 
@@ -38,16 +39,19 @@ impl QuitConfirmModal {
         match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
+            // A mixed-endings prompt comes first; cancelling it aborts the quit.
             ModalResponse::ButtonPressed(0) => ModalOutcome::CloseAnd(Box::new(|app| {
-                if app.editor.buffer.path().is_some() {
-                    match app.save_buffer() {
-                        Ok(()) => app.should_quit = true,
-                        Err(_) => app.notify("Save failed — quit aborted", ModalKind::Error),
+                app.with_line_ending_choice(Box::new(|app| {
+                    if app.editor.buffer.path().is_some() {
+                        match app.save_buffer() {
+                            Ok(()) => app.should_quit = true,
+                            Err(_) => app.notify("Save failed — quit aborted", ModalKind::Error),
+                        }
+                    } else {
+                        // No path yet — prompt for one; cancelling the prompt aborts the quit.
+                        app.open_save_as_modal(Some(Box::new(|app| app.should_quit = true)));
                     }
-                } else {
-                    // No path yet — prompt for one; cancelling the prompt aborts the quit.
-                    app.open_save_as_modal(Some(Box::new(|app| app.should_quit = true)));
-                }
+                }));
             })),
             ModalResponse::ButtonPressed(1) => ModalOutcome::CloseAnd(Box::new(|app| {
                 app.should_quit = true;
