@@ -921,10 +921,7 @@ impl App {
         // Wheel ticks in the gutter scroll the document as they would over the
         // body, so they fall through.  Anything else arriving mid-drag is
         // absorbed, so it can't drive text selection underneath.
-        if dragging {
-            return true;
-        }
-        false
+        dragging
     }
 
     /// Handle a mouse event when no modal is open: pointer-shape feedback,
