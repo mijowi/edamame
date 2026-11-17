@@ -22,6 +22,7 @@ A welcome screen appears the first time you run edamame. It shows a short introd
 - **Images** and **Figures** — whether to render them inline. *Figures* covers both ` ```mermaid ` diagrams and `$$...$$` math. Each can be *Ask*, *Always* or *Never*, and they're independent.
 - **Remote images** — whether to fetch images from the web. Leave this on "Ask" if you are concerned about e.g. tracking pixels in documents you open. See [security.md](security.md).
 - **Vim mode** — edamame supports a focused subset of vim features. See [vim-mode.md](vim-mode.md).
+- **Autosave** — save automatically a few seconds after you stop typing. See [configuration.md](configuration.md#saving).
 - **Check for updates** — edamame checks GitHub once a day so it can notify you of a new release. This is on by default, but the first check doesn't occur until after the welcome screen is dismissed. 
 
 ![edamame's welcome screen on first launch](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/welcome.jpg)

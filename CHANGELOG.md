@@ -8,6 +8,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Added
+
+- Added an **Autosave** toggle to the welcome screen.
+
 ### Changed
 
 - Vim: `:s` patterns using `\<` / `\>` word boundaries run faster.

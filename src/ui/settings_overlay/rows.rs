@@ -42,7 +42,7 @@ pub(super) enum RowAction {
     OpenExternalEditor,
     /// "Open config folder" sentinel — hands the path to the OS file manager.
     OpenConfigFolder,
-    /// Enter cycles the value (boolean toggle / enum advance).
+    /// Enter / Space cycles the value (boolean toggle / enum advance).
     Cycle,
     /// Enter opens an inline text editor (numeric field).
     Edit,

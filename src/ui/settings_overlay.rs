@@ -6,7 +6,7 @@
 //! alphabetical order by label — except `Show line numbers`, kept below the image rows so
 //! that group stays contiguous.  The remote-images row is locked while `Show images` is
 //! `Never`, mirroring the welcome modal's cascade.  The focused row's description is
-//! pinned into the footer.  Booleans are toggles and enums are pills (Left/Right/Enter);
+//! pinned into the footer.  Booleans are toggles and enums are pills (Left/Right/Enter/Space);
 //! numeric fields are text inputs editable the moment the row has focus, committing on
 //! Enter or focus-leave and reverting an invalid draft on leave.
 
@@ -141,9 +141,6 @@ impl SettingsState {
             }
             KeyCode::Up => self.move_focus_committing(-1, config),
             KeyCode::Down => self.move_focus_committing(1, config),
-            KeyCode::Left => self.apply_control_input(config, ControlInput::Left),
-            KeyCode::Right => self.apply_control_input(config, ControlInput::Right),
-            KeyCode::Enter => self.activate_focused(config),
             KeyCode::Backspace => {
                 if let Some(buf) = self.editing.as_mut() {
                     pop_grapheme(buf);
@@ -151,20 +148,28 @@ impl SettingsState {
                 }
                 SettingsResponse::Continue
             }
-            KeyCode::Char(c) => {
+            // An open draft means a text input is focused, and it owns typed characters — Space
+            // included — so they never reach the shared mapping below.
+            KeyCode::Char(c) if self.editing.is_some() => {
                 use crossterm::event::KeyModifiers;
-                if let Some(buf) = self.editing.as_mut() {
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    {
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    if let Some(buf) = self.editing.as_mut() {
                         buf.push(c);
-                        self.last_error = None;
                     }
+                    self.last_error = None;
                 }
                 SettingsResponse::Continue
             }
-            _ => SettingsResponse::Continue,
+            // Everything else goes through the shared control-input mapping, as on every other
+            // control surface, so Space activates exactly where Enter does.
+            _ => match controls::control_input_for(key.code) {
+                Some(ControlInput::Activate) => self.activate_focused(config),
+                Some(input) => self.apply_control_input(config, input),
+                None => SettingsResponse::Continue,
+            },
         }
     }
 
@@ -177,8 +182,8 @@ impl SettingsState {
         }
     }
 
-    /// Enter on the focused row: open externally, cycle a toggle / pill, or
-    /// commit a text-input draft in place (staying on the row).
+    /// Enter (or Space outside a text input) on the focused row: open externally, cycle a
+    /// toggle / pill, or commit a text-input draft in place (staying on the row).
     fn activate_focused(&mut self, config: &mut Config) -> SettingsResponse {
         let action = self.rows.get(self.focused).map(|r| r.kind.action);
         match action {
@@ -662,6 +667,54 @@ mod tests {
         let resp = state.handle_key(&key(KeyCode::Left), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
         assert!(!config.editor.autosave_enabled, "Left means off");
+    }
+
+    #[test]
+    fn space_activates_like_enter_outside_a_text_input() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, &config, "Autosave");
+        let before = config.editor.autosave_enabled;
+        let resp = state.handle_key(&key(KeyCode::Char(' ')), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert_eq!(
+            config.editor.autosave_enabled, !before,
+            "Space flips a toggle"
+        );
+
+        focus_row(&mut state, &config, "Show images");
+        assert_eq!(config.images.enabled, ImagesEnabled::Ask);
+        state.handle_key(&key(KeyCode::Char(' ')), &mut config);
+        assert_eq!(
+            config.images.enabled,
+            ImagesEnabled::Always,
+            "Space advances a pill"
+        );
+
+        let open_idx = state
+            .rows
+            .iter()
+            .position(|r| matches!(r.kind.action, RowAction::OpenExternalEditor))
+            .expect("an open-in-editor row");
+        state.focused = open_idx;
+        state.open_draft_for_focused(&config);
+        let resp = state.handle_key(&key(KeyCode::Char(' ')), &mut config);
+        assert_eq!(
+            resp,
+            SettingsResponse::OpenInExternalEditor,
+            "Space presses a button"
+        );
+    }
+
+    #[test]
+    fn space_types_into_a_focused_text_input() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, &config, "  Char limit");
+        let resp = state.handle_key(&key(KeyCode::Char(' ')), &mut config);
+        assert_eq!(resp, SettingsResponse::Continue, "no commit");
+        assert_eq!(state.editing.as_deref(), Some("100 "));
+        assert_eq!(config.editor.max_width_cols, 100);
     }
 
     #[test]

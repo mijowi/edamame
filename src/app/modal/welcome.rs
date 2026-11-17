@@ -61,6 +61,7 @@ impl WelcomeModal {
                 config.images.remote_policy,
                 config.figures.enabled,
                 config.modal.handler == VIM_HANDLER,
+                config.editor.autosave_enabled,
                 config.editor.check_for_updates,
             )
             .with_dismissable(dismissable),
@@ -148,6 +149,7 @@ impl WelcomeModal {
         let remote = self.state.remote;
         let diagrams = self.state.diagrams;
         let use_vim = self.state.use_vim;
+        let autosave = self.state.autosave;
         let check_for_updates = self.state.check_for_updates;
         let dont_show_again = self.state.dont_show_again;
         let image_capable = self.state.image_capable;
@@ -162,6 +164,9 @@ impl WelcomeModal {
             // Terminal-independent, and this both persists `modal.handler` and
             // updates the running session's modal-editing state.
             app.set_vim_enabled(use_vim);
+            // Also terminal-independent.  `App::tick_autosave` reads this live, so the running
+            // session picks it up without a restart.
+            app.config.editor.autosave_enabled = autosave;
             // Likewise: a network preference, not a rendering capability.
             app.config.editor.check_for_updates = check_for_updates;
             app.config.editor.show_welcome = !dont_show_again;
@@ -269,5 +274,57 @@ mod tests {
             .handle_key(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         save(&mut modal, &mut app);
         assert!(!app.config.editor.check_for_updates);
+    }
+
+    #[test]
+    fn save_persists_the_autosave_choice() {
+        let (_iso, mut app) = isolated_app();
+        assert!(!app.config.editor.autosave_enabled, "off by default");
+        let mut modal = WelcomeModal::new(&caps_full(), &app.config);
+        assert!(!modal.state.autosave, "seeded from the config");
+
+        modal.state.focused = WelcomeFocus::Autosave;
+        modal
+            .state
+            .handle_key(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(modal.state.autosave, "the row flipped");
+        // Opposite values on the neighbors, so swapping any two of them in the closure fails.
+        modal.state.check_for_updates = false;
+        let vim_before = app.config.modal.handler.clone();
+        save(&mut modal, &mut app);
+        assert!(app.config.editor.autosave_enabled);
+        assert!(!app.config.editor.check_for_updates);
+        assert_eq!(app.config.modal.handler, vim_before);
+    }
+
+    #[test]
+    fn reopening_shows_the_current_autosave_value() {
+        let (_iso, mut app) = isolated_app();
+        app.config.editor.autosave_enabled = true;
+        let mut modal = WelcomeModal::new(&caps_full(), &app.config);
+        assert!(
+            modal.state.autosave,
+            "an on-demand opening reflects the config"
+        );
+        // Saving untouched keeps it on rather than resetting to the default.
+        save(&mut modal, &mut app);
+        assert!(app.config.editor.autosave_enabled);
+    }
+
+    #[test]
+    fn the_autosave_choice_survives_a_weak_terminal() {
+        // Like vim mode, autosave is outside the `image_capable` gate.
+        let (_iso, mut app) = isolated_app();
+        let caps = Capabilities {
+            color_depth: ColorDepth::Ansi256,
+            ..Capabilities::minimal()
+        };
+        let mut modal = WelcomeModal::new(&caps, &app.config);
+        modal.state.focused = WelcomeFocus::Autosave;
+        modal
+            .state
+            .handle_key(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        save(&mut modal, &mut app);
+        assert!(app.config.editor.autosave_enabled);
     }
 }
