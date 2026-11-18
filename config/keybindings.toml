@@ -99,6 +99,10 @@
 # `ToggleRawMode = "ctrl+y"` works in every terminal. The startup capabilities
 # notice reports which tier your terminal landed in.
 # ToggleRawMode          = "ctrl+`"
+# F8 requests the outline (hidden automatically if the terminal is too narrow).
+# F6 switches focus between the editor and the visible outline.
+# ToggleOutline          = "f8"
+# FocusOutline           = "f6"
 
 # ── List ──────────────────────────────────────────────────────────────────────
 # ToggleCheckbox         = "ctrl+space"
