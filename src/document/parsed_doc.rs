@@ -337,8 +337,8 @@ impl ParsedDoc {
                 });
             }
             if let Block::Heading { inlines, .. } = &blocks[i] {
-                let slug =
-                    uniquify_slug(&gfm_slug(&heading_slug_text(inlines)), &mut anchor_counts);
+                let text = heading_slug_text(inlines, &parse.footnote_numbers);
+                let slug = uniquify_slug(&gfm_slug(&text), &mut anchor_counts);
                 // `lines.len()` is where this heading's first line will land, since the
                 // block's own lines are pushed below.
                 if !slug.is_empty() {

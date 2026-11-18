@@ -4,9 +4,6 @@
 //! with their heading links: `gh api markdown -f mode=markdown -F text=@doc.md`, reading each
 //! `id="user-content-…"` in order.  To extend a case list, render the document it describes
 //! that way and record what GitHub returns, never what edamame does.
-//!
-//! One known difference is left out: GitHub's slug includes a footnote reference's number
-//! (`# h[^1] i` is `#h1-i`), which edamame leaves out for now (#77).
 
 use edamame::config::Theme;
 use edamame::document::ParsedDoc;
@@ -103,6 +100,65 @@ const STRUCTURAL_ANCHORS: &[&str] = &[
     "bazqux",
 ];
 
+/// Footnote references slug as the number GitHub renders them as: numbered by first reference in
+/// source order, wherever it sits (a paragraph, quote, list, table, image alt, link text, or a
+/// definition, even an unreferenced one), case-insensitively, a repeat reusing its number and
+/// adjacent references concatenating; an undefined label stays literal text.
+const FOOTNOTES: &str = r"[^early]: Defined first, referencing [^inside].
+
+Text[^b] and[^a].
+
+# H1[^a] x
+
+# H2[^note][^b] y
+
+# H3[^C] z
+
+# H4[^missing] w
+
+# H5[^b] v
+
+> Quote[^q].
+
+- Item[^l].
+
+| t[^tb] |
+|---|
+| c |
+
+![alt[^img]](x.png) [link[^lk]](http://e.com)
+
+# H6[^early] u
+
+# H7[^inside] t
+
+# H8[^late] s
+
+[^a]: A.
+[^b]: B.
+[^note]: N.
+[^c]: c.
+[^q]: q.
+[^l]: l.
+[^tb]: t.
+[^img]: i.
+[^lk]: k.
+[^inside]: in.
+[^unused]: u [^late].
+[^late]: l.
+";
+
+const FOOTNOTE_ANCHORS: &[&str] = &[
+    "h13-x",
+    "h242-y",
+    "h35-z",
+    "h4missing-w",
+    "h52-v",
+    "h611-u",
+    "h71-t",
+    "h812-s",
+];
+
 /// Up to eight code points from every Unicode general category, spread evenly, plus the
 /// edges the slug rules turn on; each is tested as the heading `# U+<code point> a<char>b`.
 const CODE_POINTS: &str = include_str!("fixtures/github_anchors.tsv");
@@ -188,4 +244,14 @@ fn every_category_matches_github_in_app() {
 fn every_category_matches_github_in_the_export() {
     let (doc, expected) = code_point_cases();
     assert_anchors(&exported_anchors(&doc), &expected, "export");
+}
+
+#[test]
+fn footnote_numbers_match_github_in_app() {
+    assert_anchors(&in_app_anchors(FOOTNOTES), FOOTNOTE_ANCHORS, "in-app");
+}
+
+#[test]
+fn footnote_numbers_match_github_in_the_export() {
+    assert_anchors(&exported_anchors(FOOTNOTES), FOOTNOTE_ANCHORS, "export");
 }

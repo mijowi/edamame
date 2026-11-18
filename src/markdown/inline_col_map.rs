@@ -3,13 +3,15 @@ use std::collections::HashSet;
 use pulldown_cmark::{BrokenLink, CowStr, Event, Options, Parser, Tag, TagEnd};
 
 use super::html_comment;
+use super::label::normalize_label;
 use super::parser::TextRun;
 use super::renderer::util::link_fallback;
 use super::segment_break;
 
 /// The labels a document defines, so a map built over one line of it resolves `[text][label]`
 /// and `[^label]` the way the document's own parse did: a line parsed alone has no definitions
-/// in scope, so every reference on it would otherwise read as literal brackets.
+/// in scope, so every reference on it would otherwise read as literal brackets.  Labels match
+/// by [`normalize_label`]; one it misses just leaves its row without an exact map.
 #[derive(Debug, Clone, Default)]
 pub struct RefLabels {
     links: HashSet<String>,
@@ -34,17 +36,6 @@ impl RefLabels {
     fn has_footnote(&self, label: &str) -> bool {
         self.footnotes.contains(&normalize_label(label))
     }
-}
-
-/// A label as CommonMark matches it: case-insensitive, whitespace runs collapsed.  (Lowercasing
-/// stands in for Unicode case folding; a label differing only in a fold-specific letter such as
-/// `ß` misses, and its row just has no exact map.)
-fn normalize_label(label: &str) -> String {
-    label
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 /// An ATX heading's content without its optional closing sequence (`## Title ##` → `Title `):

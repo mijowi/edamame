@@ -14,6 +14,7 @@ use super::runner::{write_atomically, ExportOutcome, Exported};
 use crate::diagram;
 use crate::document::parsed_doc::{gfm_slug, uniquify_slug};
 use crate::image::normalize_svg;
+use crate::markdown::footnote_numbers::FootnoteNumbers;
 use crate::markdown::highlight::{self, TokenClass};
 use crate::markdown::parse_offsets::DocParser;
 use images::{local_image, ImageResolver};
@@ -231,7 +232,12 @@ fn parser_options() -> Options {
 /// GitHub.  A nested heading also takes its slug's count, so where it shares text with a later
 /// top-level heading the fragment can name a different heading in each: `- # Intro` then
 /// `# Intro` exports as `intro` / `intro-1`, while edamame jumps `#intro` to the top-level one.
+///
+/// A footnote reference slugs as the number GitHub gives it ([`FootnoteNumbers`]), numbered
+/// here from the events themselves: pulldown-cmark's writer numbers footnotes its own way, and
+/// the in-app parse isn't at hand.
 fn assign_heading_ids(events: &mut [Event<'_>]) {
+    let footnotes = FootnoteNumbers::from_events(events.iter());
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut i = 0;
     while i < events.len() {
@@ -240,7 +246,7 @@ fn assign_heading_ids(events: &mut [Event<'_>]) {
             continue;
         }
         // The same text `heading_slug_text` builds in-app: no image alt text, no inline HTML,
-        // and a line break is no `-` in the slug.
+        // a line break is no `-` in the slug, and a footnote reference is its number.
         let mut text = String::new();
         let mut image_depth = 0usize;
         let mut j = i + 1;
@@ -254,6 +260,11 @@ fn assign_heading_ids(events: &mut [Event<'_>]) {
                 Event::InlineMath(m) => text.push_str(&literal_math(m, false)),
                 Event::DisplayMath(m) => text.push_str(&literal_math(m, true)),
                 Event::SoftBreak | Event::HardBreak => text.push('\n'),
+                Event::FootnoteReference(label) => {
+                    if let Some(n) = footnotes.get(label) {
+                        text.push_str(&n.to_string());
+                    }
+                }
                 _ => {}
             }
             j += 1;

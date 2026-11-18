@@ -13,6 +13,7 @@ use std::ops::Range;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, MetadataBlockKind, Tag, TagEnd};
 
 use super::ast::{inlines_to_plain, Block, Inline, LineSpan, ListItem, MetadataKind, SrcLines};
+use super::footnote_numbers::FootnoteNumbers;
 use super::html_comment;
 use super::parse_offsets;
 use stream::{EventStream, LeafMode};
@@ -63,7 +64,7 @@ pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
 }
 
 /// What the editor pipeline's single pulldown-cmark pass yields: [`parse_raw_with_ranges`]'s
-/// blocks and ranges, plus two by-products the pass has anyway.
+/// blocks and ranges, plus the by-products the pass has anyway.
 pub struct DocParse {
     pub blocks: Vec<Block>,
     pub ranges: Vec<Range<usize>>,
@@ -72,6 +73,8 @@ pub struct DocParse {
     pub line_starts: Vec<usize>,
     /// The labels of the document's link reference definitions, as pulldown-cmark keys them.
     pub link_labels: Vec<String>,
+    /// The numbers GitHub renders the document's footnote references as, for heading slugs.
+    pub footnote_numbers: FootnoteNumbers,
 }
 
 /// [`parse_raw_with_ranges`] with the rest of [`DocParse`].  `ParsedDoc::build`'s entry point.
@@ -87,12 +90,13 @@ pub fn parse_document(text: &str) -> DocParse {
         .collect();
     let mut events = EventStream::new(text, parser.into_offset_iter());
     let blocks = parse_blocks(&mut events, true);
-    let (ranges, line_starts) = events.into_parts();
+    let (ranges, line_starts, footnote_numbers) = events.into_parts();
     DocParse {
         blocks,
         ranges,
         line_starts,
         link_labels,
+        footnote_numbers,
     }
 }
 

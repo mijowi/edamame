@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use pulldown_cmark::HeadingLevel;
 
+use super::footnote_numbers::FootnoteNumbers;
 use super::segment_break;
 
 // ─── Source positions ─────────────────────────────────────────────────────────
@@ -380,7 +381,7 @@ pub fn heading_plain_text(inlines: &[Inline]) -> String {
 pub fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut out = String::new();
     let mut soft_breaks = Vec::new();
-    push_plain(inlines, false, &mut out, &mut soft_breaks);
+    push_plain(inlines, None, &mut out, &mut soft_breaks);
     // Last first, so each earlier break's byte offset still holds.  A break next to another
     // sits next to its space, so its fate doesn't hang on the other's.
     for at in soft_breaks.into_iter().rev() {
@@ -397,18 +398,26 @@ pub fn inlines_to_plain(inlines: &[Inline]) -> String {
 }
 
 /// The text GitHub slugs a heading from: [`inlines_to_plain`] less what isn't the heading's
-/// text content (image alt text, inline HTML tags), and with a soft break as the newline it
-/// is rather than a space, so it drops out of the slug instead of becoming a `-` (a setext
-/// `Foo` / `bar` heading is `#foobar`).
-pub fn heading_slug_text(inlines: &[Inline]) -> String {
+/// text content (image alt text, inline HTML tags), with a soft break as the newline it is
+/// rather than a space, so it drops out of the slug instead of becoming a `-` (a setext
+/// `Foo` / `bar` heading is `#foobar`), and with each footnote reference as the number GitHub
+/// renders it as (`# H[^a] x` is `#h1-x`), from `footnotes`.
+pub fn heading_slug_text(inlines: &[Inline], footnotes: &FootnoteNumbers) -> String {
     let mut out = String::new();
-    push_plain(inlines, true, &mut out, &mut Vec::new());
+    push_plain(inlines, Some(footnotes), &mut out, &mut Vec::new());
     out
 }
 
 /// Push `inlines`' text onto `out`, and the byte offset of each soft break's space onto
-/// `soft_breaks` (`for_slug` pushes a newline instead, and no offset).
-fn push_plain(inlines: &[Inline], for_slug: bool, out: &mut String, soft_breaks: &mut Vec<usize>) {
+/// `soft_breaks`.  `slug` (the document's footnote numbers) builds a heading's slug text
+/// instead: a soft break pushes a newline and no offset.
+fn push_plain(
+    inlines: &[Inline],
+    slug: Option<&FootnoteNumbers>,
+    out: &mut String,
+    soft_breaks: &mut Vec<usize>,
+) {
+    let for_slug = slug.is_some();
     for inline in inlines {
         match inline {
             Inline::Text(t) => out.push_str(t),
@@ -417,14 +426,18 @@ fn push_plain(inlines: &[Inline], for_slug: bool, out: &mut String, soft_breaks:
             Inline::Bold(inner)
             | Inline::Italic(inner)
             | Inline::Strikethrough(inner)
-            | Inline::Highlight(inner) => push_plain(inner, for_slug, out, soft_breaks),
+            | Inline::Highlight(inner) => push_plain(inner, slug, out, soft_breaks),
             Inline::Code(c) => out.push_str(c),
-            Inline::Link { text, .. } => push_plain(text, for_slug, out, soft_breaks),
+            Inline::Link { text, .. } => push_plain(text, slug, out, soft_breaks),
             Inline::Image { alt, .. } if !for_slug => out.push_str(alt),
             Inline::Image { .. } => {}
             Inline::HtmlComment(_) => {}
-            // Footnote markers are chrome, not prose: keep them out of heading slugs.
-            Inline::FootnoteReference { .. } => {}
+            // Plain text has no marker; a slug has the number GitHub renders the reference as.
+            Inline::FootnoteReference { label } => {
+                if let Some(n) = slug.and_then(|numbers| numbers.get(label)) {
+                    out.push_str(&n.to_string());
+                }
+            }
             // Math renders as its source in phase 1 (delimiters included,
             // width-equivalent to the source text).
             Inline::Math { source, display } => {
@@ -464,7 +477,10 @@ mod tests {
             Inline::Text("c".into()),
         ];
         assert_eq!(inlines_to_plain(&inlines), "a alt<b>b</b> c");
-        assert_eq!(heading_slug_text(&inlines), "a b\nc");
+        assert_eq!(
+            heading_slug_text(&inlines, &FootnoteNumbers::default()),
+            "a b\nc"
+        );
     }
 
     /// A soft break is a space in plain text, or nothing between two CJK glyphs (issue #79), as a
@@ -479,7 +495,10 @@ mod tests {
             Inline::Text("abc".into()),
         ];
         assert_eq!(inlines_to_plain(&inlines), "日本語 abc");
-        assert_eq!(heading_slug_text(&inlines), "日本\n語\nabc");
+        assert_eq!(
+            heading_slug_text(&inlines, &FootnoteNumbers::default()),
+            "日本\n語\nabc"
+        );
         let two = [
             Inline::Text("日".into()),
             Inline::SoftBreak,

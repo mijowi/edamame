@@ -244,9 +244,11 @@ src/
                     #   renderer's dimming) and is_comment_only (what the parser hides)
     destination.rs  # link destinations: local_image_urls (the document's own images),
                     #   escape_destination (angle-bracket form for spaces / parens)
+    footnote_numbers.rs # FootnoteNumbers: GitHub's footnote numbering, for heading slugs
     inline_col_map.rs  # raw ↔ rendered column map of inline Markdown (build_inline for a
                     #   slice past a line's content column, resolving the document's
                     #   references via RefLabels)
+    label.rs        # normalize_label: link / footnote labels as CommonMark matches them
     parse_offsets.rs # byte spans from pulldown-cmark; RangeTracker depth-0 scanner
     parser.rs (+ parser/{post_pass,stream}.rs)   # → Vec<Block>; parse_document
                     #   (single-pass blocks + ranges + positions + line index + link labels;

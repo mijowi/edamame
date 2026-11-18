@@ -15,6 +15,7 @@ use std::ops::Range;
 use pulldown_cmark::Event;
 
 use crate::markdown::ast::{to_u32, LineSpan, SrcLines};
+use crate::markdown::footnote_numbers::FootnoteNumbers;
 use crate::markdown::parse_offsets::{BlockKind, RangeTracker};
 
 /// Byte offset → (line, char column) over one source text.
@@ -262,6 +263,8 @@ where
     /// First line of the top-level block being parsed; every line handed out is relative to it.
     base_line: usize,
     leaf: Option<LeafRec>,
+    /// GitHub's footnote numbering, taken from the same events (heading slugs need it).
+    footnotes: FootnoteNumbers,
 }
 
 impl<'s, I> EventStream<'s, I>
@@ -278,6 +281,7 @@ where
             spare_cols: Vec::new(),
             base_line: 0,
             leaf: None,
+            footnotes: FootnoteNumbers::default(),
         }
     }
 
@@ -291,6 +295,7 @@ where
     fn pull(&mut self) -> Option<Event<'s>> {
         let (event, range) = self.inner.next()?;
         self.ranges.observe(self.lines.src, &event, &range);
+        self.footnotes.observe(&event);
         self.pulled_range = range;
         Some(event)
     }
@@ -334,10 +339,11 @@ where
     }
 
     /// Drain the events the parser left unread, so the tracker sees every one, and hand back
-    /// the top-level blocks' byte ranges and every source line's starting byte.
-    pub(super) fn into_parts(mut self) -> (Vec<Range<usize>>, Vec<usize>) {
+    /// the top-level blocks' byte ranges, every source line's starting byte, and the
+    /// document's footnote numbers.
+    pub(super) fn into_parts(mut self) -> (Vec<Range<usize>>, Vec<usize>, FootnoteNumbers) {
         while self.next().is_some() {}
-        (self.ranges.into_ranges(), self.lines.starts)
+        (self.ranges.into_ranges(), self.lines.starts, self.footnotes)
     }
 
     /// Range of the event [`next`](Self::next) just returned.  Ask before peeking again: a peek
