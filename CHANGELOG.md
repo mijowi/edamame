@@ -23,7 +23,9 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Vim: case-insensitive `:s` patterns with a non-ASCII character range (such as `[à-ÿ]`) no longer miss some matches.
 - Diff review opens faster on large files.
 - Preview: **Go to section** (`Ctrl-G`) now opens on the section at the top of the screen rather than wherever the cursor was.
-- Preview: in a document with wrapped lines, the status-bar breadcrumb no longer shows a later heading than the one on screen, and entering edit no longer puts the cursor below the top of the screen.
+- Preview: in a document with wrapped lines, the status-bar breadcrumb no longer shows a later heading than the one on screen.
+- Preview: entering edit with the cursor scrolled out of view now puts it at the top of the screen. It could land further down in a document with wrapped lines, or off screen at the start of a long block scrolled partway through, which made the view jump on the first keypress.
+- Scrolling down with the keyboard while the cursor is inside a long list, quote, table, code block or paragraph no longer moves the cursor back to the start of that block off screen, which made the next keypress jump the view back up.
 - Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
 - Vim: a few rare `:s` patterns that combine back-references or lookaround with repetition no longer match the wrong text or crash the editor.
 - Windows: edamame no longer occasionally hangs when it stops watching a file for outside changes, such as when opening another file or quitting.

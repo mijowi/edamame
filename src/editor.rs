@@ -5,6 +5,7 @@ pub mod link;
 pub mod list_edit;
 pub mod mode;
 pub mod mouse_ops;
+pub mod row_offset;
 pub mod state;
 pub mod state_cursor_block;
 pub mod state_cursor_visual;

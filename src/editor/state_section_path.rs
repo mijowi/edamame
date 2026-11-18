@@ -174,6 +174,49 @@ mod tests {
         assert_eq!(st.section_chain(width), vec!["A".to_string()]);
     }
 
+    /// `scroll_anchor_line` skips resolving the column, so the breadcrumb stays cheap deep inside
+    /// a long block; it must still name the line `scroll_anchor_offset` (the cursor sync) lands
+    /// on, on every row of every kind of block, wrapped or not.
+    #[test]
+    fn scroll_anchor_line_agrees_with_scroll_anchor_offset_on_every_row() {
+        let src = "---\ntitle: t\n---\n\nSetext\n======\n\n\
+            A reflowed paragraph whose\nsoft breaks join lines that\nwrap at narrow widths.\n\n\
+            - item one that is long enough to wrap\n  - [ ] nested task\n\n  continued\n- two\n\n\
+            > quote line one\nlazy continuation\n>\n> [ref]: https://example.com\n\n\
+            | head | a much longer heading cell |\n|---|---|\n| 1 | a cell that wraps |\n| 2 | x |\n\n\
+            ```rust\nfn main() {}\nlet x = 1;\n```\n\n<!-- a comment -->\n\n\
+            Text with a note[^1].\n\n[^1]: The note.\n\n***\n\n日本語の段落はここで折り返します。\n\n\n\
+            last line without newline";
+        let buffer = Buffer::from_str(src);
+        // In Rendered mode the cursor's block is revealed, so each line's cursor exercises the
+        // raw-source rows (a stacked reflowed paragraph, a revealed table or code row).
+        let line_starts: Vec<usize> = (0..buffer.line_count())
+            .map(|l| buffer.line_to_char(l))
+            .collect();
+        for mode in [Mode::Preview, Mode::Rendered, Mode::Raw] {
+            let (cursors, widths): (&[usize], &[usize]) = if mode == Mode::Rendered {
+                (&line_starts, &[80, 20])
+            } else {
+                (&[0], &[80, 20, 7])
+            };
+            for &cursor in cursors {
+                for &width in widths {
+                    let mut st = state_from(src, cursor);
+                    st.mode = mode;
+                    for scroll in 0..st.total_visual_rows_for_mode(width) + 2 {
+                        st.scroll = scroll;
+                        let offset = st.scroll_anchor_offset(width);
+                        assert_eq!(
+                            st.scroll_anchor_line(width),
+                            st.buffer.char_to_line(offset),
+                            "{mode:?}, cursor {cursor}, width {width}, scroll {scroll}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn formatted_heading_text_is_flattened() {
         let src = "## **Bold** and `code`\n\nbody\n";

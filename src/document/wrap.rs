@@ -447,13 +447,17 @@ pub struct PaintedRows {
     pub indent: Indent,
 }
 
+/// A styled `Line`'s chars, each with its span's style: the input [`visual_rows_of_chars`] wraps.
+pub fn styled_chars(line: &Line<'_>) -> Vec<(char, Style)> {
+    line.spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect()
+}
+
 impl PaintedRows {
     pub fn new(line: &Line<'_>, indent: Indent, width: usize) -> Self {
-        let chars: Vec<(char, Style)> = line
-            .spans
-            .iter()
-            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
-            .collect();
+        let chars = styled_chars(line);
         let rows = visual_rows_of_chars(&chars, width, indent);
         Self {
             chars,

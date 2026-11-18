@@ -200,8 +200,10 @@ src/
     edit_ops.rs     # Action → EditorState mutations
     footnote_edit.rs, link.rs, list_edit/, table_edit.rs, table_edit_ops.rs
     mode.rs         # Mode enum: Preview | Rendered | Raw
-    mouse_ops/      # checkbox, coord (screen → rope offset), footnotes, links,
+    mouse_ops/      # checkbox, coord (screen cell → rendered row), footnotes, links,
                     #   selection, table_drag
+    row_offset.rs   # rendered row + cell → buffer offset / line: shared by clicks, the
+                    #   Preview scroll anchor and the Rendered scroll clamp
     state.rs        # owns Buffer, Cursor, History, Mode, ParsedDoc
     state_cursor_block.rs   # cursor-block lookup + reveal jitter suppression
     state_cursor_visual.rs  # move_up_visual / move_down_visual
