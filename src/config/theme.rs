@@ -1055,8 +1055,7 @@ mod tests {
         assert!(list_theme_names().iter().any(|n| n == "mine"));
     }
 
-    /// `docs/themes.md` lists these by name, split into Dark and Light groups; accepting
-    /// a change to this snapshot is the reminder to update that list.
+    /// Pinned because `docs/themes.md` lists these by hand.
     #[test]
     fn builtin_themes_are_pinned_for_the_docs() {
         let rows: Vec<String> = BUILTIN_THEMES
@@ -1070,7 +1069,12 @@ mod tests {
                 format!("{name} ({appearance})")
             })
             .collect();
-        insta::assert_snapshot!(rows.join("\n"));
+        insta::with_settings!({
+            description => "Accepting a change here: update the Dark / Light theme lists in \
+                            docs/themes.md to match",
+        }, {
+            insta::assert_snapshot!(rows.join("\n"));
+        });
     }
 
     /// Every color field on [`Palette`], in declaration order.  Add new ones here so

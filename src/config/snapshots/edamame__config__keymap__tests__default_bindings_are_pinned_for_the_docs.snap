@@ -1,5 +1,6 @@
 ---
 source: src/config/keymap.rs
+description: "Accepting a change here: update docs/keybindings.md and config/keybindings.toml to match"
 expression: "rows.join(\"\\n\")"
 ---
 alt+backspace = TableDeleteRow

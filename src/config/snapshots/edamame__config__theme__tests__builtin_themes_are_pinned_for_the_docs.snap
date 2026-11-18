@@ -1,5 +1,6 @@
 ---
 source: src/config/theme.rs
+description: "Accepting a change here: update the Dark / Light theme lists in docs/themes.md to match"
 expression: "rows.join(\"\\n\")"
 ---
 256 Dark (dark)

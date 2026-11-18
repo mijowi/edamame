@@ -851,10 +851,8 @@ impl KeyMap {
 mod tests {
     use super::*;
 
-    /// The full default binding table, pinned.  `docs/keybindings.md` is written by hand from
-    /// it, so **accepting this snapshot is the reminder to update that page** (and
-    /// `config/keybindings.toml`).  Sorted by chord, so the diff is independent of `HashMap`
-    /// iteration order.
+    /// The full default binding table, pinned because the docs are written by hand from it.
+    /// Sorted by chord, so the diff is independent of `HashMap` iteration order.
     #[test]
     fn default_bindings_are_pinned_for_the_docs() {
         let km = KeyMap::default_bindings();
@@ -868,7 +866,12 @@ mod tests {
             })
             .collect();
         rows.sort();
-        insta::assert_snapshot!(rows.join("\n"));
+        insta::with_settings!({
+            description => "Accepting a change here: update docs/keybindings.md and \
+                            config/keybindings.toml to match",
+        }, {
+            insta::assert_snapshot!(rows.join("\n"));
+        });
     }
 
     /// `Action::Open` is a stub, so it must stay unbound — `docs/keybindings.md` says there is
