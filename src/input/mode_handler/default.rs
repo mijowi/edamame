@@ -125,9 +125,8 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::ToggleVimMode
             | Action::ToggleLimitWidth
             | Action::ToggleDiffOnChange
-            // The remaining three open a modal that touches the buffer only on submit; the
-            // section picker's cursor motion is benign in Preview, where no cursor is drawn.
-            | Action::InsertTable
+            // The remaining three open a prompt or picker that changes nothing until submitted;
+            // the section picker's cursor motion is benign in Preview, where no cursor is drawn.
             | Action::SaveAs
             | Action::GoToSection
             | Action::OpenSearch
