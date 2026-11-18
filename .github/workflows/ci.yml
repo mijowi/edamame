@@ -63,22 +63,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # `--no-default-features` drops the `arboard` dependency, so copy/cut/
-      # paste resolve against the in-process kill-ring instead of the OS
-      # clipboard.  That is deliberate, and it is what makes this job
-      # deterministic:
-      #
-      #   * The OS clipboard is process-global state shared by every test
-      #     thread, so with it live the clipboard tests race each other.
-      #   * Headless Linux runners have no clipboard at all, so the arboard
-      #     path would be exercised on macOS and skipped on Linux — the worst
-      #     of both worlds for reproducibility.
-      #
-      # Unit tests are additionally insulated by `edit_ops::OS_CLIPBOARD`
-      # (false under `cfg(test)`); this flag is what extends the same
-      # guarantee to the integration tests in `tests/`, which link the
-      # library compiled without `cfg(test)`.  The clipboard code is still
-      # compiled and linted by the clippy job above.
+      # `--no-default-features` drops the `arboard` dependency, which only
+      # saves build time: the test results are the same either way.  No test
+      # reaches the OS clipboard with or without it — every `App` starts with
+      # `NullClipboard`, and only `main` installs the real source
+      # (`clipboard::default_source`).  The `clipboard` feature gates nothing
+      # but `OsClipboard`, which no test constructs; it is compiled and
+      # linted by the clippy job above.
       #
       # Deliberately NOT `--all-targets`: that pulls in `benches/pipeline.rs`,
       # and Criterion executes every benchmark even in test mode, which turns
