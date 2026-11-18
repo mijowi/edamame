@@ -16,7 +16,6 @@ set -euo pipefail
 
 CRATE=edamame
 RELEASE_FILES=(CHANGELOG.md Cargo.toml Cargo.lock)
-BENCH_FILTER='^(full_pipeline|visual_cache)'
 ASSUME_YES=0
 CMD=''
 
@@ -166,20 +165,6 @@ release_run_ok() {
     [[ $state == completed\ * ]] && only_crates_publish_failed "$1" && crates_io_has "$2"
 }
 
-# What defines the bench harness outside `benches/`: the `[[bench]]` tables and the
-# `criterion` dependency line in Cargo.toml, and the criterion version Cargo.lock resolves.
-# Reads both files at revision $1, or from the working tree when $1 is empty.
-bench_harness() {
-    local toml lock
-    if [[ -n $1 ]]; then
-        toml=$(git show "$1:Cargo.toml") && lock=$(git show "$1:Cargo.lock") || return 1
-    else
-        toml=$(<Cargo.toml) && lock=$(<Cargo.lock) || return 1
-    fi
-    awk '/^\[/ { on = ($0 == "[[bench]]") } on || /^criterion *=/' <<<"$toml"
-    awk '$0 == "name = \"criterion\"" { getline; print }' <<<"$lock"
-}
-
 # ── prepare ───────────────────────────────────────────────────────────────
 
 cmd_prepare() {
@@ -255,13 +240,7 @@ run_checks() {
     step "cargo clippy"
     cargo clippy --all-targets -- -D warnings
     step "Tests"
-    if cargo nextest --version >/dev/null 2>&1; then
-        # nextest cannot run doctests, so they get their own pass.
-        cargo nextest run --no-fail-fast
-        cargo test --doc
-    else
-        cargo test --no-fail-fast
-    fi
+    cargo test --no-fail-fast
 
     step "dist plan"
     local archives
@@ -277,46 +256,9 @@ run_checks() {
 # ── bench ─────────────────────────────────────────────────────────────────
 
 cmd_bench() {
-    # `worktree` is deliberately not local: the EXIT trap reads it after this function returns.
-    local version prev core target_dir
-    version=$(current_version)
+    local prev
     prev=${PREV:-$(previous_version)}
-    core=${CORE:-3}
-    target_dir="$PWD/target"
-
-    git diff --quiet "v$prev" -- benches/ ||
-        die "benches/ changed since v$prev; the comparison would be meaningless"
-    local old_harness
-    old_harness=$(bench_harness "v$prev") || die "cannot read Cargo.toml / Cargo.lock at v$prev"
-    [[ $old_harness == "$(bench_harness '')" ]] ||
-        die "the criterion dependency or a [[bench]] entry changed since v$prev; the comparison would be meaningless"
-
-    local pin=()
-    if command -v taskset >/dev/null; then
-        pin=(taskset -c "$core")
-    else
-        echo "warning: taskset not found; benches run unpinned" >&2
-    fi
-
-    worktree=$(mktemp -d)
-    trap 'git worktree remove --force "$worktree" 2>/dev/null || true; rm -rf "$worktree"' EXIT
-    step "Checking out v$prev into a temporary worktree"
-    git worktree add --detach "$worktree" "v$prev"
-
-    step "Building both bench binaries"
-    (cd "$worktree" && CARGO_TARGET_DIR="$target_dir" cargo bench --bench pipeline --no-run)
-    cargo bench --bench pipeline --no-run
-
-    step "Benching v$prev (baseline) on core $core"
-    # `${pin[@]+...}`: bash before 4.4 (macOS's /bin/bash) treats an empty array as unset
-    # under `set -u`, and `pin` is empty exactly where taskset is missing.
-    (cd "$worktree" && CARGO_TARGET_DIR="$target_dir" ${pin[@]+"${pin[@]}"} \
-        cargo bench --bench pipeline -- --noplot "$BENCH_FILTER" --save-baseline "v$prev")
-    step "Benching v$version against v$prev on core $core"
-    ${pin[@]+"${pin[@]}"} cargo bench --bench pipeline -- --noplot "$BENCH_FILTER" --baseline "v$prev"
-
-    echo
-    echo "A \"regressed\" line is something to confirm, not a release blocker by itself."
+    EDAMAME_BENCH_CORE=${EDAMAME_BENCH_CORE:-3} scripts/bench-compare.sh "v$prev"
     echo "Next: $0 push"
 }
 

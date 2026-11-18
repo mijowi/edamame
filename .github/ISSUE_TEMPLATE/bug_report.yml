@@ -3,6 +3,11 @@ description: Something isn't working the way you expected.
 labels: ["bug"]
 body:
 
+  - type: markdown
+    attributes:
+      value: |
+        Please write this yourself. Fully AI-written issues may be closed without reply; see [AI Policy](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md#ai-policy).
+
   - type: textarea
     id: what-happened
     attributes:
@@ -95,5 +100,5 @@ body:
             It still happens with a clean config —
             `edamame --no-config yourfile.md`
           required: false
-        - label: I searched existing issues for this
-          required: false
+        - label: I wrote this issue myself, or thoroughly edited it
+          required: true

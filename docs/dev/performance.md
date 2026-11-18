@@ -50,7 +50,7 @@ Harness details that matter for reproducibility:
 - **The noise threshold is 5%** (criterion's default is 1%), since laptop run-to-run noise is several percent.
 - **`visual_cache_build`'s width cycling forces a cold rebuild every call.**
 
-`cargo bench --bench pipeline` to reproduce; on a hybrid CPU, pin it ([below](#checking-a-release-for-regressions)).
+`cargo bench --bench pipeline` to reproduce; on a hybrid CPU, pin it ([below](#checking-for-regressions)).
 
 ## Results
 
@@ -209,33 +209,18 @@ Facts about the current design, not tasks.
 - **Saving is synchronous and syncs to disk twice.** `App::save_buffer` runs on the UI thread, and `document::buffer::write_with_backup` copies the whole file to a backup, syncs it, rewrites the file and syncs that. Negligible on a local SSD, but autosave repeats it every few seconds of idle, so a slow disk or network filesystem would show it as a periodic stall. Both syncs are what make a save survive power loss; don't drop them to speed a save up. Moving the save to a worker thread is the fix if it shows up.
 - **`parse_offsets::top_level_block_ranges` is off the edit path** — it survives only as the oracle in `merged_parse_matches_two_pass_parse` (the diff subsystem uses the sibling `block_ranges_by`).
 
-## Checking a release for regressions
+## Checking for regressions
 
-Before every release (the step lives in [releasing.md](releasing.md)), bench the previous release's tag and the current tree in the same session, then compare. Running both builds together means they share a toolchain, power state, temperature and background load, so a difference between them is the code's, not a change in the machine since some earlier day. The previous tag is built from a worktree into this checkout's `target/`, which reuses most of the dependency builds. `scripts/release.sh bench` runs exactly this (previous tag found automatically, `PREV=` and `CORE=` override it and the pinned core, worktree removed even on failure); the manual equivalent:
+Compare two builds by benching both in the same session: the base and the current tree. Running them together means they share a toolchain, power state, temperature and background load, so a difference between them is the code's, not a change in the machine since some earlier day. `scripts/bench-compare.sh [REF]` does this. It checks the base out into a temporary worktree, builds it into this checkout's `target/` (reusing most of the dependency builds), benches the base and saves it as a criterion baseline, then benches the current tree and reports each case's change against it. `REF` defaults to `develop`; `EDAMAME_BENCH_CORE=N` pins both runs to one CPU with `taskset`, and `EDAMAME_BENCH_FILTER=` replaces the default filter, the end-to-end cases `^(full_pipeline|visual_cache)`.
 
-```bash
-PREV=0.1.6
-F='^(full_pipeline|visual_cache)'
-git diff --quiet "v$PREV" -- benches/ || echo "bench harness changed since v$PREV"
-H='^criterion *=|^\[\[bench\]\]$|^name = "criterion"$'
-for f in Cargo.toml Cargo.lock; do
-    [[ $(git show "v$PREV:$f" | grep -E -A2 "$H") == "$(grep -E -A2 "$H" "$f")" ]] ||
-        echo "bench harness changed in $f since v$PREV"
-done
-T="$PWD/target"
-git worktree add --detach ../edamame-prev "v$PREV"
-(cd ../edamame-prev && CARGO_TARGET_DIR="$T" cargo bench --bench pipeline --no-run)
-cargo bench --bench pipeline --no-run
-(cd ../edamame-prev && CARGO_TARGET_DIR="$T" taskset -c 3 cargo bench --bench pipeline -- --noplot "$F" --save-baseline "v$PREV")
-taskset -c 3 cargo bench --bench pipeline -- --noplot "$F" --baseline "v$PREV"
-git worktree remove ../edamame-prev
-```
+It's used in two places:
 
-The last bench run measures the current tree and reports each case's change against the `v$PREV` run just saved.
+- **Pull requests** compare against `develop`, after rebasing onto it, and paste the output into the PR ([CONTRIBUTING.md](../../CONTRIBUTING.md#performance)).
+- **Releases** compare against the previous release's tag: `scripts/release.sh bench` finds the tag and runs the script pinned to CPU 3 ([releasing.md](releasing.md)).
 
-- **Pin both runs to CPU 3.** The Linux laptop is a hybrid CPU (performance cores 0–3, low-power efficiency cores 4–7), and the scheduler, especially under `power-saver`, moves an unpinned bench thread between the two partway through a run. One case measured 7.8 ms on a performance core and 27 ms on an efficiency core, and an unpinned run lands in between as a bimodal sample set that criterion reports as a large change: `v0.1.6` → `v0.1.7` read +84% on `full_pipeline_memoized/mixed/5000` unpinned and −0.4% pinned. CPU 3 boosts highest (4.8 GHz, as does CPU 1) and serves fewer interrupts than CPU 0, and the cores differ by a few percent, so pin both runs to the same one. The `--no-run` builds keep `taskset` from confining the compile too. macOS can't pin, so on Apple silicon keep the machine idle and treat a bimodal `target/criterion/<case>/new/sample.json` as a scheduler artifact.
+- **Pin both runs to one core on a hybrid CPU.** On the maintainer's Linux laptop that is CPU 3. The laptop is a hybrid CPU (performance cores 0–3, low-power efficiency cores 4–7), and the scheduler, especially under `power-saver`, moves an unpinned bench thread between the two partway through a run. One case measured 7.8 ms on a performance core and 27 ms on an efficiency core, and an unpinned run lands in between as a bimodal sample set that criterion reports as a large change: `v0.1.6` → `v0.1.7` read +84% on `full_pipeline_memoized/mixed/5000` unpinned and −0.4% pinned. CPU 3 boosts highest (4.8 GHz, as does CPU 1) and serves fewer interrupts than CPU 0, and the cores differ by a few percent, so pin both runs to the same one. The `--no-run` builds keep `taskset` from confining the compile too. macOS can't pin, so on Apple silicon keep the machine idle and treat a bimodal `target/criterion/<case>/new/sample.json` as a scheduler artifact. On another Linux machine, pick a performance core: `lscpu -e` lists each CPU's maximum clock, and the efficiency cores are the slower ones.
 - **A "regressed" line is a lead, not a verdict.** A shared session removes day-to-day drift, not minute-to-minute: even pinned, the core slows for stretches of a run, and one pinned full-suite run had 8 of 63 cases off by 7–110%, all within noise when rechecked. Confirm a suspect by running the two builds' bench binaries (`target/release/deps/pipeline-*`; `ls -t` lists the last built first) back to back, a few rounds each, filtered to the suspect case and pinned, so drift affects both alike.
-- **If the harness changed since the tag** (a "harness changed" line prints), the two runs time different corpora or settings and can't be compared; nor can they if the old tag no longer builds with the current toolchain. Skip the check.
+- **If the harness differs between the two builds**, they time different corpora or settings and can't be compared, so the script refuses: anything under `benches/`, the `criterion` line or a `[[bench]]` table in `Cargo.toml`, or the `criterion` version `Cargo.lock` resolves. Nor can they be compared if the base no longer builds with the current toolchain. Skip the check, and in a PR say why.
 - **`--noplot` skips criterion's HTML charts**, about a fifth of the run time.
 - **The stage groups** (`parse_merged`, `render_only`) **are diagnostics.** Run them on both builds when an end-to-end case regresses, to find the stage that moved.
 

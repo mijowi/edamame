@@ -7,6 +7,8 @@ body:
       value: |
         Please keep in mind that edamame has a narrow focus on editing Markdown.
 
+        Please write this yourself. Fully AI-written issues may be closed without reply; see [AI Policy](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md#ai-policy).
+
   - type: textarea
     id: problem
     attributes:
@@ -26,3 +28,11 @@ body:
         If you have a specific design in mind — a key, a command, a setting — describe it. If another editor solves this, saying which one and how it behaves is very helpful.
     validations:
       required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I wrote this issue myself, or thoroughly edited it
+          required: true

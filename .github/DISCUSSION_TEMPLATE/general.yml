@@ -1,0 +1,12 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please write this yourself. Fully AI-written posts and comments may be closed without reply; see [AI Policy](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md#ai-policy).
+
+  - type: textarea
+    id: body
+    attributes:
+      label: What's on your mind?
+    validations:
+      required: true

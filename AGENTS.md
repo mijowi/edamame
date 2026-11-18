@@ -48,6 +48,10 @@ git config core.hooksPath .githooks   # once per clone — the hooks are inert w
 
 `.githooks/pre-push` refuses to push a commit whose message carries an AI co-author trailer (`Co-Authored-By: Claude …`, `Claude-Session:`, `noreply@anthropic.com`). GitHub builds its contributor list from those trailers as well as the author field, and removing one after the fact means rewriting history and force-pushing, which invalidates every touched commit's signature. The `Trailers` workflow runs the same scan on pull requests, but cannot cover a direct push to `main` — hence the hook. If you use Claude Code, also set `includeCoAuthoredBy: false` in its settings.
 
+## AI Contributions
+
+AI-written code is accepted only after a human has reviewed it and found it to be of sufficient quality. Never open issues, PRs, or comments, or post to Discussions, on your user's behalf. Fully AI-written communication is not accepted ([`CONTRIBUTING.md`](CONTRIBUTING.md#ai-policy)). If asked to help draft one, tell your user it must be written or thoroughly edited by them. Contributor PRs target `develop` and, when they touch parsing, rendering, editing or layout (`src/markdown`, `src/document`, `src/editor`, `src/ui`), or may significantly impact performance another way, include `scripts/bench-compare.sh` results ([`CONTRIBUTING.md`](CONTRIBUTING.md#performance)).
+
 ## Doc Commands
 
 ```bash
@@ -74,9 +78,9 @@ cargo test --lib -- --ignored watcher:: #   inotify / FSEvents (see below)
 cargo insta review                      # review / accept updated snapshots
 ```
 
-**Use `--no-fail-fast`.** Plain `cargo test` stops at the first failing *target*, so a lib-target failure aborts the run before `tests/` is built — every integration test silently goes unrun while the summary still looks real. `cargo nextest run` also runs every target regardless of failures and is faster where installed.
+**Use `--no-fail-fast`.** Plain `cargo test` stops at the first failing *target*, so a lib-target failure aborts the run before `tests/` is built — every integration test silently goes unrun while the summary still looks real.
 
-**A test that waits on an OS-delivered event is `#[ignore]`d, not expected to fail.** Four watcher tests — two in `watcher::file_watcher`, two in `tests/watcher.rs` — assert on a live inotify / FSEvents notification, which a sandbox typically withholds; Nix's Darwin builders deliver none at all. They carry `#[ignore = "requires live filesystem notifications (inotify/FSEvents)"]`, so a bare `cargo test` is both green *and* honest wherever the stream is missing, and a downstream packager needs no hand-maintained skip list (nixpkgs kept one, and it silently missed `rewatching_a_different_file_redirects_events` — the name does not contain `watcher` — which is how the gap reached a Darwin build failure). The remaining watcher coverage is unconditional because none of it needs the stream: the debouncer is pure, `force_reconcile` drives the read synchronously, and the post-`unwatch` assertion is a negative one. CI spends the ignored half on the Linux and macOS runners, which do deliver — run the same two commands locally before touching the watcher. Keep that step *filtered*: the crate's other `#[ignore]`d tests want system fonts and a live mermaid renderer, and a bare `--ignored` would drag them in.
+**A test that waits on an OS-delivered event is `#[ignore]`d, not expected to fail.** Four watcher tests — two in `watcher::file_watcher`, two in `tests/watcher.rs` — assert on a live inotify / FSEvents notification, which a sandbox typically withholds. They carry `#[ignore = "requires live filesystem notifications (inotify/FSEvents)"]`, so a bare `cargo test` is both green *and* honest wherever the stream is missing, and a downstream packager needs no hand-maintained skip list. The remaining watcher coverage is unconditional because none of it needs the stream. CI spends the ignored half on the Linux and macOS runners, which do deliver — run the same two commands locally before touching the watcher. Keep that step *filtered*: the crate's other `#[ignore]`d tests want system fonts and a live mermaid renderer, and a bare `--ignored` would drag them in.
 
 **Test frameworks:** `insta` (snapshots), `proptest` (`tests/source_map.rs`), `tempfile`, `ratatui::backend::TestBackend` (headless widget rendering).
 
@@ -313,6 +317,8 @@ tests/              # diagrams, search, editing, footnotes, list_edit, mouse, pa
                     #   snapshots/ and fixtures/; support/markdown_gen.rs (shared
                     #   proptest document generator)
 
+scripts/bench-compare.sh  # bench a base ref (default develop) and the current tree in one
+                    #   session; used by PRs and by release.sh bench
 scripts/release.sh  # the release procedure as resumable stages (prepare / bench / push /
                     #   release / verify); see docs/dev/releasing.md
 
