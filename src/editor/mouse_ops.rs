@@ -1,8 +1,10 @@
 //! Apply [`MouseAction`] values to the editor state.
 //!
 //! Mirrors `edit_ops` for mouse input: click placement, drag selection, word/line chords,
-//! wheel scrolling, checkbox toggles, table gestures.  All coordinate-to-offset translation
-//! happens here; the `mouse.rs` dispatcher only sees document-area-relative cells.
+//! wheel scrolling, checkbox toggles, table gestures.  Screen coordinates are translated here
+//! (`coord` finds the row a click hits), then mapped to a buffer offset by
+//! [`row_offset`](crate::editor::row_offset); the `mouse.rs` dispatcher only sees
+//! document-area-relative cells.
 
 mod checkbox;
 mod coord;

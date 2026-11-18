@@ -698,9 +698,9 @@ fn sync_preferred_visual(state: &mut EditorState, viewport_width: usize) {
     }
 }
 
-/// Move the cursor to the start of the block at the top of the viewport, unless its own block
-/// already starts on screen.  Called on the Preview → editing transition so the cursor appears
-/// near what the user is looking at.
+/// Move the cursor to the source position at the top of the viewport, unless it is already on
+/// screen.  Called on the Preview → editing transition so the cursor appears where the user is
+/// looking and the view stays put.
 fn sync_cursor_to_scroll(state: &mut EditorState, viewport_height: usize, viewport_width: usize) {
     state.cursor.offset = synced_cursor_offset(state, viewport_height, viewport_width);
 }
@@ -713,13 +713,11 @@ fn synced_cursor_offset(
     viewport_width: usize,
 ) -> usize {
     let width = viewport_width.max(1);
-    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
-    let cursor_lines = state.parsed.source_map.rendered_lines_for_byte(cursor_byte);
-    if !cursor_lines.is_empty() {
-        let cursor_row = state.parsed.visual_rows_before(cursor_lines.start, width);
-        if (state.scroll..state.scroll + viewport_height).contains(&cursor_row) {
-            return state.cursor.offset;
-        }
+    // The cursor's own row, not its block's first: a cursor in the visible part of a block that
+    // starts above the viewport stays where it is.
+    let cursor_row = state.cursor_visual_row(width);
+    if (state.scroll..state.scroll + viewport_height).contains(&cursor_row) {
+        return state.cursor.offset;
     }
     state.scroll_anchor_offset(width)
 }
@@ -1911,5 +1909,113 @@ mod tests {
         list_renumber_at_cursor(&mut state);
         assert_eq!(state.buffer.contents(), "1. a\n2. b\n");
         assert_eq!(state.history.undo_depth(), 1);
+    }
+
+    // ── Leaving Preview (issue #110) ──────────────────────────────────────────
+
+    const VW: usize = 80;
+
+    fn preview(src: &str) -> EditorState {
+        let mut st = EditorState::new(Buffer::from_str(src), theme());
+        st.mode = Mode::Preview;
+        st
+    }
+
+    /// A list of `n` one-line items, `- item 0` .. `- item {n-1}`, after a heading.
+    fn long_list(n: usize) -> String {
+        let items: Vec<String> = (0..n).map(|i| format!("- item {i}")).collect();
+        format!("# A\n\n{}\n", items.join("\n"))
+    }
+
+    /// Scroll so the rendered row showing `needle` is at the top of the viewport.
+    fn scroll_to(st: &mut EditorState, src: &str, needle: &str) {
+        let saved = st.cursor.offset;
+        st.cursor.offset = src.find(needle).unwrap();
+        st.scroll = st.cursor_visual_row(VW);
+        st.cursor.offset = saved;
+    }
+
+    #[test]
+    fn leaving_preview_deep_in_a_long_list_lands_on_the_top_item() {
+        // The anchor was the start of the block at the top, so with the viewport deep inside a
+        // long list the cursor went to `- item 0`, off screen above.
+        let src = long_list(60);
+        let mut st = preview(&src);
+        scroll_to(&mut st, &src, "- item 30\n");
+        let top = st.scroll;
+        apply(&mut st, Action::EnterEditMode, 10, VW);
+        assert_eq!(st.mode, Mode::Rendered);
+        assert_eq!(st.buffer.char_to_line(st.cursor.offset), 2 + 30);
+        st.ensure_cursor_visible(10, VW);
+        assert_eq!(
+            st.scroll, top,
+            "the first keypress must not scroll the view"
+        );
+    }
+
+    #[test]
+    fn leaving_preview_keeps_a_visible_cursor_inside_a_long_block() {
+        // The on-screen test read the cursor's *block's* first row, which lies above the
+        // viewport, so a cursor on a visible item of the same list was moved.
+        let src = long_list(60);
+        let mut st = preview(&src);
+        let cursor = src.find("- item 34").unwrap() + 4;
+        st.cursor.offset = cursor;
+        scroll_to(&mut st, &src, "- item 30\n");
+        apply(&mut st, Action::EnterEditMode, 10, VW);
+        assert_eq!(st.cursor.offset, cursor);
+    }
+
+    #[test]
+    fn leaving_preview_deep_in_a_code_block_lands_on_the_top_line() {
+        let body: Vec<String> = (0..60).map(|i| format!("line {i}")).collect();
+        let src = format!("# A\n\n```\n{}\n```\n", body.join("\n"));
+        let mut st = preview(&src);
+        scroll_to(&mut st, &src, "line 40\n");
+        apply(&mut st, Action::EnterEditMode, 10, VW);
+        assert_eq!(st.cursor.offset, src.find("line 40\n").unwrap());
+    }
+
+    #[test]
+    fn leaving_preview_deep_in_a_long_quote_lands_on_the_top_line() {
+        let body: Vec<String> = (0..60).map(|i| format!("> quote {i}")).collect();
+        let src = format!("# A\n\n{}\n", body.join("\n>\n"));
+        let mut st = preview(&src);
+        scroll_to(&mut st, &src, "> quote 40\n");
+        apply(&mut st, Action::EnterEditMode, 10, VW);
+        let line = src[..src.find("> quote 40\n").unwrap()]
+            .matches('\n')
+            .count();
+        assert_eq!(st.buffer.char_to_line(st.cursor.offset), line);
+    }
+
+    #[test]
+    fn leaving_preview_deep_in_a_long_table_lands_on_the_top_row() {
+        let rows: Vec<String> = (0..60).map(|i| format!("| r{i} | v{i} |")).collect();
+        let src = format!("# A\n\n| h | k |\n|---|---|\n{}\n", rows.join("\n"));
+        let mut st = preview(&src);
+        scroll_to(&mut st, &src, "| r40 |");
+        apply(&mut st, Action::EnterEditMode, 10, VW);
+        // On the top row's first cell, as a click at its first screen cell lands.
+        assert_eq!(st.cursor.offset, src.find("r40 |").unwrap());
+    }
+
+    #[test]
+    fn scrolling_down_deep_in_a_long_list_pulls_the_cursor_to_the_top_item() {
+        // Rendered mode pulls a cursor scrolled off the top onto the top row; the block's start
+        // lay above the viewport, so the next keypress scrolled the view back up.
+        let src = long_list(60);
+        let mut st = EditorState::new(Buffer::from_str(&src), theme());
+        st.mode = Mode::Rendered;
+        st.viewport_width = VW;
+        scroll_to(&mut st, &src, "- item 30\n");
+        apply(&mut st, Action::ScrollDown, 10, VW);
+        let top = st.scroll;
+        assert_eq!(st.buffer.char_to_line(st.cursor.offset), 2 + 31);
+        st.ensure_cursor_visible(10, VW);
+        assert_eq!(
+            st.scroll, top,
+            "the view must not jump back to the list's start"
+        );
     }
 }

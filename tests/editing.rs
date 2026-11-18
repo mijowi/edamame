@@ -446,10 +446,20 @@ fn enter_edit_mode_from_preview_lands_at_viewport_top_past_wrapped_rows() {
         .start;
     assert!(st.parsed.visual_rows_for_line_at(para_line, VW) > 6);
     st.scroll = st.parsed.visual_rows_before(para_line, VW) + 5;
-    // Viewport of 1 row: the cursor at offset 0 is off screen, so it must move.
+    let top = st.scroll;
+    // Viewport of 1 row: the cursor at offset 0 is off screen, so it must move — onto the
+    // paragraph's row at the top (issue #110), not back to its start five rows up.
     edit_ops::apply(&mut st, Action::EnterEditMode, 1, VW);
     assert_eq!(st.mode, Mode::Rendered);
-    assert_eq!(st.cursor.offset, para_byte);
+    // The paragraph is plain ASCII at the left margin, so it renders and wraps like its source.
+    let sixth_row_start = edamame::document::wrap::visual_rows_of_str(para.trim_end(), VW)[5].0;
+    assert_eq!(st.cursor.offset, para_byte + sixth_row_start);
+    assert_eq!(st.scroll, top);
+    st.ensure_cursor_visible(1, VW);
+    assert_eq!(
+        st.scroll, top,
+        "the view must not jump back to the paragraph's start"
+    );
 }
 
 #[test]

@@ -3,6 +3,7 @@
 //! implementation picks the ruler.
 
 use crate::document::visual_cache::VisualRowCache;
+use crate::editor::row_offset;
 use crate::editor::state::{line_text_trimmed, raw_cursor_visual_row, rendered_cursor_visual_row};
 use crate::editor::{EditorState, Mode};
 
@@ -213,9 +214,26 @@ impl EditorState {
         self.char_offset_at_visual_row(self.scroll, width)
     }
 
-    /// Buffer line of [`Self::scroll_anchor_offset`].
+    /// Buffer line of [`Self::scroll_anchor_offset`], found without resolving the column.
     pub fn scroll_anchor_line(&self, width: usize) -> usize {
-        self.buffer.char_to_line(self.scroll_anchor_offset(width))
+        self.line_at_visual_row(self.scroll, width)
+    }
+
+    /// Buffer line of [`Self::char_offset_at_visual_row`]: the same answer, but O(row) for a
+    /// rendered row, where the offset is O(block) (see
+    /// [`row_offset::rendered_sub_line_to_line`]).  The breadcrumb asks on every Preview redraw.
+    pub(crate) fn line_at_visual_row(&self, visual_row: usize, width: usize) -> usize {
+        use crate::editor::effective_rows::RowHit;
+        if self.mode != Mode::Raw {
+            if let RowHit::Rendered { line, sub } = self
+                .effective_rows(width.max(1))
+                .line_at_visual_row(visual_row)
+            {
+                return row_offset::rendered_sub_line_to_line(self, line, sub, width.max(1));
+            }
+        }
+        self.buffer
+            .char_to_line(self.char_offset_at_visual_row(visual_row, width))
     }
 
     pub(crate) fn char_offset_at_visual_row(&self, visual_row: usize, width: usize) -> usize {
@@ -252,20 +270,11 @@ impl EditorState {
                             .line_to_char(target)
                             .min(self.buffer.len_chars())
                     }
-                    RowHit::Rendered { line: line_idx, .. } => {
-                        if line_idx >= self.parsed.lines.len() {
-                            return self.buffer.len_chars();
-                        }
-                        self.parsed
-                            .source_map
-                            .original_byte_for_rendered_line(line_idx)
-                            .map(|byte| {
-                                self.buffer
-                                    .rope()
-                                    .byte_to_char(byte)
-                                    .min(self.buffer.len_chars())
-                            })
-                            .unwrap_or(self.buffer.len_chars())
+                    // Where a click at the row's first cell lands, so a row deep inside a long
+                    // list, quote, table, code block or reflowed paragraph resolves to its own
+                    // line, not to the start of the block it belongs to.
+                    RowHit::Rendered { line, sub } => {
+                        row_offset::rendered_sub_line_to_offset(self, line, sub, 0, width.max(1))
                     }
                 }
             }
