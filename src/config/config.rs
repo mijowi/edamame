@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use super::init::{ensure_default_files_in, REFERENCE_CONFIG_TOML};
 use super::keymap::KeyBindingOverrides;
 use super::persistence::config_writes_allowed;
-use super::readers::{read_keybindings, read_main_config, read_theme_named};
+use super::readers::{
+    fallback_theme, fallback_theme_name, read_keybindings, read_main_config, read_theme_named,
+};
 pub use super::sections::{
     AppearanceMode, CustomExportEntry, DevConfig, EditorConfig, ExportConfig, FiguresConfig,
     FiguresEnabled, ImagesConfig, ImagesEnabled, ModalConfig, RemoteImagePolicy, TableConfig,
@@ -24,7 +26,8 @@ pub use super::warnings::{ConfigWarning, WarningKind};
 #[serde(default)]
 pub struct Config {
     /// Active theme: a `BUILTIN_THEMES` name resolves to a compiled-in palette, anything
-    /// else to `themes/<theme>.toml`.  A missing file falls back to `Theme::default()`.
+    /// else to `themes/<theme>.toml`.  A missing file falls back to a capability-appropriate
+    /// built-in (see [`fallback_theme_name`]).
     pub theme: String,
     /// Session-only stash of the user's on-disk theme name, set when the startup
     /// indexed-color downgrade replaced [`Self::theme`].
@@ -89,15 +92,19 @@ pub struct LoadedConfig {
     pub warnings: Vec<ConfigWarning>,
 }
 
-impl Default for LoadedConfig {
-    /// The "no config loaded" fallback, used when [`Config::load`] itself errors.  The
-    /// theme is the `ThemeFile` equivalent of `Theme::default()`, *not*
-    /// `ThemeFile::default()`, so the editor stays themed with an unreadable config.
-    fn default() -> Self {
+impl LoadedConfig {
+    /// The "no config loaded" set, for `--no-config` and for [`Config::load`] itself
+    /// failing.  The theme is the built-in a missing theme file falls back to — chosen by
+    /// [`fallback_theme_name`] from `truecolor` — and `config.theme` names it, so the
+    /// settings overlay and theme picker report the theme actually on screen.
+    pub fn builtin_defaults(truecolor: bool) -> Self {
         Self {
-            config: Config::default(),
+            config: Config {
+                theme: fallback_theme_name(truecolor).to_owned(),
+                ..Config::default()
+            },
             keybindings: KeyBindingOverrides::default(),
-            theme: (&Theme::default()).into(),
+            theme: (&fallback_theme(truecolor)).into(),
             state: State::default(),
             warnings: Vec::new(),
         }
@@ -260,9 +267,10 @@ impl Config {
     }
 
     /// Read one named theme from `themes/<name>.toml`, with any non-fatal warnings for
-    /// the caller to surface in the same modal startup uses.  A missing file falls back to
-    /// `Theme::default()`.  The live theme-change path, so the settings overlay validates
-    /// through the same pipeline as [`Config::load`].
+    /// the caller to surface in the same modal startup uses.  A built-in resolves without
+    /// the disk; anything else unreadable falls back to [`fallback_theme`].  The live
+    /// theme-change path, so the settings overlay validates through the same pipeline as
+    /// [`Config::load`].
     pub fn load_theme(name: &str, truecolor: bool) -> (ThemeFile, Vec<ConfigWarning>) {
         let mut warnings = Vec::new();
         let theme_file = match Self::config_dir() {
@@ -270,7 +278,7 @@ impl Config {
             // `Config::load` rewrites `config.toml`.  Here the substitution is transient,
             // so retrying recovers the original choice once the file reappears.
             Some(dir) => read_theme_named(&dir, name, truecolor, &mut warnings).0,
-            None => (&Theme::default()).into(),
+            None => (&Theme::builtin(name).unwrap_or_else(|| fallback_theme(truecolor))).into(),
         };
         (theme_file, warnings)
     }
@@ -798,7 +806,7 @@ mod tests {
         let mut warnings = Vec::new();
         let (theme, fallback) = read_theme_named(dir.path(), "256 Dark", true, &mut warnings);
         let theme_out: Theme = (&theme).into();
-        assert_eq!(theme_out.h1, Theme::default().h1);
+        assert_eq!(theme_out.h1, Theme::builtin("256 Dark").unwrap().h1);
         assert!(fallback.is_none());
         assert!(warnings.is_empty());
     }
@@ -818,11 +826,17 @@ mod tests {
     }
 
     #[test]
-    fn loaded_config_default_has_themed_default_not_empty() {
-        // The editor must stay themed even when `Config::load` itself failed.
-        let fallback = LoadedConfig::default();
-        let theme: Theme = (&fallback.theme).into();
-        assert_eq!(theme.h1, Theme::default().h1);
+    fn builtin_defaults_pick_the_capability_appropriate_builtin_and_name_it() {
+        // `--no-config` and a failed `Config::load` must stay themed, with `config.theme`
+        // naming what is on screen rather than `Config::default()`'s name.
+        for (truecolor, name) in [(true, "Edamame"), (false, "256 Dark")] {
+            let loaded = LoadedConfig::builtin_defaults(truecolor);
+            assert_eq!(loaded.config.theme, name);
+            let theme: Theme = (&loaded.theme).into();
+            let expected = Theme::builtin(name).unwrap();
+            assert_eq!(theme.code_span, expected.code_span, "{name}");
+            assert_eq!(theme.h1, expected.h1, "{name}");
+        }
     }
 
     #[test]
@@ -1062,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn read_theme_parse_error_warns_and_falls_back_to_compiled_theme() {
+    fn read_theme_parse_error_warns_and_falls_back_to_capability_builtin() {
         let _lock = crate::test_env::env_lock();
         // Non-built-in name so the disk file is actually consulted.
         let dir = tempfile::tempdir().unwrap();
@@ -1072,7 +1086,7 @@ mod tests {
         let mut warnings = Vec::new();
         let (theme, fallback) = read_theme_named(dir.path(), "custom", true, &mut warnings);
         let theme_out: Theme = (&theme).into();
-        assert_eq!(theme_out.h1, Theme::default().h1);
+        assert_eq!(theme_out.h1, fallback_theme(true).h1);
         assert!(fallback.is_none());
         assert_eq!(warnings.len(), 1);
         assert!(matches!(warnings[0].kind, WarningKind::ParseError(_)));

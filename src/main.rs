@@ -123,8 +123,8 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
 
     // ── Load configuration ─────────────────────────────────────────
     // Scaffold FIRST, so a first-run user's `load` finds the theme file already written.
-    // `ensure_default_files` never overwrites, and a scaffolding failure still falls back to the
-    // compiled `Theme::default()`.
+    // `ensure_default_files` never overwrites, and a scaffolding failure leaves the theme file
+    // missing, which `load` answers with the capability-appropriate built-in.
     //
     // Both steps need the color depth: the scaffolder seeds a 256-color theme on an indexed
     // terminal, and `Config::load` picks the same capability-appropriate built-in for a missing
@@ -136,13 +136,13 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
     // half for the whole process.
     let truecolor_at_load = Capabilities::detect_color_depth_from_env() == ColorDepth::TrueColor;
     let loaded = if opts.no_config {
-        LoadedConfig::default()
+        LoadedConfig::builtin_defaults(truecolor_at_load)
     } else {
         Config::ensure_default_files(truecolor_at_load);
         Config::load(truecolor_at_load, true).unwrap_or_else(|e| {
             // Non-fatal.  Not `tracing` — the subscriber isn't set up yet.
             eprintln!("Warning: failed to load config: {e}. Using defaults.");
-            LoadedConfig::default()
+            LoadedConfig::builtin_defaults(truecolor_at_load)
         })
     };
     let LoadedConfig {

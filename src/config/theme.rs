@@ -605,7 +605,7 @@ impl Theme {
 
 impl Theme {
     /// The single source of truth for palette-slot → style assignments; `docs/dev/theming.md`
-    /// carries the conventions behind them.  Used by [`Theme::default`] and by the on-disk
+    /// carries the conventions behind them.  Used by the built-in themes and by the on-disk
     /// loader after user palette overrides are applied.
     pub fn from_palette(palette: &Palette) -> Self {
         let bold = Modifier::BOLD;
@@ -614,9 +614,14 @@ impl Theme {
         let p = palette.clone();
 
         // A bg-tinted shade of `code`, distinct from `bg_muted` so a code span inside a
-        // striped row still reads as code.  `blend` is a no-op on non-RGB palettes, so the
-        // 256-cube built-ins override the four code styles after this returns.
-        let code_bg = blend(p.code, p.bg, CODE_BG_MIX_TOWARD_BG);
+        // striped row still reads as code.  `blend` needs two RGB colors and would otherwise
+        // return `code` itself, painting code text on its own color — so an indexed, named,
+        // or half-specified palette gets `surface` instead.  The 256-cube built-ins pin
+        // their own code styles after this returns.
+        let code_bg = match (p.code, p.bg) {
+            (Color::Rgb(..), Color::Rgb(..)) => blend(p.code, p.bg, CODE_BG_MIX_TOWARD_BG),
+            _ => p.surface,
+        };
 
         // Same `blend` caveat as `code_bg`; the indexed built-ins pin `blockquote_text`.
         let quote_bg = blend(p.secondary, p.bg, QUOTE_BG_MIX_TOWARD_BG);
@@ -979,9 +984,11 @@ impl Theme {
     }
 }
 
+/// `256 Dark`, whose hand-pinned shades replace the RGB-only derivations [`Theme::from_palette`]
+/// can't apply to its indexed palette.
 impl Default for Theme {
     fn default() -> Self {
-        Self::from_palette(&Palette::default())
+        super::themes::dark_256::theme()
     }
 }
 
@@ -989,6 +996,40 @@ impl Default for Theme {
 mod tests {
     use super::*;
     use crate::config::themes::util::contrast_ratio;
+
+    /// Issue #113: `blend` is a no-op unless both colors are RGB, so the code surface once
+    /// collapsed onto `code` itself for an indexed palette or a hex one mixed with indexed
+    /// defaults.
+    #[test]
+    fn code_surface_never_collapses_onto_code() {
+        let indexed = Palette::default();
+        let mixed = Palette {
+            code: Color::Rgb(0xc0, 0x80, 0xff),
+            ..Palette::default()
+        };
+        let named = Palette {
+            code: Color::Magenta,
+            bg: Color::Black,
+            ..Palette::default()
+        };
+        let themes = [
+            ("default", Theme::default()),
+            ("indexed", Theme::from_palette(&indexed)),
+            ("mixed", Theme::from_palette(&mixed)),
+            ("named", Theme::from_palette(&named)),
+        ];
+        for (label, t) in themes {
+            assert_ne!(t.code_span.fg, t.code_span.bg, "{label}");
+            assert_ne!(t.code_block_text.bg, Some(t.palette.code), "{label}");
+        }
+        // `Monochrome Dark` sets no colors at all, marking code by modifier instead.
+        for (name, ctor) in BUILTIN_THEMES {
+            let t = ctor();
+            if t.code_span.fg.is_some() {
+                assert_ne!(t.code_span.fg, t.code_span.bg, "{name}");
+            }
+        }
+    }
 
     /// A user theme offered here is how the `--no-config` read half leaks: selecting it
     /// loads the very file the run exists to rule out.  The second half proves the

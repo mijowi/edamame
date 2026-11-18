@@ -505,6 +505,17 @@ fg = "blue"
         assert_eq!(theme.h1, Theme::default().h1);
     }
 
+    /// A blank file and a hex theme that omits `code` / `bg` both resolve those slots against
+    /// the indexed `Palette::default()`; inline code must still read (issue #113).
+    #[test]
+    fn blank_and_partial_files_keep_inline_code_readable() {
+        for toml in ["", "[palette]\nprimary = \"#ff0000\"\n"] {
+            let file: ThemeFile = toml::from_str(toml).unwrap();
+            let theme: Theme = (&file).into();
+            assert_ne!(theme.code_span.fg, theme.code_span.bg, "{toml:?}");
+        }
+    }
+
     #[test]
     fn focused_diff_washes_are_user_authorable() {
         // On an indexed palette a hand-picked `bg` is the only way to get a
@@ -612,11 +623,11 @@ italic = true
     }
 
     #[test]
-    fn palette_only_file_renders_identical_to_default_theme() {
-        // The shipped `default.toml` shape must produce exactly the compiled-in
-        // default, catching a new style with a hand-rolled default that doesn't
-        // fall out of the palette merge.
-        let default = Theme::default();
+    fn palette_only_file_renders_identical_to_from_palette() {
+        // A palette-only file must produce exactly `from_palette` of that palette,
+        // catching a new style with a hand-rolled default that doesn't fall out of the
+        // palette merge.  Not `Theme::default()`: that pins hand-picked indexed shades.
+        let default = Theme::from_palette(&crate::config::theme::Palette::default());
         let file = ThemeFile {
             palette: (&default.palette).into(),
             task_strikethrough: default.task_strikethrough,

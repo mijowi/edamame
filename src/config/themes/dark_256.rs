@@ -2,8 +2,9 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::theme::{Palette, Theme};
 
-/// Edamame's default palette: warm orange brand on near-black, edamame-bean green for success, and
-/// a cool purple for chrome so the alternating heading ramp reads as two hue families.
+/// `256 Dark`'s palette, also `Palette::default()`: the Edamame look in the 256-color cube — warm
+/// orange brand on near-black, edamame-bean green for success, and a cool purple for chrome so
+/// the alternating heading ramp reads as two hue families.
 pub fn palette() -> Palette {
     Palette {
         text: Color::Indexed(253),

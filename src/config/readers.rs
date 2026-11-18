@@ -216,12 +216,27 @@ pub const TRUECOLOR_FALLBACK_THEME: &str = "Edamame";
 /// faithfully on 256-color and even 16-color terminals.
 pub const INDEXED_FALLBACK_THEME: &str = "256 Dark";
 
+/// The built-in substituted when no theme file is read: [`TRUECOLOR_FALLBACK_THEME`] on a
+/// 24-bit terminal, [`INDEXED_FALLBACK_THEME`] otherwise.
+pub fn fallback_theme_name(truecolor: bool) -> &'static str {
+    if truecolor {
+        TRUECOLOR_FALLBACK_THEME
+    } else {
+        INDEXED_FALLBACK_THEME
+    }
+}
+
+/// The built-in [`fallback_theme_name`] names.
+pub fn fallback_theme(truecolor: bool) -> Theme {
+    Theme::builtin(fallback_theme_name(truecolor)).expect("built-in fallback name is valid")
+}
+
 /// Read the active theme file.
 ///
 /// `Some(name)` in the second slot means the requested theme was missing on disk (and
 /// wasn't a built-in) and `name` was substituted; the caller must persist that rename to
 /// `config.toml` so the substitution doesn't recur.  Every other case yields `None`,
-/// including a parse error (compiled default) and a blank file (a valid opt-out of
+/// including a parse error (the same built-in, unpersisted) and a blank file (a valid opt-out of
 /// styling).  `truecolor` picks between the two fallback constants.
 pub(super) fn read_theme_named(
     config_dir: &Path,
@@ -240,29 +255,20 @@ pub(super) fn read_theme_named(
     // so there is no rename to persist — and no `MissingTheme` warning, since the file is
     // excluded rather than missing.
     if !super::persistence::config_reads_allowed() {
-        let fallback = if truecolor {
-            TRUECOLOR_FALLBACK_THEME
-        } else {
-            INDEXED_FALLBACK_THEME
-        };
+        let fallback = fallback_theme_name(truecolor);
         tracing::debug!(
             theme = name,
             fallback,
             "--no-config: not reading a user theme file; using the built-in fallback"
         );
-        let theme = Theme::builtin(fallback).expect("built-in fallback name is valid");
-        return ((&theme).into(), None);
+        return ((&fallback_theme(truecolor)).into(), None);
     }
 
     let path = config_dir.join("themes").join(format!("{name}.toml"));
     // Detect "missing" up front so it gets a capability-aware built-in and a
-    // `MissingTheme` warning rather than silently degrading to `Theme::default()`.
+    // `MissingTheme` warning, and a rename to persist, unlike a file that fails to parse.
     if !path.exists() {
-        let fallback = if truecolor {
-            TRUECOLOR_FALLBACK_THEME
-        } else {
-            INDEXED_FALLBACK_THEME
-        };
+        let fallback = fallback_theme_name(truecolor);
         tracing::warn!(
             theme = name,
             path = %path.display(),
@@ -276,13 +282,15 @@ pub(super) fn read_theme_named(
                 fallback: fallback.to_string(),
             },
         });
-        let theme = Theme::builtin(fallback).expect("built-in fallback name is valid");
-        return ((&theme).into(), Some(fallback.to_string()));
+        return (
+            (&fallback_theme(truecolor)).into(),
+            Some(fallback.to_string()),
+        );
     }
 
     // Bypasses `read_and_warn`: its `on_missing` branch is unreachable after the
     // existence check above.
-    let theme_default = || ((&Theme::default()).into(), None);
+    let theme_fallback = || ((&fallback_theme(truecolor)).into(), None);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) => {
@@ -290,7 +298,7 @@ pub(super) fn read_theme_named(
                 path: path.clone(),
                 kind: WarningKind::ParseError(format!("Failed to read file: {e}")),
             });
-            return theme_default();
+            return theme_fallback();
         }
     };
     match deserialize_with_unknown_keys::<ThemeFile>(&raw) {
@@ -308,7 +316,7 @@ pub(super) fn read_theme_named(
                 path,
                 kind: WarningKind::ParseError(e.to_string()),
             });
-            theme_default()
+            theme_fallback()
         }
     }
 }
