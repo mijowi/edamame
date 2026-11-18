@@ -204,6 +204,12 @@ fn yank_flash_paints_the_yanked_span() {
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
+                outline_enabled: false,
+                outline_focused: false,
+                outline_entries: &[],
+                outline_selected: None,
+                outline_current: None,
+                outline_scroll: 0,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -3306,6 +3312,12 @@ fn yank_flash_paints_a_revealed_diagrams_source_line() {
                     max_width_enabled: false,
                     max_width_cols: 0,
                     scrollbar_active: false,
+                    outline_enabled: false,
+                    outline_focused: false,
+                    outline_entries: &[],
+                    outline_selected: None,
+                    outline_current: None,
+                    outline_scroll: 0,
                 };
                 frame.render_stateful_widget(view, frame.area(), &mut view_state);
             })
@@ -3447,6 +3459,12 @@ fn yank_flash_paints_revealed_rows_at_their_raw_columns() {
                     max_width_enabled: false,
                     max_width_cols: 0,
                     scrollbar_active: false,
+                    outline_enabled: false,
+                    outline_focused: false,
+                    outline_entries: &[],
+                    outline_selected: None,
+                    outline_current: None,
+                    outline_scroll: 0,
                 };
                 frame.render_stateful_widget(view, frame.area(), &mut view_state);
             })
@@ -3812,6 +3830,12 @@ fn gutter_numbers_source_lines_in_rendered_mode() {
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
+                outline_enabled: false,
+                outline_focused: false,
+                outline_entries: &[],
+                outline_selected: None,
+                outline_current: None,
+                outline_scroll: 0,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })

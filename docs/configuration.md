@@ -72,6 +72,7 @@ Change both from the theme picker: `Ctrl-P` → "Switch theme". There is no defa
 | `code_block_wrap` | bool | `false` | file only |
 | `preserve_blank_lines` | bool | `true` | file only |
 | `show_line_numbers` | bool | `false` | overlay, palette |
+| `show_outline` | bool | `false` | overlay, palette, `F8` |
 | `big_h1` | bool | `false` | overlay, palette |
 | `syntax_highlighting` | bool | `true` | overlay |
 | `max_width_enabled` | bool | `true` | overlay, palette |
@@ -86,6 +87,8 @@ Change both from the theme picker: `Ctrl-P` → "Switch theme". There is no defa
 `syntax_highlighting` colors fenced code blocks. The language comes only from the opening fence — edamame never guesses — so a fence with no language, or one naming a language it doesn't ship, renders as plain code. Token colors are theme fields (`syntax_keyword`, `syntax_string`, and the rest), so a custom theme can restyle or flatten them; see [themes.md](themes.md).
 
 `max_width_cols` caps the content column and centers it, which helps on very wide terminals. Values below **20** are clamped up. The status and hint rows always span the full width. No effect when the terminal is already narrower than the cap.
+
+`show_outline` requests a heading sidebar on the left. It hides on narrow terminals and during diff review without changing the preference. The document, its line-number gutter, and images use the remaining space. `F6` focuses the outline; `Ctrl-G` opens the same heading index in a searchable picker.
 
 ### Cursor and movement
 

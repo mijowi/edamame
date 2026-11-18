@@ -18,6 +18,7 @@ pub(crate) const LABEL_REFLOW: &str = "Reflow paragraphs";
 pub(crate) const LABEL_SYNTAX_HIGHLIGHTING: &str = "Syntax highlighting";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
 pub(crate) const LABEL_LINE_NUMBERS: &str = "Show line numbers";
+pub(crate) const LABEL_OUTLINE: &str = "Show outline";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
 pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
 pub(crate) const LABEL_BLINK_CURSOR: &str = "Blink cursor";
@@ -579,6 +580,27 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_value: Some(|c, v| {
                     if let controls::ControlValue::Toggle(b) = v {
                         c.editor.show_line_numbers = b;
+                    }
+                }),
+                options: Some(controls::Control::Toggle),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_OUTLINE,
+            description: Some(
+                "\nShow a heading outline beside the document (hidden on narrow screens)",
+            ),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| bool_label(c.editor.show_outline).to_owned(),
+                write_string: no_write,
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.show_outline)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.show_outline = b;
                     }
                 }),
                 options: Some(controls::Control::Toggle),

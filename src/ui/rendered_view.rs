@@ -752,20 +752,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 } else {
                     rows_used = 1;
                 }
+            } else if let Some(line) = editor.parsed.lines.get(virtual_idx) {
+                rows_used = render_line_from_visual(
+                    line,
+                    row_indent,
+                    area,
+                    buf,
+                    vis_y as u16,
+                    wrap,
+                    skip_rows,
+                ) as usize;
             } else {
-                if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    rows_used = render_line_from_visual(
-                        line,
-                        row_indent,
-                        area,
-                        buf,
-                        vis_y as u16,
-                        wrap,
-                        skip_rows,
-                    ) as usize;
-                } else {
-                    break;
-                }
+                break;
             }
 
             // Lines that painted their own highlight (the revealed line, big-H1 / setext / diagram

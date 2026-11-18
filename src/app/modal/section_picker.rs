@@ -47,7 +47,9 @@ impl SectionPickerModal {
             ListEvent::Submitted(i) => {
                 let entry = &self.list.items()[i];
                 let (buffer_line, target_scroll) = (entry.buffer_line, entry.target_scroll);
+                let original_scroll = self.original_scroll;
                 ModalOutcome::CloseAnd(Box::new(move |app| {
+                    app.cancel_section_jump(original_scroll);
                     app.commit_section_jump(buffer_line, target_scroll)
                 }))
             }
@@ -103,7 +105,9 @@ impl Modal for SectionPickerModal {
             ListEvent::Submitted(i) => {
                 let entry = &self.list.items()[i];
                 let (buffer_line, target_scroll) = (entry.buffer_line, entry.target_scroll);
+                let original_scroll = self.original_scroll;
                 ModalOutcome::CloseAnd(Box::new(move |app| {
+                    app.cancel_section_jump(original_scroll);
                     app.commit_section_jump(buffer_line, target_scroll)
                 }))
             }
@@ -130,5 +134,53 @@ mod tests {
         let mut app = make_app();
         app.open_section_picker(80);
         assert!(app.modal_stack.contains::<SectionPickerModal>());
+    }
+
+    #[test]
+    fn picker_commit_records_origin_before_live_preview_for_back_and_forward() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        use crate::app::test_utils::app_with_buffer;
+
+        let mut app = app_with_buffer(&format!("# First\n\n{}## Last\n", "body\n\n".repeat(30)), 3);
+        app.editor.scroll = 1;
+        let mut picker = SectionPickerModal::new(vec![], 0, 1);
+        // Use the actual shared index populated by Ctrl-G.
+        app.open_section_picker(80);
+        std::mem::swap(
+            &mut picker,
+            app.modal_stack
+                .top_mut()
+                .unwrap()
+                .as_any_mut()
+                .downcast_mut::<SectionPickerModal>()
+                .unwrap(),
+        );
+        let outcome = picker.handle_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut app,
+            10,
+            80,
+        );
+        if let ModalOutcome::ContinueAnd(callback) = outcome {
+            callback(&mut app);
+        }
+        app.editor.scroll = 40; // A completed debounced preview must not become the origin.
+        let outcome = picker.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+            10,
+            80,
+        );
+        if let ModalOutcome::CloseAnd(callback) = outcome {
+            callback(&mut app);
+        }
+        assert_eq!(app.nav_back.len(), 1);
+        let target = app.editor.cursor.offset;
+        app.navigate_back(10, 80);
+        assert_eq!(app.editor.cursor.offset, 3);
+        assert_eq!(app.editor.scroll, 1);
+        app.navigate_forward(10, 80);
+        assert_eq!(app.editor.cursor.offset, target);
     }
 }

@@ -33,6 +33,7 @@ edamame is a Markdown viewer/editor that renders your document live. Vim mode la
 - **Preview mode is replaced by Normal mode.** In standard edamame, Preview is the read-only "browse" mode. With vim active, Normal mode fills that role — there is no separate Preview. The `Esc`-to-Preview behavior reroutes to vim Normal.
 - **Raw mode is fully supported.** You can toggle the whole document to raw Markdown (the existing toggle, `Ctrl-` `` ` ``) and every vim sub-mode works there too. In Raw mode, Markdown markers and table borders are real, editable text, so motions don't skip anything.
 - **edamame's own shortcuts still work.** The `Ctrl-*` chords keep their edamame meaning in every vim sub-mode, with two exceptions (`Ctrl-Backspace` / `Ctrl-Delete`) — see [Ctrl chords](#ctrl-chords-edamame-shortcuts-not-vim-motions) below.
+- **The optional heading outline keeps your Vim sub-mode.** `F8` toggles the outline and `F6` switches focus between it and the editor in Normal and Insert modes. While the outline is focused, `j`/`k` or arrows select a heading, `Enter` jumps back to the editor, and `Esc` returns focus without changing your Vim sub-mode or hiding the outline. On a narrow terminal the pane is suppressed; `Ctrl-G` still opens the fuzzy section picker.
 - **Inside a table, vim works on cells and rows.** Motions stay within the cell, `dd` deletes a table row, and edits that would break the grid are refused. See [Inside a table](#inside-a-table).
 
 ---

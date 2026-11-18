@@ -200,6 +200,8 @@ fn section_of(action: &Action) -> &'static str {
         | Action::ToggleTableButtons
         | Action::ToggleBigH1
         | Action::ToggleLineNumbers
+        | Action::ToggleOutline
+        | Action::FocusOutline
         | Action::ToggleBlinkCursor
         | Action::ToggleAutosave
         | Action::ToggleVisualLineNav
@@ -268,6 +270,39 @@ mod tests {
 
     fn keymap() -> KeyMap {
         KeyMap::build(&KeyBindingOverrides::default()).unwrap()
+    }
+
+    #[test]
+    fn outline_palette_uses_configured_chords_and_submits_both_actions() {
+        let overrides = KeyBindingOverrides(
+            [
+                ("FocusOutline".into(), "f8".into()),
+                ("ToggleOutline".into(), "f6".into()),
+            ]
+            .into(),
+        );
+        let keymap = KeyMap::build(&overrides).unwrap();
+        for (action, chord, display) in [
+            (Action::ToggleOutline, "f6", "F6"),
+            (Action::FocusOutline, "f8", "F8"),
+        ] {
+            let mut list = build_palette_list(&keymap, false);
+            let index = list
+                .items()
+                .iter()
+                .position(|entry| entry.action == action)
+                .unwrap();
+            let entry = &list.items()[index];
+            assert_eq!(entry.chord.as_deref(), Some(display));
+            assert_eq!(
+                keymap.action_for(&crate::config::keymap::parse_key(chord).unwrap()),
+                Some(&action)
+            );
+            list.focus_item(index);
+            assert!(
+                matches!(list.handle_key(&key(KeyCode::Enter)), ListEvent::Submitted(i) if list.items()[i].action == action)
+            );
+        }
     }
 
     #[test]

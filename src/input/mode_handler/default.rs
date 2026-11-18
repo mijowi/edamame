@@ -120,6 +120,8 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::ToggleBigH1
             | Action::ToggleLineNumbers
             | Action::ToggleBlinkCursor
+            | Action::ToggleOutline
+            | Action::FocusOutline
             | Action::ToggleAutosave
             | Action::ToggleVisualLineNav
             | Action::ToggleVimMode

@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Rect, Size};
 use ratatui::Terminal;
@@ -36,9 +36,12 @@ pub(super) struct DocDims {
     pub doc_height: usize,
     /// Document-area width, terminal width less any `max_width_enabled` clamp.
     pub doc_width: usize,
+    pub terminal_width: u16,
     /// Rectangle used for mouse hit-testing; `x` is the centered offset when
     /// the max-width clamp is active.
     pub doc_area: Rect,
+    /// The displayed outline, absent on narrow terminals and in diff mode.
+    pub outline_area: Option<Rect>,
 }
 
 /// How long one warm compile may run before [`syntax_warm_wake`] stops polling it at frame
@@ -335,18 +338,17 @@ impl App {
         };
         // Mirror `EditorView::render`'s gutter + scrollbar + max-width layout so
         // `viewport_width`, hit-testing and wrap agree with the painted area.
-        let line_count = if self.config.editor.show_line_numbers {
-            match self.editor.mode {
-                Mode::Preview | Mode::Rendered => self.editor.parsed.line_count(),
-                Mode::Raw => self.editor.buffer.line_count(),
-                // Diff mode paints no gutter; zero keeps `viewport_width`
-                // matching what `DiffView` paints into.
-                Mode::Diff => 0,
-            }
+        let line_count = if self.config.editor.show_line_numbers && self.editor.mode != Mode::Diff {
+            self.editor.buffer.line_count()
         } else {
             0
         };
-        let (_gutter, full_after_gutter) = crate::ui::split_gutter(full_doc_area, line_count);
+        let (outline_area, document_region) = crate::ui::split_outline_area(
+            full_doc_area,
+            self.config.editor.show_outline && self.editor.mode != Mode::Diff,
+            crate::ui::gutter::gutter_width(line_count),
+        );
+        let (_gutter, full_after_gutter) = crate::ui::split_gutter(document_region, line_count);
         let (doc_area, _bar) = layout_doc_with_scrollbar(
             full_after_gutter,
             self.config.editor.max_width_enabled,
@@ -357,7 +359,9 @@ impl App {
         DocDims {
             doc_height,
             doc_width,
+            terminal_width: term_size.width,
             doc_area,
+            outline_area,
         }
     }
 
@@ -367,7 +371,11 @@ impl App {
     /// only URLs that just entered the window spawn work.
     pub(super) fn prepare_viewport(&mut self, dims: &DocDims) {
         self.last_area_width = dims.doc_area.width;
+        self.last_terminal_width = dims.terminal_width;
         self.last_doc_height = dims.doc_height;
+        if dims.outline_area.is_none() {
+            self.outline_focused = false;
+        }
         self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
         // `parsed` is one mode-independent spine, so a mode switch that changes whether paragraphs
@@ -434,6 +442,20 @@ impl App {
             self.dispatch_visible_diff_image_decodes(self.editor.scroll, dims.doc_height);
         } else {
             self.dispatch_visible_image_decodes(self.editor.scroll, dims.doc_height);
+        }
+        if dims.outline_area.is_some() {
+            self.sync_outline_entries(dims.doc_width);
+            let height = dims.doc_height.saturating_sub(1);
+            self.outline_scroll = self
+                .outline_scroll
+                .min(self.outline_entries.len().saturating_sub(height));
+            if self.outline_focused {
+                self.keep_outline_selection_visible(height);
+            } else if !self.outline_browsing {
+                if let Some(row) = self.outline_current() {
+                    self.keep_outline_row_visible(row, height);
+                }
+            }
         }
     }
 
@@ -510,6 +532,12 @@ impl App {
         let show_line_numbers = self.config.editor.show_line_numbers;
         let capabilities_ref = &self.capabilities;
         let config_ref: &Config = &self.config;
+        let outline_current = self.outline_current();
+        let outline_selected = self.outline_focused.then_some(self.outline_selected);
+        let outline_entries = &self.outline_entries;
+        let outline_focused = self.outline_focused;
+        let outline_scroll = self.outline_scroll;
+        let outline_enabled = self.config.editor.show_outline;
         // One tick per real draw, not per paint pass (Raw and Diff draw without
         // painting images): `image_view::paint_native` reuses a native
         // transmission only from the immediately preceding frame.
@@ -534,6 +562,12 @@ impl App {
                 max_width_enabled,
                 max_width_cols,
                 scrollbar_active,
+                outline_enabled,
+                outline_focused,
+                outline_entries,
+                outline_selected,
+                outline_current,
+                outline_scroll,
             };
             frame.render_stateful_widget(view, frame.area(), view_state_ref);
             if let Some(top) = modal_stack_top {
@@ -962,6 +996,64 @@ impl App {
         {
             return;
         }
+        if let Some(pane) = dims.outline_area.filter(|pane| {
+            // Finish document gestures through MouseDispatcher even when the
+            // pointer crosses the pane; otherwise mouse-up leaves a drag live.
+            !(self.drag_target.is_some()
+                && matches!(
+                    mouse_event.kind,
+                    MouseEventKind::Drag(_) | MouseEventKind::Up(_)
+                ))
+                && mouse_event.column >= pane.x
+                && mouse_event.column < pane.x + pane.width
+                && mouse_event.row >= pane.y
+                && mouse_event.row < pane.y + pane.height
+        }) {
+            self.sync_outline_entries(dims.doc_width);
+            match mouse_event.kind {
+                MouseEventKind::Moved => {
+                    let row =
+                        self.outline_scroll + (mouse_event.row.saturating_sub(pane.y + 1)) as usize;
+                    self.update_pointer_shape(
+                        if mouse_event.row > pane.y && row < self.outline_entries.len() {
+                            PointerShape::Hand
+                        } else {
+                            PointerShape::Default
+                        },
+                    );
+                }
+                MouseEventKind::ScrollDown => {
+                    let old_scroll = self.outline_scroll;
+                    let max = self
+                        .outline_entries
+                        .len()
+                        .saturating_sub(pane.height.saturating_sub(1) as usize);
+                    self.outline_scroll = self
+                        .outline_scroll
+                        .saturating_add(self.config.editor.mouse_scroll_lines.max(1))
+                        .min(max);
+                    self.outline_browsing |= self.outline_scroll != old_scroll;
+                    self.needs_draw = true;
+                }
+                MouseEventKind::ScrollUp => {
+                    let old_scroll = self.outline_scroll;
+                    self.outline_scroll = self
+                        .outline_scroll
+                        .saturating_sub(self.config.editor.mouse_scroll_lines.max(1));
+                    self.outline_browsing |= self.outline_scroll != old_scroll;
+                    self.needs_draw = true;
+                }
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                    if mouse_event.row > pane.y =>
+                {
+                    let index = self.outline_scroll + (mouse_event.row - pane.y - 1) as usize;
+                    self.jump_to_outline_heading(index, dims.doc_height, dims.doc_width);
+                }
+                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {}
+                _ => {}
+            }
+            return;
+        }
 
         // Pointer-shape feedback.  Event coordinates are terminal-relative and
         // must be translated before hit-testing.
@@ -969,6 +1061,14 @@ impl App {
             && mouse_event.column < dims.doc_area.x + dims.doc_area.width
             && mouse_event.row >= dims.doc_area.y
             && mouse_event.row < dims.doc_area.y + dims.doc_area.height;
+        if in_doc
+            && matches!(
+                mouse_event.kind,
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+            )
+        {
+            self.outline_focused = false;
+        }
         // Records the hovered URL for the hint-line tooltip; sharing the
         // pointer-shape path tracks the hover live without an extra scan.
         self.refresh_hovered_link(&mouse_event, in_doc, dims);
@@ -1056,6 +1156,9 @@ impl App {
     /// `/` `?` `:` prompt takes the text instead, and any non-Insert sub-mode
     /// drops it ("Normal mode does not edit" — `p`/`P` paste the register).
     pub(super) fn dispatch_paste(&mut self, text: String, dims: &DocDims) {
+        if self.outline_focused {
+            return;
+        }
         if self.paste_into_cmdline(&text, dims) {
             return;
         }
@@ -1199,6 +1302,7 @@ impl App {
             let Some(kind) = coalesce else { continue };
             if self.editor.selection.is_some()
                 || self.drag_target.is_some()
+                || self.outline_focused
                 || self.editor.mode == crate::editor::Mode::Preview
                 // The coalesced runs below bypass `dispatch_action`, and so
                 // the `search_safe_action` gate inside it — a burst must not
@@ -1310,6 +1414,69 @@ impl App {
                 let text = self.read_paste_text();
                 self.paste_into_cmdline(&text, dims);
                 return;
+            }
+        }
+        if let Event::Key(key) = &event {
+            if key.kind == KeyEventKind::Press
+                && !vim_deferred
+                && self.vim.as_ref().is_none_or(|v| v.cmdline.is_none())
+            {
+                if let Some(action @ (Action::ToggleOutline | Action::FocusOutline)) =
+                    keymap.action_for(key)
+                {
+                    self.dispatch_action(action.clone(), dims.doc_height, dims.doc_width);
+                    self.needs_draw = true;
+                    return;
+                }
+                if self.outline_focused {
+                    // Judge the same context-resolved action as the dispatch pipeline:
+                    // default Alt-arrows navigate outside tables but must not edit one here.
+                    let action = keymap
+                        .action_for(key)
+                        .cloned()
+                        .map(|action| self.normalize_context_action(action));
+                    if let Some(
+                        action @ (Action::ShowCommandPalette
+                        | Action::GoToSection
+                        | Action::Save
+                        | Action::Quit
+                        | Action::NavigateBack
+                        | Action::NavigateForward),
+                    ) = action
+                    {
+                        self.dispatch_action(action, dims.doc_height, dims.doc_width);
+                        self.needs_draw = true;
+                        return;
+                    }
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Esc, KeyModifiers::NONE) => self.outline_focused = false,
+                        (KeyCode::Up, KeyModifiers::NONE)
+                        | (KeyCode::Char('k'), KeyModifiers::NONE)
+                            if self.vim.is_some() || key.code == KeyCode::Up =>
+                        {
+                            self.outline_selected = self.outline_selected.saturating_sub(1);
+                            self.keep_outline_selection_visible(dims.doc_height.saturating_sub(1));
+                        }
+                        (KeyCode::Down, KeyModifiers::NONE)
+                        | (KeyCode::Char('j'), KeyModifiers::NONE)
+                            if self.vim.is_some() || key.code == KeyCode::Down =>
+                        {
+                            self.outline_selected = (self.outline_selected + 1)
+                                .min(self.outline_entries.len().saturating_sub(1));
+                            self.keep_outline_selection_visible(dims.doc_height.saturating_sub(1));
+                        }
+                        (KeyCode::Enter, KeyModifiers::NONE) => {
+                            self.jump_to_outline_heading(
+                                self.outline_selected,
+                                dims.doc_height,
+                                dims.doc_width,
+                            );
+                        }
+                        _ => {} // Unbound input never edits while the outline has focus.
+                    }
+                    self.needs_draw = true;
+                    return;
+                }
             }
         }
         if let Event::Key(key) = &event {
@@ -1484,7 +1651,9 @@ mod tests {
         DocDims {
             doc_height: 10,
             doc_width: 60,
+            terminal_width: 60,
             doc_area: Rect::new(0, 0, 60, 10),
+            outline_area: None,
         }
     }
 
@@ -1495,6 +1664,626 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         }
+    }
+
+    #[test]
+    fn outline_toggle_preserves_cursor_source_and_history() {
+        let _isolation = crate::test_env::config_isolation();
+        let source = "# First\n\nparagraph words\n\n## Second\n";
+        let mut app = app_with_buffer(source, 16);
+        app.config.editor.max_width_enabled = false;
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let size = ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        };
+        let initial = app.compute_doc_dims(size);
+        app.prepare_viewport(&initial);
+        let cursor = app.editor.cursor.offset;
+        let history = format!("{:?}", app.editor.history);
+        let nav = (app.nav_back.len(), app.nav_forward.len());
+        for expected_x in [31, 0] {
+            let dims = app.compute_doc_dims(size);
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+            let dims = app.compute_doc_dims(size);
+            app.prepare_viewport(&dims);
+            assert_eq!(app.editor.cursor.offset, cursor);
+            assert_eq!(app.editor.buffer.contents(), source);
+            assert_eq!(format!("{:?}", app.editor.history), history);
+            assert_eq!((app.nav_back.len(), app.nav_forward.len()), nav);
+            assert_eq!(
+                dims.doc_area.x, expected_x,
+                "F8 must change the document layout"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_outline_toggle_explains_fallback_and_restores_on_resize() {
+        let _isolation = crate::test_env::config_isolation();
+        let mut app = app_with_buffer("# Section\n", 0);
+        let narrow = app.compute_doc_dims(ratatui::layout::Size {
+            width: 80,
+            height: 24,
+        });
+        app.prepare_viewport(&narrow);
+        app.dispatch_action(
+            crate::config::Action::ToggleOutline,
+            narrow.doc_height,
+            narrow.doc_width,
+        );
+        assert!(app.config.editor.show_outline);
+        assert!(app.transient.as_ref().unwrap().text.contains("Ctrl-G"));
+        let still_narrow = app.compute_doc_dims(ratatui::layout::Size {
+            width: 80,
+            height: 24,
+        });
+        assert!(still_narrow.outline_area.is_none());
+        let wide = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&wide);
+        assert!(wide.outline_area.is_some());
+        assert_eq!(wide.doc_area.x, wide.outline_area.unwrap().width + 1);
+    }
+
+    #[test]
+    fn outline_can_take_focus_immediately_after_opening() {
+        let _iso = crate::test_env::config_isolation();
+        let mut app = app_with_buffer("# First\n\n## Second\n", 0);
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        for key in [KeyCode::F(8), KeyCode::F(6)] {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+        }
+        assert!(app.outline_focused);
+        assert_eq!(
+            app.outline_entries.len(),
+            2,
+            "F6 must refresh the index before the next frame"
+        );
+    }
+
+    #[test]
+    fn outline_keyboard_jump_clears_stale_document_selection_before_typing() {
+        outline_jump_clears_stale_document_selection_before_typing(false);
+    }
+
+    #[test]
+    fn outline_mouse_jump_clears_stale_document_selection_before_typing() {
+        outline_jump_clears_stale_document_selection_before_typing(true);
+    }
+
+    fn outline_jump_clears_stale_document_selection_before_typing(use_mouse: bool) {
+        let source = format!("# First\n\n{}## Last\n", "body\n\n".repeat(30));
+        let mut app = app_with_buffer(&source, 2);
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        app.capabilities.mouse = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        for _ in 0..5 {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+                &keymap,
+                &dims,
+            );
+        }
+        assert_eq!(
+            app.editor
+                .selection
+                .unwrap()
+                .selected_text(&app.editor.buffer),
+            "First"
+        );
+        if use_mouse {
+            let pane = dims.outline_area.unwrap();
+            app.dispatch_mouse_event(
+                mouse(
+                    MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                    pane.x + 2,
+                    pane.y + 2,
+                ),
+                &dims,
+            );
+        } else {
+            for code in [KeyCode::F(6), KeyCode::Down, KeyCode::Enter] {
+                app.dispatch_single_key(
+                    Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                    &keymap,
+                    &dims,
+                );
+            }
+        }
+        assert_eq!(app.editor.cursor.offset, source.len() - 1);
+        assert!(!app.outline_focused);
+        app.dispatch_single_key(
+            Event::Key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE)),
+            &keymap,
+            &dims,
+        );
+        assert_eq!(
+            app.editor.buffer.contents(),
+            source.replace("## Last\n", "## LastX\n")
+        );
+        assert!(app.editor.selection.is_none());
+    }
+
+    #[test]
+    fn outline_focus_allows_default_alt_arrow_navigation_history() {
+        let source = format!("# First\n\n{}## Last\n", "body\n\n".repeat(30));
+        let mut app = app_with_buffer(&source, 3);
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        app.jump_to_outline_heading(1, dims.doc_height, dims.doc_width);
+        let destination = (app.editor.cursor.offset, app.editor.scroll);
+        assert!(destination.1 > 0);
+        for (code, expected) in [(KeyCode::Left, (3, 0)), (KeyCode::Right, destination)] {
+            if !app.outline_focused {
+                app.dispatch_single_key(
+                    Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)),
+                    &keymap,
+                    &dims,
+                );
+            }
+            assert!(app.outline_focused);
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::ALT)),
+                &keymap,
+                &dims,
+            );
+            assert_eq!((app.editor.cursor.offset, app.editor.scroll), expected);
+            assert_eq!(app.editor.buffer.contents(), source);
+            assert!(!app.editor.dirty);
+        }
+    }
+
+    #[test]
+    fn outline_focus_never_reorders_table_columns_with_alt_arrows() {
+        let source = "# First\n\n| Left | Right |\n| --- | --- |\n| a | b |\n";
+        let mut app = app_with_buffer(source, source.find("Left").unwrap());
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let cursor = app.editor.cursor.offset;
+        for key in [
+            KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+        ] {
+            app.dispatch_single_key(Event::Key(key), &keymap, &dims);
+        }
+        assert!(app.outline_focused);
+        assert_eq!(app.editor.buffer.contents(), source);
+        assert_eq!(app.editor.cursor.offset, cursor);
+        assert!(!app.editor.dirty);
+        assert!(app.nav_back.is_empty());
+        assert!(app.nav_forward.is_empty());
+    }
+
+    #[test]
+    fn outline_focus_rejects_bracketed_paste_and_typing() {
+        let source = "# First\n\n## Second\n";
+        let mut app = app_with_buffer(source, 0);
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        app.dispatch_single_key(
+            Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)),
+            &keymap,
+            &dims,
+        );
+        app.dispatch_single_key(
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            &keymap,
+            &dims,
+        );
+        app.dispatch_paste("must not enter the document".into(), &dims);
+        assert_eq!(app.editor.buffer.contents(), source);
+        assert_eq!(app.editor.cursor.offset, 0);
+        assert!(!app.editor.dirty);
+    }
+
+    #[test]
+    fn outline_resize_releases_focus_without_changing_visibility_preference() {
+        let mut app = app_with_buffer("# First\n\n## Second\n", 0);
+        app.config.editor.show_outline = true;
+        let wide = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&wide);
+        app.focus_outline(wide.doc_height);
+        assert!(app.outline_focused);
+        let narrow = app.compute_doc_dims(ratatui::layout::Size {
+            width: 40,
+            height: 24,
+        });
+        app.prepare_viewport(&narrow);
+        assert!(!app.outline_focused);
+        assert!(app.config.editor.show_outline);
+        assert!(narrow.outline_area.is_none());
+        app.prepare_viewport(&wide);
+        assert!(!app.outline_focused);
+        assert_eq!(app.outline_entries.len(), 2);
+    }
+
+    #[test]
+    fn outline_selection_stays_visible_when_a_focused_pane_gets_shorter() {
+        let source = (0..40)
+            .map(|i| format!("## Heading {i}\n\n"))
+            .collect::<String>();
+        let mut app = app_with_buffer(&source, 0);
+        app.config.editor.show_outline = true;
+        let wide = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 40,
+        });
+        app.prepare_viewport(&wide);
+        app.focus_outline(wide.doc_height);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        for _ in 0..30 {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                &keymap,
+                &wide,
+            );
+        }
+        assert_eq!(app.outline_selected, 30);
+        assert_eq!(app.editor.cursor.offset, 0);
+        let short = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 8,
+        });
+        app.prepare_viewport(&short);
+        assert!(app.outline_focused);
+        assert!(app.outline_scroll <= 30);
+        assert!(30 < app.outline_scroll + short.doc_height - 1);
+    }
+
+    #[test]
+    fn outline_wheel_scroll_is_independent_and_click_restores_history() {
+        let source = (0..40)
+            .map(|i| format!("## Heading {i}\n\n"))
+            .collect::<String>();
+        let mut app = app_with_buffer(&source, 3);
+        app.config.editor.show_outline = true;
+        app.capabilities.mouse = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 8,
+        });
+        app.prepare_viewport(&dims);
+        let pane = dims.outline_area.unwrap();
+        for _ in 0..10 {
+            app.dispatch_mouse_event(
+                mouse(MouseEventKind::ScrollDown, pane.x + 2, pane.y + 1),
+                &dims,
+            );
+        }
+        assert_eq!(app.outline_scroll, 10);
+        assert_eq!(app.editor.scroll, 0);
+        assert_eq!(app.editor.cursor.offset, 3);
+        app.dispatch_mouse_event(
+            mouse(
+                MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                pane.x + 2,
+                pane.y + 2,
+            ),
+            &dims,
+        );
+        assert_eq!(app.editor.buffer.char_to_line(app.editor.cursor.offset), 22);
+        assert_eq!(app.nav_back.len(), 1);
+        app.navigate_back(dims.doc_height, dims.doc_width);
+        assert_eq!(app.editor.cursor.offset, 3);
+        assert_eq!(app.editor.scroll, 0);
+        app.navigate_forward(dims.doc_height, dims.doc_width);
+        assert_eq!(app.editor.buffer.char_to_line(app.editor.cursor.offset), 22);
+        assert_eq!(app.editor.buffer.contents(), source);
+    }
+
+    #[test]
+    fn outline_does_not_swallow_a_document_drag_release() {
+        let mut app = app_with_buffer("# Heading\n\nbody\n", 0);
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        app.capabilities.mouse = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let button = crossterm::event::MouseButton::Left;
+        app.dispatch_mouse_event(
+            mouse(MouseEventKind::Down(button), dims.doc_area.x + 2, 0),
+            &dims,
+        );
+        assert!(app.drag_target.is_some());
+        app.dispatch_mouse_event(mouse(MouseEventKind::Up(button), 2, 1), &dims);
+        assert!(app.drag_target.is_none());
+        assert!(!app.editor.drag_in_progress);
+    }
+
+    #[test]
+    fn outline_document_geometry_agrees_with_paint_images_and_mouse() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        use crate::editor::Mode;
+        use crate::ui::bottom_region::HintContent;
+        use crate::ui::{EditorView, EditorViewState};
+
+        let source = "# Title\n\n![Picture](missing.png)\n\n".to_owned() + &"words ".repeat(150);
+        for mode in [Mode::Preview, Mode::Rendered, Mode::Raw, Mode::Diff] {
+            for gutter in [false, true] {
+                for clamp in [false, true] {
+                    let mut app = app_with_buffer(&source, 0);
+                    app.editor.mode = mode;
+                    app.config.editor.show_outline = true;
+                    app.config.editor.show_line_numbers = gutter;
+                    app.config.editor.max_width_enabled = clamp;
+                    app.config.editor.max_width_cols = 70;
+                    let size = ratatui::layout::Size {
+                        width: 120,
+                        height: 20,
+                    };
+                    let dims = app.compute_doc_dims(size);
+                    app.editor.set_viewport_width(dims.doc_width);
+                    app.editor.sync_reflow_for_mode();
+                    app.sync_outline_entries(dims.doc_width);
+                    let current = app.outline_current();
+                    let mut view_state = EditorViewState::new();
+                    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            frame.render_stateful_widget(
+                                EditorView {
+                                    state: &mut app.editor,
+                                    theme: app.theme,
+                                    filename: "test.md",
+                                    show_table_buttons: false,
+                                    table_drop_indicator: None,
+                                    capabilities: &app.capabilities,
+                                    show_line_numbers: gutter,
+                                    is_scrolling: false,
+                                    hint: HintContent::Chords(Default::default()),
+                                    vim_mode_label: None,
+                                    visual_kind: None,
+                                    editor_cursor_style: app.theme.cursor,
+                                    max_width_enabled: clamp,
+                                    max_width_cols: 70,
+                                    scrollbar_active: false,
+                                    outline_enabled: true,
+                                    outline_focused: false,
+                                    outline_entries: &app.outline_entries,
+                                    outline_selected: None,
+                                    outline_current: current,
+                                    outline_scroll: 0,
+                                },
+                                frame.area(),
+                                &mut view_state,
+                            );
+                        })
+                        .unwrap();
+                    assert_eq!(app.editor.viewport_width, dims.doc_width);
+                    if mode == Mode::Diff {
+                        assert!(dims.outline_area.is_none());
+                        continue;
+                    }
+                    assert!(dims.doc_area.x >= 31);
+                    if mode == Mode::Raw {
+                        assert_eq!(
+                            terminal
+                                .backend()
+                                .buffer()
+                                .cell((dims.doc_area.x, 0))
+                                .unwrap()
+                                .symbol(),
+                            "#"
+                        );
+                        app.capabilities.mouse = true;
+                        app.dispatch_mouse_event(
+                            mouse(
+                                MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                                dims.doc_area.x + 3,
+                                0,
+                            ),
+                            &dims,
+                        );
+                        assert_eq!(app.editor.cursor.offset, 3);
+                    } else {
+                        let images = if mode == Mode::Preview {
+                            &view_state.preview.image_snapshots
+                        } else {
+                            &view_state.rendered.image_snapshots
+                        };
+                        assert_eq!(images.len(), 1);
+                        assert_eq!(images[0].rect.x, dims.doc_area.x);
+                        assert_eq!(images[0].rect.width, dims.doc_area.width);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vim_insert_outline_navigation_does_not_type_or_change_submode() {
+        let source = "# First\n\n".to_string() + &"filler\n\n".repeat(25) + "## Second\n";
+        let mut app = app_with_buffer(&source, 0);
+        app.set_vim_enabled(true);
+        app.vim.as_mut().unwrap().sub_mode = crate::input::VimSubMode::Insert;
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        assert!(dims.outline_area.is_some());
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let press = |app: &mut crate::app::App, code| {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+        };
+        press(&mut app, KeyCode::F(6));
+        assert!(app.outline_focused);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.outline_selected, 1);
+        assert_eq!(app.editor.buffer.contents(), source);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.outline_focused);
+        assert_eq!(app.nav_back.len(), 1);
+        assert_eq!(app.editor.buffer.char_to_line(app.editor.cursor.offset), 52);
+        assert_eq!(
+            app.vim.as_ref().unwrap().sub_mode,
+            crate::input::VimSubMode::Insert
+        );
+    }
+
+    #[test]
+    fn arrow_keys_move_outline_selection_without_vim() {
+        let source = "# First\n\n".to_string() + &"filler\n\n".repeat(25) + "## Second\n";
+        let mut app = app_with_buffer(&source, 0);
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        assert!(dims.outline_area.is_some());
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let press = |app: &mut crate::app::App, code| {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+        };
+        press(&mut app, KeyCode::F(6));
+        assert!(app.outline_focused);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.outline_selected, 1);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.outline_selected, 0);
+        assert_eq!(app.editor.buffer.contents(), source);
+    }
+
+    #[test]
+    fn focusing_outline_cancels_pending_vim_operator_without_editing() {
+        let source = "# First\n\n## Second\n";
+        let mut app = app_with_buffer(source, 0);
+        app.set_vim_enabled(true);
+        app.editor.mode = crate::editor::Mode::Rendered;
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let press = |app: &mut crate::app::App, code| {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+        };
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(
+            app.vim.as_ref().unwrap().sub_mode,
+            crate::input::VimSubMode::OperatorPending
+        );
+        press(&mut app, KeyCode::F(6));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.vim.as_ref().unwrap().sub_mode,
+            crate::input::VimSubMode::Normal
+        );
+        assert_eq!(app.editor.buffer.contents(), source);
+        assert!(!app.outline_focused);
+    }
+
+    #[test]
+    fn outline_mouse_wheel_and_click_do_not_scroll_or_edit_document() {
+        let mut app = app_with_buffer("# First\n\n## Second\n", 0);
+        app.config.editor.show_outline = true;
+        app.capabilities.mouse = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let pane = dims.outline_area.expect("wide terminal");
+        let old_scroll = app.editor.scroll;
+        app.dispatch_mouse_event(mouse(MouseEventKind::ScrollDown, pane.x, pane.y), &dims);
+        assert_eq!(app.editor.scroll, old_scroll);
+        app.dispatch_mouse_event(
+            mouse(
+                MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                pane.x + 4,
+                pane.y + 2,
+            ),
+            &dims,
+        );
+        assert_eq!(app.editor.buffer.char_to_line(app.editor.cursor.offset), 2);
+        assert_eq!(app.nav_back.len(), 1);
+    }
+    #[test]
+    fn outline_tracks_current_section_until_user_scrolls_its_list() {
+        let text = (0..40)
+            .map(|i| format!("## Chapter {i}\n\n"))
+            .collect::<String>();
+        let mut app = app_with_buffer(&text, 0);
+        app.config.editor.show_outline = true;
+        app.capabilities.mouse = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 12,
+        });
+        let pane = dims.outline_area.expect("wide terminal");
+        app.prepare_viewport(&dims);
+        app.editor.scroll = app.outline_entries[30].target_scroll;
+        app.prepare_viewport(&dims);
+        assert!(app.outline_scroll <= 30);
+        assert!(30 < app.outline_scroll + pane.height as usize - 1);
+        app.dispatch_mouse_event(mouse(MouseEventKind::ScrollUp, pane.x, pane.y + 1), &dims);
+        let browsed_scroll = app.outline_scroll;
+        app.prepare_viewport(&dims);
+        assert_eq!(app.outline_scroll, browsed_scroll);
     }
 
     #[test]

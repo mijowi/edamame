@@ -184,7 +184,7 @@ pub(super) fn action_caps(action: &Action) -> ActionCaps {
         // Neither reads nor writes the document: mode transitions and persisted-setting flips.
         | EnterEditMode | ExitToPreview | ToggleRawMode | ToggleTableButtons | ToggleBigH1
         | ToggleLineNumbers | ToggleBlinkCursor | ToggleAutosave | ToggleVisualLineNav
-        | ToggleVimMode | ToggleLimitWidth | ToggleDiffOnChange
+        | ToggleVimMode | ToggleLimitWidth | ToggleDiffOnChange | ToggleOutline | FocusOutline
         // The two bespoke command vocabularies, which each gate names explicitly: "is a diff
         // command" is a fact about one context, not a capability.
         | OpenSearch | SearchNext | SearchPrev | SearchExit | DiffNext | DiffPrev
@@ -346,7 +346,7 @@ impl App {
     ///
     /// Deliberately ahead of the gates: a gate judging the pre-redirect action would deny a
     /// navigation because of what a *different* action would have done.
-    fn normalize_context_action(&self, action: Action) -> Action {
+    pub(super) fn normalize_context_action(&self, action: Action) -> Action {
         match action {
             Action::TableMoveColumnLeft if !cursor_in_table(&self.editor) => Action::NavigateBack,
             Action::TableMoveColumnRight if !cursor_in_table(&self.editor) => {
@@ -494,6 +494,30 @@ impl App {
                     settings_overlay::LABEL_LINE_NUMBERS,
                     self.config.editor.show_line_numbers,
                 );
+                true
+            }
+            Action::ToggleOutline => {
+                self.config.editor.show_outline = !self.config.editor.show_outline;
+                self.outline_focused = false;
+                self.outline_browsing = false;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_OUTLINE,
+                    self.config.editor.show_outline,
+                );
+                self.explain_hidden_outline();
+                true
+            }
+            Action::FocusOutline => {
+                let size = ratatui::layout::Size {
+                    width: self.last_terminal_width,
+                    height: (doc_height as u16).saturating_add(crate::ui::BottomRegion::height()),
+                };
+                let dims = self.compute_doc_dims(size);
+                if dims.outline_area.is_some() {
+                    self.editor.set_viewport_width(dims.doc_width);
+                    self.sync_outline_entries(dims.doc_width);
+                    self.focus_outline(doc_height);
+                }
                 true
             }
             Action::ToggleBlinkCursor => {

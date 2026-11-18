@@ -28,6 +28,11 @@ impl App {
         // this a vim user gets a cursor and raw reveal on a page nobody can edit.
         new_editor.mode = crate::editor::Mode::Preview;
         self.editor = new_editor;
+        self.outline_cache_key = None;
+        self.outline_selected = 0;
+        self.outline_scroll = 0;
+        self.outline_focused = false;
+        self.outline_browsing = false;
         self.file_path = None;
         self.open_doc = Some(id);
         self.view_state = EditorViewState::new();
