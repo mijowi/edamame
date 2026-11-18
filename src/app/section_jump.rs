@@ -65,6 +65,8 @@ impl App {
         let scroll_changed = self.editor.scroll != target_scroll;
         self.editor.scroll = target_scroll;
         let end_offset = end_of_line_offset(&self.editor, buffer_line);
+        // A committed jump starts a new insertion point, not a replacement of the old range.
+        self.editor.selection = None;
         self.editor.cursor.offset = end_offset;
         self.editor.cursor.preferred_col = self.editor.cursor.cell_col(&self.editor.buffer);
         self.editor.update_cursor_block();
@@ -124,7 +126,8 @@ impl App {
         {
             return;
         }
-        let height = (self.last_doc_height as u16).saturating_add(crate::ui::BottomRegion::height());
+        let height =
+            (self.last_doc_height as u16).saturating_add(crate::ui::BottomRegion::height());
         if self
             .compute_doc_dims(ratatui::layout::Size {
                 width: self.last_terminal_width,
@@ -188,7 +191,12 @@ impl App {
         }
     }
 
-    pub(super) fn jump_to_outline_heading(&mut self, index: usize, doc_height: usize, doc_width: usize) {
+    pub(super) fn jump_to_outline_heading(
+        &mut self,
+        index: usize,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
         self.sync_outline_entries(doc_width);
         let Some(entry) = self.outline_entries.get(index) else {
             return;
@@ -253,7 +261,11 @@ fn collect_heading_entries(
 /// to the outermost block, so container prefixes need no second parser.
 fn collect_block_headings<'a>(
     block: &'a Block,
-    headings: &mut Vec<(pulldown_cmark::HeadingLevel, &'a [crate::markdown::Inline], usize)>,
+    headings: &mut Vec<(
+        pulldown_cmark::HeadingLevel,
+        &'a [crate::markdown::Inline],
+        usize,
+    )>,
 ) {
     match block {
         Block::Heading {

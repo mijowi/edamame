@@ -142,10 +142,7 @@ mod tests {
 
         use crate::app::test_utils::app_with_buffer;
 
-        let mut app = app_with_buffer(
-            &format!("# First\n\n{}## Last\n", "body\n\n".repeat(30)),
-            3,
-        );
+        let mut app = app_with_buffer(&format!("# First\n\n{}## Last\n", "body\n\n".repeat(30)), 3);
         app.editor.scroll = 1;
         let mut picker = SectionPickerModal::new(vec![], 0, 1);
         // Use the actual shared index populated by Ctrl-G.

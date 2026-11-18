@@ -1419,7 +1419,7 @@ impl App {
         if let Event::Key(key) = &event {
             if key.kind == KeyEventKind::Press
                 && !vim_deferred
-                && !self.vim.as_ref().is_some_and(|v| v.cmdline.is_some())
+                && self.vim.as_ref().is_none_or(|v| v.cmdline.is_none())
             {
                 if let Some(action @ (Action::ToggleOutline | Action::FocusOutline)) =
                     keymap.action_for(key)
@@ -1429,6 +1429,12 @@ impl App {
                     return;
                 }
                 if self.outline_focused {
+                    // Judge the same context-resolved action as the dispatch pipeline:
+                    // default Alt-arrows navigate outside tables but must not edit one here.
+                    let action = keymap
+                        .action_for(key)
+                        .cloned()
+                        .map(|action| self.normalize_context_action(action));
                     if let Some(
                         action @ (Action::ShowCommandPalette
                         | Action::GoToSection
@@ -1436,9 +1442,9 @@ impl App {
                         | Action::Quit
                         | Action::NavigateBack
                         | Action::NavigateForward),
-                    ) = keymap.action_for(key)
+                    ) = action
                     {
-                        self.dispatch_action(action.clone(), dims.doc_height, dims.doc_width);
+                        self.dispatch_action(action, dims.doc_height, dims.doc_width);
                         self.needs_draw = true;
                         return;
                     }
@@ -1752,6 +1758,138 @@ mod tests {
     }
 
     #[test]
+    fn outline_keyboard_jump_clears_stale_document_selection_before_typing() {
+        outline_jump_clears_stale_document_selection_before_typing(false);
+    }
+
+    #[test]
+    fn outline_mouse_jump_clears_stale_document_selection_before_typing() {
+        outline_jump_clears_stale_document_selection_before_typing(true);
+    }
+
+    fn outline_jump_clears_stale_document_selection_before_typing(use_mouse: bool) {
+        let source = format!("# First\n\n{}## Last\n", "body\n\n".repeat(30));
+        let mut app = app_with_buffer(&source, 2);
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        app.capabilities.mouse = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        for _ in 0..5 {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+                &keymap,
+                &dims,
+            );
+        }
+        assert_eq!(
+            app.editor
+                .selection
+                .unwrap()
+                .selected_text(&app.editor.buffer),
+            "First"
+        );
+        if use_mouse {
+            let pane = dims.outline_area.unwrap();
+            app.dispatch_mouse_event(
+                mouse(
+                    MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                    pane.x + 2,
+                    pane.y + 2,
+                ),
+                &dims,
+            );
+        } else {
+            for code in [KeyCode::F(6), KeyCode::Down, KeyCode::Enter] {
+                app.dispatch_single_key(
+                    Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                    &keymap,
+                    &dims,
+                );
+            }
+        }
+        assert_eq!(app.editor.cursor.offset, source.len() - 1);
+        assert!(!app.outline_focused);
+        app.dispatch_single_key(
+            Event::Key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE)),
+            &keymap,
+            &dims,
+        );
+        assert_eq!(
+            app.editor.buffer.contents(),
+            source.replace("## Last\n", "## LastX\n")
+        );
+        assert!(app.editor.selection.is_none());
+    }
+
+    #[test]
+    fn outline_focus_allows_default_alt_arrow_navigation_history() {
+        let source = format!("# First\n\n{}## Last\n", "body\n\n".repeat(30));
+        let mut app = app_with_buffer(&source, 3);
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        app.jump_to_outline_heading(1, dims.doc_height, dims.doc_width);
+        let destination = (app.editor.cursor.offset, app.editor.scroll);
+        assert!(destination.1 > 0);
+        for (code, expected) in [(KeyCode::Left, (3, 0)), (KeyCode::Right, destination)] {
+            if !app.outline_focused {
+                app.dispatch_single_key(
+                    Event::Key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE)),
+                    &keymap,
+                    &dims,
+                );
+            }
+            assert!(app.outline_focused);
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::ALT)),
+                &keymap,
+                &dims,
+            );
+            assert_eq!((app.editor.cursor.offset, app.editor.scroll), expected);
+            assert_eq!(app.editor.buffer.contents(), source);
+            assert!(!app.editor.dirty);
+        }
+    }
+
+    #[test]
+    fn outline_focus_never_reorders_table_columns_with_alt_arrows() {
+        let source = "# First\n\n| Left | Right |\n| --- | --- |\n| a | b |\n";
+        let mut app = app_with_buffer(source, source.find("Left").unwrap());
+        app.editor.mode = crate::editor::Mode::Raw;
+        app.config.editor.show_outline = true;
+        let dims = app.compute_doc_dims(ratatui::layout::Size {
+            width: 120,
+            height: 24,
+        });
+        app.prepare_viewport(&dims);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let cursor = app.editor.cursor.offset;
+        for key in [
+            KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+        ] {
+            app.dispatch_single_key(Event::Key(key), &keymap, &dims);
+        }
+        assert!(app.outline_focused);
+        assert_eq!(app.editor.buffer.contents(), source);
+        assert_eq!(app.editor.cursor.offset, cursor);
+        assert!(!app.editor.dirty);
+        assert!(app.nav_back.is_empty());
+        assert!(app.nav_forward.is_empty());
+    }
+
+    #[test]
     fn outline_focus_rejects_bracketed_paste_and_typing() {
         let source = "# First\n\n## Second\n";
         let mut app = app_with_buffer(source, 0);
@@ -1932,7 +2070,7 @@ mod tests {
                             frame.render_stateful_widget(
                                 EditorView {
                                     state: &mut app.editor,
-                                    theme: &app.theme,
+                                    theme: app.theme,
                                     filename: "test.md",
                                     show_table_buttons: false,
                                     table_drop_indicator: None,

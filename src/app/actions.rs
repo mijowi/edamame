@@ -346,7 +346,7 @@ impl App {
     ///
     /// Deliberately ahead of the gates: a gate judging the pre-redirect action would deny a
     /// navigation because of what a *different* action would have done.
-    fn normalize_context_action(&self, action: Action) -> Action {
+    pub(super) fn normalize_context_action(&self, action: Action) -> Action {
         match action {
             Action::TableMoveColumnLeft if !cursor_in_table(&self.editor) => Action::NavigateBack,
             Action::TableMoveColumnRight if !cursor_in_table(&self.editor) => {
