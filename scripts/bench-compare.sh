@@ -179,5 +179,5 @@ echo "its change statistically significant and the change's whole 95% CI lies ou
 echo "(the bench's noise threshold). Smaller changes are not listed; each case's \"change:\""
 echo "line in the full log above shows them."
 echo
-echo "A \"regressed\" line could be anomalous. Re-run the case to confirm it. A wide time CI"
+echo "A \"regressed\" line could be anomalous. Re-run the case with EDAMAME_BENCH_FILTER='^bench_name' to confirm it. A wide time CI"
 echo "on either side, or the same case listed in both sections, points to noise."
