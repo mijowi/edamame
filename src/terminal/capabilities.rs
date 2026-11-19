@@ -54,6 +54,7 @@ pub enum ImageProtocol {
     /// - genuine kitty and Ghostty, which *do* render placeholders ([`ImageProtocol::KittyGraphics`]) but are
     ///   cheaper to scroll through `a=p` than to re-composite; direct placement is the opt-out knob's
     ///   whole subject for them.
+    ///
     /// Inside tmux this route also requires `EDAMAME_TMUX_NATIVE_KITTY=1`.
     KittyDirect,
     /// Unicode half-block fallback (works in any truecolor terminal).
