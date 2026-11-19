@@ -66,7 +66,9 @@ fn parent_dir(url: &str) -> String {
 /// The document-relative path the confirm prompt proposes, `/`-separated: `dir` plus a
 /// `YYYYMMDD-HHMMSS.png` timestamp (local time), with `-1`, `-2`, … added when the name is taken.
 pub fn default_destination(dir: &str, doc_dir: &Path) -> String {
-    let stem = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let stem = jiff::ZonedDateTime::now()
+        .strftime("%Y%m%d-%H%M%S")
+        .to_string();
     let join = |name: &str| {
         if dir.is_empty() {
             name.to_owned()
@@ -251,7 +253,7 @@ mod tests {
         let name = dest.strip_prefix("images/").expect("under the dir");
         let stem = name.strip_suffix(".png").expect("png");
         assert!(
-            chrono::NaiveDateTime::parse_from_str(stem, "%Y%m%d-%H%M%S").is_ok(),
+            jiff::civil::DateTime::strptime("%Y%m%d-%H%M%S", stem).is_ok(),
             "{name}"
         );
     }

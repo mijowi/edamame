@@ -196,8 +196,10 @@ ammonia = "4.2.5"
 percent-encoding = "2"
 
 # Local wall-clock time for pasted screenshots' `YYYYMMDD-HHMMSS.png` names.
-# Only `clock` is needed; the default `oldtime` / `wasmbind` / `serde` are not.
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Default features: they are the set that resolves the system time zone on every
+# platform (zoneinfo on Unix, a bundled tzdb on Windows).  Not `time`, although it
+# is already in the graph: its `now_local` errors on Unix in a multi-threaded process.
+jiff = "1.0.1"
 
 # Mermaid diagrams.  `mermaid-rs-renderer` is pinned exactly because it is
 # pre-1.0 with known panic bugs and rapid churn; `default-features = false`
