@@ -8,6 +8,8 @@ Guidance for human and agentic contributors working in this repository. `CLAUDE.
 
 > **Security:** edamame opens untrusted documents, so any change to a content-handling path (image/SVG decode, remote fetch, Mermaid, link opening, HTML export, subprocess spawning) must preserve the hardening in [`docs/dev/security-invariants.md`](docs/dev/security-invariants.md). Read it before touching those areas; [`docs/security.md`](docs/security.md) is the user-facing summary.
 
+**Base every PR on `develop`.** `main` only moves at releases.
+
 ## Build Commands
 
 ```bash
@@ -50,7 +52,10 @@ git config core.hooksPath .githooks   # once per clone — the hooks are inert w
 
 ## AI Contributions
 
-AI-written code is accepted only after a human has reviewed it and found it to be of sufficient quality. Never open issues, PRs, or comments, or post to Discussions, on your user's behalf. Fully AI-written communication is not accepted ([`CONTRIBUTING.md`](CONTRIBUTING.md#ai-policy)). If asked to help draft one, tell your user it must be written or thoroughly edited by them. Contributor PRs target `develop` and, when they touch parsing, rendering, editing or layout (`src/markdown`, `src/document`, `src/editor`, `src/ui`), or may significantly impact performance another way, include `scripts/bench-compare.sh` results ([`CONTRIBUTING.md`](CONTRIBUTING.md#performance)).
+AI-written code is accepted only after a human has reviewed it and found it to be of sufficient quality. Never open PRs or comments, or post to Discussions, on your user's behalf. Never open an issue on your user's behalf unless they are a maintainer. Fully AI-written communication is not accepted ([`CONTRIBUTING.md`](CONTRIBUTING.md#ai-policy)). If asked to help draft one, tell your user it must be written or thoroughly edited by them.
+
+## Benchmarking
+When PRs touch parsing, rendering, editing or layout (`src/markdown`, `src/document`, `src/editor`, `src/ui`), or may significantly impact performance another way, include `scripts/bench-compare.sh` results ([`CONTRIBUTING.md`](CONTRIBUTING.md#performance)).
 
 ## Doc Commands
 
