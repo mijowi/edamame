@@ -14,7 +14,7 @@ use crate::docs::DocId;
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
 use crate::editor::{mouse_ops, EditorState, Mode};
-use crate::ui::EditorViewState;
+use crate::ui::{EditorViewState, ModalKind};
 
 use super::App;
 
@@ -85,6 +85,41 @@ pub(super) fn is_markdown_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// `path` relative to `base_dir` (the current document's folder) when it lies
+/// inside it, so a message names a link target as written rather than its
+/// resolution; otherwise `path` whole.
+fn shown_path<'a>(path: &'a Path, base_dir: Option<&Path>) -> &'a Path {
+    base_dir
+        .and_then(|dir| path.strip_prefix(dir).ok())
+        .unwrap_or(path)
+}
+
+/// The error for a local link whose target does not exist.  An extensionless
+/// target with a Markdown file next to it gets a hint — the `[x](docs/page)`
+/// slip, which otherwise reads as a dead link.
+fn missing_link_target_message(path: &Path, base_dir: Option<&Path>) -> String {
+    let shown = shown_path(path, base_dir);
+    let mut message = format!("File not found: {}", shown.display());
+    if path.extension().is_none() && path.with_extension("md").is_file() {
+        message.push_str(&format!(
+            " (did you mean {}?)",
+            shown.with_extension("md").display()
+        ));
+    }
+    message
+}
+
+/// The error for a Markdown file that exists but failed to load, its path
+/// shown as [`missing_link_target_message`] shows one.  Only the root cause is
+/// kept: `Buffer::load_file`'s context would repeat the path, absolute.
+fn load_failure_message(path: &Path, base_dir: Option<&Path>, err: &anyhow::Error) -> String {
+    format!(
+        "Can't open {}: {}",
+        shown_path(path, base_dir).display(),
+        err.root_cause()
+    )
+}
+
 impl App {
     /// Resolve the link under the keyboard cursor.  Shares
     /// `mouse_ops::link_at_offset` with the mouse path, so `FollowLink` behaves
@@ -101,8 +136,12 @@ impl App {
             return Some(target);
         }
         let url = mouse_ops::link_at_offset(&source, cursor_byte)?;
-        let base_dir = self.file_path.as_deref().and_then(|p| p.parent());
-        Some(LinkTarget::parse(&url, base_dir))
+        Some(LinkTarget::parse(&url, self.base_dir()))
+    }
+
+    /// The current document's folder: what its relative links resolve against.
+    fn base_dir(&self) -> Option<&Path> {
+        self.file_path.as_deref().and_then(Path::parent)
     }
 
     /// Follow `target` by its classified kind.  A no-op for an unknown heading
@@ -145,6 +184,16 @@ impl App {
                             self.spawn_open_worker(url);
                         }
                     }
+                    return;
+                }
+                // Checked before either branch: the OS opener reports a missing
+                // file only as an opaque exit status, and a missing Markdown
+                // file needn't pass through the dirty guard first.  Only a
+                // confirmed miss: an I/O error (an unreadable folder) falls
+                // through, so the loader or opener reports the real cause.
+                if matches!(path.try_exists(), Ok(false)) {
+                    let message = missing_link_target_message(&path, self.base_dir());
+                    self.notify(message, ModalKind::Error);
                     return;
                 }
                 if is_markdown_path(&path) {
@@ -370,6 +419,10 @@ impl App {
         let entry = self.current_file_entry();
         if let Err(err) = self.load_file_into_editor(path.clone()) {
             tracing::warn!(target: "link", path = %path.display(), error = %err, "failed to load linked file");
+            self.notify(
+                load_failure_message(&path, self.base_dir(), &err),
+                ModalKind::Error,
+            );
             return false;
         }
         if let Some(e) = entry {
@@ -650,6 +703,10 @@ impl App {
         if let Some(path) = reload_path {
             if let Err(err) = self.load_file_into_editor(path.clone()) {
                 tracing::warn!(target: "link", path = %path.display(), error = %err, "nav load failed");
+                self.notify(
+                    load_failure_message(&path, self.base_dir(), &err),
+                    ModalKind::Error,
+                );
                 return;
             }
         }
@@ -960,6 +1017,120 @@ mod tests {
 
         app.navigate_back(H, W);
         assert_eq!(app.file_path.as_deref(), Some(origin.as_path()));
+    }
+
+    /// The text of the notice on top of the modal stack, if one is.
+    fn top_notice(app: &mut App) -> Option<String> {
+        app.modal_stack
+            .top_mut()
+            .and_then(|m| m.as_any().downcast_ref::<modal::NoticeModal>())
+            .map(|n| n.text().to_owned())
+    }
+
+    /// An extensionless link to a Markdown file went to the OS opener, whose
+    /// only report was `xdg-open`'s exit status.
+    #[test]
+    fn a_link_to_a_missing_file_says_so_and_suggests_the_markdown_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(dir.path().join("docs")).expect("mkdir");
+        std::fs::write(dir.path().join("docs/page.md"), "# Page\n").expect("write");
+        let origin = dir.path().join("index.md");
+        std::fs::write(&origin, "Link here.\n").expect("write");
+        let mut app = app_with_buffer("Link here.\n", 0);
+        app.load_file_into_editor(origin.clone())
+            .expect("load origin");
+
+        app.follow_link(LinkTarget::parse("docs/page", origin.parent()), H, W);
+
+        assert_eq!(
+            top_notice(&mut app).as_deref(),
+            Some("File not found: docs/page (did you mean docs/page.md?)")
+        );
+        assert_eq!(app.file_path.as_deref(), Some(origin.as_path()));
+    }
+
+    /// A missing Markdown target used to fail silently: the load error was
+    /// only logged.  It must not route through the dirty guard either.
+    #[test]
+    fn a_link_to_a_missing_markdown_file_says_so_without_the_dirty_guard() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let origin = dir.path().join("index.md");
+        std::fs::write(&origin, "Link here.\n").expect("write");
+        let mut app = app_with_buffer("Link here.\n", 0);
+        app.load_file_into_editor(origin.clone())
+            .expect("load origin");
+        app.editor.dirty = true;
+
+        app.follow_link(LinkTarget::parse("gone.md", origin.parent()), H, W);
+
+        assert!(!app.modal_stack.contains::<modal::DirtyGuardModal>());
+        assert_eq!(
+            top_notice(&mut app).as_deref(),
+            Some("File not found: gone.md")
+        );
+        assert_eq!(app.file_path.as_deref(), Some(origin.as_path()));
+        assert!(app.nav_back.is_empty());
+    }
+
+    #[test]
+    fn a_link_to_an_unreadable_markdown_file_reports_the_load_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("binary.md");
+        std::fs::write(&target, [0xff, 0xfe, 0x00]).expect("write");
+        let origin = dir.path().join("index.md");
+        std::fs::write(&origin, "Link here.\n").expect("write");
+        let mut app = app_with_buffer("Link here.\n", 0);
+        app.load_file_into_editor(origin.clone())
+            .expect("load origin");
+
+        app.follow_link(LinkTarget::parse("binary.md", origin.parent()), H, W);
+
+        assert_eq!(
+            top_notice(&mut app).as_deref(),
+            Some("Can't open binary.md: stream did not contain valid UTF-8")
+        );
+        assert_eq!(app.file_path.as_deref(), Some(origin.as_path()));
+    }
+
+    /// Back / forward reloads a file the reader saw earlier, which may have
+    /// gone since; that failure used to be only logged.
+    #[test]
+    fn going_back_to_a_deleted_file_says_it_cannot_open_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first = dir.path().join("first.md");
+        let second = dir.path().join("second.md");
+        std::fs::write(&first, "# First\n").expect("write");
+        std::fs::write(&second, "# Second\n").expect("write");
+        let mut app = app_with_buffer("", 0);
+        app.load_file_into_editor(first.clone())
+            .expect("load first");
+        assert!(app.navigate_to_file(second.clone()));
+        std::fs::remove_file(&first).expect("remove");
+
+        app.navigate_back(H, W);
+
+        let notice = top_notice(&mut app).expect("a failed restore must be reported");
+        assert!(notice.starts_with("Can't open first.md: "), "{notice}");
+        assert_eq!(app.file_path.as_deref(), Some(second.as_path()));
+    }
+
+    #[test]
+    fn missing_link_target_message_shows_outside_paths_whole_and_hints_only_when_apt() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let base = dir.path().join("sub");
+        let outside = dir.path().join("elsewhere");
+        assert_eq!(
+            missing_link_target_message(&outside, Some(&base)),
+            format!("File not found: {}", outside.display()),
+            "a target outside the document's folder is shown in full, with no hint \
+             when no Markdown file sits beside it"
+        );
+        std::fs::write(dir.path().join("notes.txt.md"), "").expect("write");
+        assert_eq!(
+            missing_link_target_message(&dir.path().join("notes.txt"), Some(dir.path())),
+            "File not found: notes.txt",
+            "a target that already has an extension gets no hint"
+        );
     }
 
     #[test]

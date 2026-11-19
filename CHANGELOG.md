@@ -35,6 +35,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Vim: a few rare `:s` patterns that combine back-references or lookaround with repetition no longer match the wrong text or crash the editor.
 - Windows: edamame no longer occasionally hangs when it stops watching a file for outside changes, such as when opening another file or quitting.
 - An HTML comment inside a block of HTML, or on the line right after one such as after `</details>`, is now dimmed instead of looking like the HTML around it.
+- Following a link to a file that doesn't exist now says "File not found" (and suggests the `.md` file if the link left off the extension) instead of an unclear launcher error, or nothing at all for a Markdown link. A linked Markdown file that can't be read now shows why.
 
 ### Security
 

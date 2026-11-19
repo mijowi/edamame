@@ -67,7 +67,7 @@ pub(crate) enum AppEvent {
     /// An encoder `ResizeRequest` finished.  `Err` only keeps the pending-request FIFO balanced:
     /// the placeholder stays visible until a later frame re-enqueues the encode.
     ProtocolReady(Result<ratatui_image::thread::ResizeResponse, ratatui_image::errors::Errors>),
-    /// `open::that` finished on a URL or non-Markdown file.  Currently only logged.
+    /// `open::that` finished on a URL or non-Markdown file; an error is shown as a notice.
     LinkOpenResult(std::result::Result<(), String>),
     /// A watcher event for the open file.  See [`App::handle_watcher_event`].
     Watcher(WatchedEvent),
