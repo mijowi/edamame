@@ -86,14 +86,25 @@ if [[ -n $core ]]; then
 fi
 
 # Print the cases criterion judged "improved" or "regressed" in log $2, under heading $1.
-# Each comes with its change interval and the run's time interval; with a third log, also
-# that case's time interval there, since a noisy run on either side can produce the verdict.
-# Reads criterion's console report, which is a pipe here, so it carries no progress redraws.
+# Each comes with its change and the run's mean time, each with its 95% confidence interval;
+# with a third log, also that case's mean time there, since a noisy run on either side can
+# produce the verdict.  Reads criterion's console report, which is a pipe here, so it
+# carries no progress redraws.  The reported time is the mean only because every group
+# samples flat (`group()` in benches/pipeline.rs); under linear sampling criterion reports
+# the slope instead, while its change stays the mean's.
 summarize() {
-    awk -v heading="$1" -v base="${3:-}" '
+    # LC_ALL=C: `length` counts bytes in every awk, and pad() subtracts the UTF-8
+    # continuation bytes of a "−" or "µ" so the columns line up.
+    LC_ALL=C awk -v heading="$1" -v base="${3:-}" '
         function inside(s, parts) { sub(/.*\[/, "", s); sub(/\].*/, "", s); return split(s, parts, " ") }
-        function span(s, p, n) { n = inside(s, p); return n == 6 ? p[1] " " p[2] " … " p[5] " " p[6] : "?" }
-        function change(s, p, n) { n = inside(s, p); return n == 3 ? p[2] " [" p[1] " … " p[3] "]" : "?" }
+        function pad(s, w, t, n) { t = s; gsub(/[\200-\277]/, "", t); for (n = w - length(t); n > 0; n--) s = s " "; return s }
+        # criterion prints an interval as [low estimate high]; times carry a unit after each.
+        function span(s, p, n) {
+            n = inside(s, p)
+            return n == 6 ? pad(p[3] " " p[4], 13) "  95% CI [" p[1] " " p[2] ", " p[5] " " p[6] "]" : "?"
+        }
+        function change(s, p, n) { n = inside(s, p); return n == 3 ? pad(p[2], 13) "  95% CI [" p[1] ", " p[3] "]" : "?" }
+        function row(label, value) { return sprintf("\n             %-10s %s", label, value) }
         FNR == 1 { name = "" }
         /^(Benchmarking |Found |Warning|Gnuplot )/ { next }
         /^[^ \t]/ { name = $1 }
@@ -109,8 +120,8 @@ summarize() {
         }
         /Performance has (regressed|improved)\./ {
             verdict = /regressed/ ? "regressed" : "improved"
-            out[++hits] = sprintf("  %-9s  %s  %s\n             %s[%s]", verdict, name, delta[name],
-                base == "" ? "time " : "base [" base_time[name] "]  →  this tree ", time[name])
+            out[++hits] = sprintf("  %-9s  %s", verdict, name) row("change", delta[name]) \
+                (base == "" ? row("this run", time[name]) : row("base", base_time[name]) row("tree", time[name]))
         }
         END {
             printf "\n%s\n", heading
@@ -158,6 +169,12 @@ summarize "$ref against its previous saved run (same code: anything listed is no
     "$logs/base"
 summarize "The current tree against $ref:" "$logs/tree" "$logs/base"
 
+# The threshold and confidence level are config() in benches/pipeline.rs.
 echo
-echo "A \"regressed\" line could be anomalous. Re-run the case to confirm it. A wide time"
-echo "interval on either side, or the same case listed in both sections, points to noise."
+echo "Times are each run's mean time per iteration. A case is listed only when criterion finds"
+echo "its change statistically significant and the change's whole 95% CI lies outside ±5%"
+echo "(the bench's noise threshold). Smaller changes are not listed; each case's \"change:\""
+echo "line in the full log above shows them."
+echo
+echo "A \"regressed\" line could be anomalous. Re-run the case to confirm it. A wide time CI"
+echo "on either side, or the same case listed in both sections, points to noise."

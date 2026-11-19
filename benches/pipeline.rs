@@ -370,7 +370,9 @@ fn config() -> Criterion {
         .measurement_time(Duration::from_secs(2))
         // Run-to-run noise on a laptop is several percent, so criterion's 1%
         // default flags most cases as changed; at 5% the "regressed" lines
-        // are the ones worth a second look.
+        // are the ones worth a second look.  scripts/bench-compare.sh's summary
+        // states this threshold and criterion's default 95% confidence level;
+        // update it if either changes.
         .noise_threshold(0.05)
 }
 
