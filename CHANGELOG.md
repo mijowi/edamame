@@ -4,38 +4,37 @@ All notable changes to edamame are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Each released version's section is also what ships as the GitHub release notes: `dist` reads the section matching the tag and puts it at the top of the release body, above the generated install and download tables. edamame's update check reads that same body back and shows the part above the `## Install` heading, so **an entry written here is what users see in the "Update available" modal**. Keep entries short and user-facing for that reason — a release cut without a matching section here still notifies, just with no summary.
+Contributors: see [docs/dev/releasing.md](docs/dev/releasing.md) for how these notes are shipped and shown in the app.
 
 ## [Unreleased]
 
 ### Added
 
-- Added an **Autosave** toggle to the welcome screen.
+- An **Autosave** toggle on the welcome screen.
 
 ### Changed
 
-- Vim: `:s` patterns using `\<` / `\>` word boundaries run faster.
-- Modals that appear at an unexpected time, such as an update notice or file-changed warning, now ignore input for a brief moment so you don't accidentally answer the prompt while typing. Also applies to diff review when opened by an outside change.
+- Prompts that appear on their own, such as an update notice, a file-changed warning, or diff review opened by an outside change, now ignore keys for a moment so you don't answer them by accident while typing.
+- Diff review opens faster on large files.
 
 ### Fixed
 
-- Saving a file that mixes `CRLF` and `LF` line endings now asks which one to use instead of silently rewriting every line.
-- Saving backs up the file first, so a save that fails partway, such as on a full disk, no longer loses the file's contents.
-- Vim: case-insensitive `:s` patterns with a non-ASCII character range (such as `[à-ÿ]`) no longer miss some matches.
-- `--no-config` now uses the Edamame theme on truecolor terminals and 256 Dark otherwise.
-- Fixed inline code drawing in the same color as its background in some cases.
-- Diff review opens faster on large files.
-- Preview: **Go to section** (`Ctrl-G`) now opens on the section at the top of the screen rather than wherever the cursor was.
-- Preview: `Ctrl-Shift-T` (Insert Table) is now ignored like other editing actions.
-- Preview: in a document with wrapped lines, the status-bar breadcrumb no longer shows a later heading than the one on screen.
-- A heading containing a footnote reference now has the same `#anchor` as on GitHub, in the app and in HTML export, so links to it no longer break when published.
-- Preview: entering edit with the cursor scrolled out of view now puts it at the top of the screen. It could land further down in a document with wrapped lines, or off screen at the start of a long block scrolled partway through, which made the view jump on the first keypress.
-- Scrolling down with the keyboard while the cursor is inside a long list, quote, table, code block or paragraph no longer moves the cursor back to the start of that block off screen, which made the next keypress jump the view back up.
-- Character widths are updated to Unicode 18, so text containing recently added characters lines up correctly in tables and wrapped lines.
+- Saving a file that mixes `CRLF` and `LF` line endings now asks which one to use instead of silently converting every line.
+- Saving now backs up the file first, so a save that fails partway, such as on a full disk, no longer loses the file's contents.
+- Inline code no longer draws in the same color as its background with `--no-config`, or with a custom theme that leaves out the `code` or `bg` color.
+- `--no-config` now uses the Edamame theme on terminals with 24-bit color, and 256 Dark otherwise.
+- Preview: **Go to section** (`Ctrl-G`) now starts at the section at the top of the screen rather than wherever the cursor was.
+- Preview: `Ctrl-Shift-T` (Insert Table) no longer opens the table prompt, matching other editing shortcuts.
+- Preview: with wrapped lines, the status-bar breadcrumb no longer shows a later heading than the one on screen.
+- Preview: entering edit with the cursor scrolled out of view now places it at the top of the screen. Before, it could land lower down or off screen, and the first keypress made the view jump.
+- Scrolling down with the keyboard inside a long list, quote, table, code block or paragraph no longer sends the cursor back to the start of that block, which made the next keypress jump the view back up.
+- A heading containing a footnote reference now gets the same `#anchor` as on GitHub, in the app and in HTML export, so links to it keep working once published.
+- An HTML comment inside a block of HTML, or on the line right after one (such as after `</details>`), is now dimmed like other comments.
+- Following a link to a missing file now says "File not found", and suggests the `.md` file if the link left off the extension. Before, it showed an unclear error, or nothing at all for a Markdown link. A linked Markdown file that can't be read now says why.
+- Text containing recently added characters (Unicode 18) now lines up correctly in tables and wrapped lines.
+- Vim: case-insensitive `:s` patterns with a non-ASCII range (such as `[à-ÿ]`) no longer miss some matches.
 - Vim: a few rare `:s` patterns that combine back-references or lookaround with repetition no longer match the wrong text or crash the editor.
 - Windows: edamame no longer occasionally hangs when it stops watching a file for outside changes, such as when opening another file or quitting.
-- An HTML comment inside a block of HTML, or on the line right after one such as after `</details>`, is now dimmed instead of looking like the HTML around it.
-- Following a link to a file that doesn't exist now says "File not found" (and suggests the `.md` file if the link left off the extension) instead of an unclear launcher error, or nothing at all for a Markdown link. A linked Markdown file that can't be read now shows why.
 
 ### Security
 

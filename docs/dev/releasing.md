@@ -18,7 +18,7 @@ A tag push runs, in order: the builds for every target, `host` (creates the publ
 
 The release commit is made on `develop` and fast-forwarded onto `main`, so `main` never receives a commit `develop` lacks and no rebase is needed afterwards.
 
-1. **Write the release notes** under `## [Unreleased]` in `CHANGELOG.md`, on `develop`. That section ships as the GitHub release body, the update-check modal's notes ([update-check.md](update-check.md)), and the post-upgrade notice ([post-upgrade.md](post-upgrade.md)). Commit them.
+1. **Write the release notes** under `## [Unreleased]` in `CHANGELOG.md`, on `develop`. That section ships as the GitHub release body, the update-check modal's notes ([update-check.md](update-check.md)), and the post-upgrade notice ([post-upgrade.md](post-upgrade.md)): `dist` puts the section matching the tag above the generated install and download tables, and the update check shows the part of that body above the `## Install` heading. Keep entries short and user-facing, since users read them in those modals. A release cut without a matching section still notifies, just with no summary. Commit them.
 
 2. **`scripts/release.sh prepare X.Y.Z`** refuses unless it is on a clean `develop` that includes `origin/develop` and `origin/main`, the version is newer than `Cargo.toml`'s, the tag does not exist, and `[Unreleased]` has content. It then:
    - renames `[Unreleased]` to `## [X.Y.Z] - <today>` under a fresh empty `[Unreleased]`;
