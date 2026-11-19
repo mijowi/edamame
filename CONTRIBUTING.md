@@ -74,7 +74,7 @@ Please report vulnerabilities privately rather than in a PR or issue; see [`SECU
 If your PR touches parsing, rendering, editing or layout (`src/markdown`, `src/document`, `src/editor`, `src/ui`), or may significantly impact performance another way, bench it against `develop` and paste the results into the PR. Rebase onto current `develop` first, then run the script. It compares against your local `develop`; in a fork, pass the upstream branch instead (`scripts/bench-compare.sh upstream/develop`).
 
 ```bash
-scripts/bench-compare.sh                        # benches develop, then your tree, and prints each case's change
+scripts/bench-compare.sh                        # benches develop, then your tree; prints each case's change, then a summary of what changed
 EDAMAME_BENCH_CORE=N scripts/bench-compare.sh   # Linux, hybrid CPU: pin both runs to performance core N
 ```
 
