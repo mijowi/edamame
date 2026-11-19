@@ -16,8 +16,9 @@
 #   EDAMAME_BENCH_FILTER=RE  criterion filter (default: the end-to-end cases)
 #
 # Refuses when the bench harness differs between the two, since the runs would time
-# different things.  See docs/dev/performance.md for how to read the results.
-# Runs on bash 3.2 (macOS's /bin/bash) and later.
+# different things; changes to whole-line comments under benches/ don't count.  See
+# docs/dev/performance.md for how to read the results.
+# Runs on bash 3.2 (macOS's /bin/bash) and later, and needs git 2.30 or later.
 
 set -euo pipefail
 
@@ -65,8 +66,10 @@ bench_harness() {
     awk '$0 == "name = \"criterion\"" { getline; print }' <<<"$lock"
 }
 
-# `git diff` skips untracked files, so a new one under benches/ is checked separately.
-if ! git diff --quiet "$commit" -- benches/ ||
+# `-I` ignores hunks whose changed lines are all `//` comments (git 2.30+), so a comment
+# edit doesn't block comparisons against older refs; a trailing comment on a code line still
+# counts.  `git diff` skips untracked files, so a new one under benches/ is checked separately.
+if ! git diff --quiet -I'^[[:space:]]*//' "$commit" -- benches/ ||
     [[ -n $(git ls-files --others --exclude-standard -- benches/) ]]; then
     die "benches/ differs from $ref; the comparison would be meaningless"
 fi
