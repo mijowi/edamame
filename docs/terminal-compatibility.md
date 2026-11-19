@@ -96,6 +96,8 @@ edamame works under tmux, with two caveats worth knowing:
 
 `edamame --doctor` reports whether it's running under tmux.
 
+If your tmux build supports **native Kitty image placements**, opt in from that tmux shell with `EDAMAME_TMUX_NATIVE_KITTY=1 edamame file.md`. Leave `[images] sharp_scrolling` enabled (the default). This sends images to tmux itself rather than relying on Unicode image placeholders in the outer terminal. An outer terminal's Kitty support, or enabling `allow-passthrough`, does not mean your tmux build supports this mode. Leave the variable unset on older or non-graphics builds. This setting does not change keyboard support.
+
 ## Windows and WSL
 
 **Windows is a best-effort platform.** edamame passes its test suite on Windows in CI, and each release has a prebuilt Windows binary, but nobody smoke-tests the running program, so everything on this page that depends on the terminal — images, mouse, the keyboard protocol, the clipboard, opening links, the external editor — is unverified there. If you run it, an [issue](https://github.com/mijowi/edamame/issues) with `edamame --doctor` output is the most useful thing you can send, whether or not something is wrong.
