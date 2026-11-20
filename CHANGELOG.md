@@ -8,6 +8,8 @@ Contributors: see [docs/dev/releasing.md](docs/dev/releasing.md) for how these n
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-19
+
 ### Added
 
 - An **Autosave** toggle on the welcome screen.
@@ -208,7 +210,8 @@ Updated dependencies to include these fixes:
 
 First public release.
 
-[Unreleased]: https://github.com/mijowi/edamame/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/mijowi/edamame/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/mijowi/edamame/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/mijowi/edamame/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/mijowi/edamame/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/mijowi/edamame/compare/v0.1.4...v0.1.5
