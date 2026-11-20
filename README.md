@@ -1,6 +1,6 @@
 # edamame
 
-**A Terminal Markdown editor that stays rendered while you edit.**
+**A Terminal Markdown editor**
 
 <!-- GitHub badges -->
 <p>
@@ -17,7 +17,7 @@
 
 ![Animation of clicking through a rendered document to reveal the raw Markdown on each line](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/edamame_hero.gif)
 
-edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you work on it. Only the line your cursor is on drops to raw Markdown, for easy editing.
+edamame displays Markdown *rendered* with headings, drawn tables, inline images, and more, as you work on it. Just the current line is shown as raw Markdown, for easy editing.
 
 ---
 
@@ -29,20 +29,20 @@ edamame shows your document *rendered* with headings, drawn table grids, inline 
 
 ## Features
 
-- **Hybrid rendered/raw editing** — the document stays formatted; only the cursor's line shows its source
-- **Real table editing** — tables render as a grid, you edit cell by cell, `Tab` between cells, drag with the mouse to reorder or resize
-- **Inline images, Mermaid diagrams, and LaTeX math** on terminals that support them
+- **Hybrid rendered/raw editing** — the document stays formatted; only the current line shows its source
+- **First class tables** — tables render with borders and auto-sized columns, `Tab` cell by cell, add/move/delete rows and columns with one key or use the mouse
+- **Inline images, rendered Mermaid diagrams and LaTeX math** (pure Rust, no extra install)
 - **Search and replace**, with smartcase navigation
-- **Diff review for external changes** — when something else writes your file, accept or reject each change hunk by hunk instead of losing work
+- **Diff review for external changes** — when another app writes to your file, accept or reject each change hunk by hunk
 - **Vim mode**, optional — motions, operators, text objects, `:s` with a live preview
 - **27 themes**, and a documented format for writing your own
-- **HTML export**, self-contained or linked
+- **HTML export**, and a hook for converting to other formats
 - **Footnotes, task lists, list continuation and renumbering**
 - Mouse support, fuzzy command palette, jump-to-heading, navigation history
 
 ### The hybrid view
 
-The document stays formatted while you work. The cursor's line shows its source, and renders again as soon as you leave it — so list markers, emphasis and links are editable in place without turning the page into syntax.
+The document stays formatted while you work. The current line is shown as raw markdown for easy editing, and renders when the cursor leaves it.
 
 ![Editing a list in edamame, with the cursor's line showing raw Markdown while the rest stays rendered](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/raw_reveal_and_list_ops.gif)
 
@@ -60,14 +60,14 @@ Tables are drawn, not printed as pipes. `Tab` walks the cells, rows and columns 
 
 ## Documentation
 
-- [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md) — first run, the three view modes, reading the status bar
-- [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md) — tables, lists, links, footnotes, search, diff review, images, export
-- [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md) — every default chord and how to change it
-- [Terminal compatibility](https://github.com/mijowi/edamame/blob/main/docs/terminal-compatibility.md) — what depends on your terminal, and what to do about each gap
+- [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md)
+- [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md)
+- [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md)
+- [Terminal compatibility](https://github.com/mijowi/edamame/blob/main/docs/terminal-compatibility.md)
 - [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md) — every setting
-- [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md) — switching, and writing your own
-- [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md) — what's supported and how it differs from Vim
-- [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md) — what protects you when you open a document you didn't write
+- [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md)
+- [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md)
+- [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md)
 
 ## Installation
 
@@ -110,7 +110,7 @@ Requires Rust 1.90 or newer.
 
 ### Platforms
 
-Linux and macOS are the supported platforms. Windows is best-effort: edamame passes its test suite there in CI, and each release has a prebuilt `x86_64` Windows binary, but nobody smoke-tests the running program on Windows, so terminal behavior — images, the clipboard, opening links, the external editor — is unverified. Use [Windows Terminal](https://github.com/microsoft/terminal); the legacy console lacks the alternate screen and mouse support a TUI depends on. If you run it on Windows and something is off, [an issue](https://github.com/mijowi/edamame/issues) with the terminal name and version is the most useful thing you can send.
+Linux and macOS are the supported platforms. Windows is best-effort: edamame passes its test suite there in CI, and each release has a prebuilt `x86_64` Windows binary, but nobody manually tests on Windows. Use [Windows Terminal](https://github.com/microsoft/terminal); the legacy console lacks the alternate screen and mouse support a TUI depends on. If you run it on Windows and something is off, please [open an issue](https://github.com/mijowi/edamame/issues).
 
 ### Upgrading
 
@@ -147,33 +147,21 @@ edamame runs anywhere, but a few things depend on your terminal:
 | Mouse selection and table handles | Mouse reporting |
 | ``Ctrl-` ``, `Ctrl-Shift-T`, `Alt-Shift-*` | The kitty keyboard protocol |
 
-Where support is missing, edamame adapts rather than breaking — it switches to a 256-color theme, keeps image placeholders, and tells you which chords won't arrive. Every command is reachable from the palette regardless.
+Where support is missing, edamame falls back rather than breaking. It switches to a 256-color theme, shows image placeholders, and tells you which chords won't arrive. Every command is reachable from the palette regardless of keyboard support.
 
-Full support in kitty, Ghostty, WezTerm, and foot. Apple Terminal works, with the reduced feature set above. Run `edamame --doctor` to see what your terminal reports.
+Full support in foot, Ghostty, iTerm2, kitty, and WezTerm. Apple Terminal works, with the reduced feature set above. See [Terminal compatibility](docs/terminal-compatibility.md).
 
 ## Security
 
-edamame is built to open documents you didn't write. Image decoding is bounded against decompression bombs, remote image fetches are consent-gated and filtered against internal addresses, and HTML export strips scripts and unsafe link schemes. Details and the threat model are in [docs/security.md](https://github.com/mijowi/edamame/blob/main/docs/security.md).
+edamame is hardened to protect you from documents you didn't write. Image decoding is bounded against decompression bombs, remote image fetches are consent-gated and filtered against internal addresses, and HTML export strips scripts and unsafe link schemes. Details and the threat model are in [docs/security.md](https://github.com/mijowi/edamame/blob/main/docs/security.md).
 
 To report a vulnerability, please use GitHub's private reporting on the [Security tab](https://github.com/mijowi/edamame/security) rather than a public issue.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md). For anything non-trivial, please open an issue first — edamame keeps a deliberately narrow scope, so a feature can be well-built and still not fit.
+See [CONTRIBUTING.md](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md). 
 
 Questions, ideas and anything you're not sure is a bug belong in [Discussions](https://github.com/mijowi/edamame/discussions).
-
-[AGENTS.md](https://github.com/mijowi/edamame/blob/main/AGENTS.md) is the architecture guide — the module layout, the invariants that are easy to break, and the code style. `docs/dev/` holds the design specs.
-
-The `edamame` crate also contains a library target, but it exists only for the binary, tests and internal development. It is not a supported API and can change in any release.
-
-Please run the following *before* opening a PR:
-
-```bash
-cargo fmt
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --no-fail-fast
-```
 
 ## License
 
