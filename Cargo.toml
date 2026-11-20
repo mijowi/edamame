@@ -13,6 +13,9 @@ authors = ["mijowi"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/mijowi/edamame"
+# Clippy complains about the duplicate URL for repository and homepage, 
+# but dist uses it for Homebrew.
+homepage = "https://github.com/mijowi/edamame"
 documentation = "https://github.com/mijowi/edamame/blob/main/docs/getting-started.md"
 keywords = ["markdown", "editor", "tui", "terminal", "viewer"]
 categories = ["command-line-utilities", "text-editors"]
