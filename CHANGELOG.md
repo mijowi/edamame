@@ -8,6 +8,14 @@ Contributors: see [docs/dev/releasing.md](docs/dev/releasing.md) for how these n
 
 ## [Unreleased]
 
+### Changed
+
+- Math: `\tag{...}` labels are now set as text, as in KaTeX, so `\tag{A}` is upright. Write math in a tag as `\tag{$x^2$}` rather than `\tag{x^2}`.
+
+### Fixed
+
+- Math: automatic equation numbers of two or more digits now show every digit, `(10)` instead of `(1)`.
+
 ## [0.1.8] - 2026-11-19
 
 ### Added
