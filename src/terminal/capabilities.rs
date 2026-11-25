@@ -38,7 +38,7 @@ pub enum ImageProtocol {
     /// image re-composites wherever the placeholders move, so it drops to halfblocks *while
     /// scrolling*.  When `images.sharp_scrolling` is on (the default) and outside tmux, kitty and
     /// Ghostty are served as [`ImageProtocol::KittyDirect`] instead; this is the path they take with
-    /// that setting off, and always under tmux, where direct placement's passthrough is unavailable.
+    /// that setting off, or under tmux without an explicit native-graphics opt-in.
     KittyGraphics,
     /// iTerm2 inline-images protocol.
     ITerm2,
@@ -47,14 +47,15 @@ pub enum ImageProtocol {
     /// [`ImageProtocol::KittyGraphics`] the placement is one short escape, so a partly visible image
     /// stays sharp even while scrolling.
     ///
-    /// Two kinds of terminal land here, both gated on `images.sharp_scrolling` (and never under
-    /// tmux):
+    /// Outside tmux, two kinds of terminal land here, both gated on `images.sharp_scrolling`:
     /// - WezTerm, which implements the transmit, placement and delete but *not* the `U=1`
     ///   unicode-placeholder extension `ratatui_image`'s Kitty backend renders through, so without
     ///   this route it is served as iTerm2 and every partly visible image falls back to halfblocks.
     /// - genuine kitty and Ghostty, which *do* render placeholders ([`ImageProtocol::KittyGraphics`]) but are
     ///   cheaper to scroll through `a=p` than to re-composite; direct placement is the opt-out knob's
     ///   whole subject for them.
+    ///
+    /// Inside tmux this route also requires `EDAMAME_TMUX_NATIVE_KITTY=1`.
     KittyDirect,
     /// Unicode half-block fallback (works in any truecolor terminal).
     Halfblocks,
@@ -366,12 +367,19 @@ fn direct_placement_hint_is_trustworthy() -> bool {
 
 /// Whether a genuine kitty/Ghostty probe may be upgraded to direct placement.  The genuineness is
 /// the probe's own `Kitty` result (unlike WezTerm, which the probe reports as iTerm2); this adds
-/// only the tmux gate.  Inside tmux the upgrade is refused: `a=p` needs `allow-passthrough`, which
-/// upstream enables by spawning `tmux` — a subprocess edamame will not run — whereas
-/// `ratatui_image`'s placeholder backend keeps working through tmux's graphics passthrough, so the
-/// placeholder path ([`ImageProtocol::KittyGraphics`]) is the right one to leave in place there.
+/// only the tmux gate. A Kitty reply through passthrough doesn't establish that tmux itself
+/// accepts unwrapped placements. Leave the existing protocol alone unless the user opts into
+/// the native path with [`use_native_tmux_kitty`].
 fn kitty_direct_hint_is_trustworthy() -> bool {
     env::var_os("TMUX").is_none()
+}
+
+/// Opt-in for a tmux server known to parse and retain unwrapped Kitty graphics. A wrapped
+/// probe may be answered by the outer terminal even when tmux cannot handle placements.
+fn use_native_tmux_kitty(sharp_scrolling: bool) -> bool {
+    sharp_scrolling
+        && env::var_os("TMUX").is_some()
+        && env::var("EDAMAME_TMUX_NATIVE_KITTY").as_deref() == Ok("1")
 }
 
 /// Upgrade a probed protocol to [`ImageProtocol::KittyDirect`] when the user has opted in to
@@ -434,6 +442,11 @@ fn detect_image_protocol(sharp_scrolling: bool) -> (Option<ImageProtocol>, Optio
         _ => return (None, None),
     };
 
+    if use_native_tmux_kitty(sharp_scrolling) {
+        picker.set_protocol_type(ProtocolType::Kitty);
+        return (Some(ImageProtocol::KittyDirect), Some(picker));
+    }
+
     picker.set_protocol_type(resolve_protocol(
         picker.protocol_type(),
         iterm2_hint_is_trustworthy(),
@@ -464,6 +477,32 @@ mod tests {
     // `env_lock` is crate-wide because the race is process-wide: a lock private to this
     // module could not exclude `cli::doctor`'s reads of the very variables set below.
     use crate::test_env::{env_lock, EnvGuard};
+
+    #[test]
+    fn native_tmux_opt_in_uses_direct_placements() {
+        let _lock = env_lock();
+        let _tmux = EnvGuard::set("TMUX", "/tmp/tmux-example/graphics,123,0");
+        let _opt_in = EnvGuard::set("EDAMAME_TMUX_NATIVE_KITTY", "1");
+        assert!(use_native_tmux_kitty(true));
+        assert!(!use_native_tmux_kitty(false));
+    }
+
+    #[test]
+    fn native_tmux_placements_require_an_explicit_opt_in_and_tmux() {
+        let _lock = env_lock();
+        let _tmux = EnvGuard::set("TMUX", "/tmp/tmux-example/graphics,123,0");
+        {
+            let _unset = EnvGuard::unset("EDAMAME_TMUX_NATIVE_KITTY");
+            assert!(!use_native_tmux_kitty(true));
+        }
+        {
+            let _disabled = EnvGuard::set("EDAMAME_TMUX_NATIVE_KITTY", "0");
+            assert!(!use_native_tmux_kitty(true));
+        }
+        let _opt_in = EnvGuard::set("EDAMAME_TMUX_NATIVE_KITTY", "1");
+        let _no_tmux = EnvGuard::unset("TMUX");
+        assert!(!use_native_tmux_kitty(true));
+    }
 
     // ── Image protocol ────────────────────────────────────────────────
 
